@@ -6,35 +6,42 @@ from aiogram.types import ChatPermissions, ChatMemberUpdated
 from aiogram.filters import ChatMemberUpdatedFilter, IS_NOT_MEMBER, IS_MEMBER
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
+# Токен из Environment Variable
 TOKEN = os.getenv("BOT_TOKEN")
-
 if not TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
+    raise RuntimeError("BOT_TOKEN is not set in environment variables")
 
-bot = Bot(TOKEN, parse_mode=ParseMode.HTML)
+# Создаём бота
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher()
 
+# Словарь для хранения ожидающих капчу пользователей
 pending_users = {}  # user_id -> correct_answer
-CAPTCHA_TIMEOUT = 60  # секунд
+CAPTCHA_TIMEOUT = 60  # секунд для прохождения капчи
 
-
+# Функция генерации капчи
 def build_captcha():
     a = random.randint(1, 9)
     b = random.randint(1, 9)
     answer = a + b
 
+    # Генерируем варианты
     options = list({answer, answer + 1, answer - 1, answer + 2})
     random.shuffle(options)
 
+    # Inline кнопки
     kb = InlineKeyboardBuilder()
     for opt in options:
         kb.button(text=str(opt), callback_data=f"captcha:{opt}")
-
     kb.adjust(len(options))
     return f"{a} + {b} = ?", answer, kb.as_markup()
 
-
+# Событие: новый пользователь вступил в группу
 @dp.chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER))
 async def on_user_join(event: ChatMemberUpdated):
     user = event.new_chat_member.user
@@ -43,29 +50,33 @@ async def on_user_join(event: ChatMemberUpdated):
     question, answer, keyboard = build_captcha()
     pending_users[user.id] = answer
 
+    # Ограничиваем пользователя до прохождения капчи
     await bot.restrict_chat_member(
         chat_id,
         user.id,
         ChatPermissions(can_send_messages=False)
     )
 
+    # Отправляем капчу
     msg = await bot.send_message(
         chat_id,
-        f"👋 <b>{user.full_name}</b>, реши капчу:\n\n<b>{question}</b>",
+        f"👋 <b>{user.full_name}</b>, чтобы получить доступ к чату, реши капчу:\n\n<b>{question}</b>",
         reply_markup=keyboard
     )
 
+    # Таймер на капчу
     async def timeout():
         await asyncio.sleep(CAPTCHA_TIMEOUT)
         if user.id in pending_users:
             pending_users.pop(user.id, None)
+            # Удаляем пользователя
             await bot.ban_chat_member(chat_id, user.id)
             await bot.unban_chat_member(chat_id, user.id)
             await msg.delete()
 
     asyncio.create_task(timeout())
 
-
+# Обработка нажатий кнопок капчи
 @dp.callback_query(F.data.startswith("captcha:"))
 async def captcha_handler(callback):
     user_id = callback.from_user.id
@@ -79,6 +90,7 @@ async def captcha_handler(callback):
     if value == pending_users[user_id]:
         pending_users.pop(user_id, None)
 
+        # Разрешаем пользователю писать
         await bot.restrict_chat_member(
             chat_id,
             user_id,
@@ -90,21 +102,21 @@ async def captcha_handler(callback):
             )
         )
 
+        # Удаляем капчу
         await callback.message.delete()
-        await callback.answer("Готово ✅")
+        await callback.answer("✅ Проверка пройдена")
     else:
         await callback.answer("❌ Неверно", show_alert=True)
 
-
+# Удаляем сообщения от пользователей, которые ещё не прошли капчу
 @dp.message()
 async def delete_messages_from_pending(message):
     if message.from_user.id in pending_users:
         await message.delete()
 
-
+# Старт polling
 async def main():
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
