@@ -79,7 +79,11 @@ async def on_user_join(event: ChatMemberUpdated):
         await asyncio.sleep(CAPTCHA_TIMEOUT)
         if user.id in pending_users:
             pending_users.pop(user.id, None)
-            # Удаляем пользователя из группы
+
+            # Логируем в консоль
+            print(f"[BANNED] user_id={user.id} | username=@{user.username} | name={user.full_name} | chat_id={chat_id}")
+
+            # Бан + анбан
             await bot.ban_chat_member(chat_id, user.id)
             await bot.unban_chat_member(chat_id, user.id)
             await msg.delete()
@@ -120,6 +124,8 @@ async def captcha_handler(callback):
         await callback.message.delete()
         await callback.answer("✅ Проверка пройдена")
     else:
+        # Логируем неверный ответ
+        print(f"[WRONG CAPTCHA] user_id={user_id} | username=@{callback.from_user.username} | name={callback.from_user.full_name} | chat_id={chat_id} | pressed={value} | correct={pending_users[user_id]}")
         await callback.answer("❌ Неверно", show_alert=True)
 
 # ==============================
