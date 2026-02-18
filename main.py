@@ -3,97 +3,103 @@ import random
 import os
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import ChatPermissions, ChatMemberUpdated
-from aiogram.filters import ChatMemberUpdatedFilter, IS_NOT_MEMBER, IS_MEMBER
+from aiogram.filters import ChatMemberUpdatedFilter, IS_NOT_MEMBER, IS_MEMBER, Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
-# ==============================
-# Токен из Environment Variable
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set in environment variables")
 
-# Белый список групп — бот будет работать только здесь
-ALLOWED_CHATS = [-1002619489118]  # <- твоя группа
-# ==============================
+ALLOWED_CHATS = [-1002619489118]
 
-# Создаём бота
 bot = Bot(
     token=TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 dp = Dispatcher()
 
-# Словарь для хранения ожидающих капчу пользователей
-pending_users = {}  # user_id -> correct_answer
-CAPTCHA_TIMEOUT = 60  # секунд на прохождение капчи
+pending_users = {}
+CAPTCHA_TIMEOUT = 60
 
-# ==============================
-# Функция генерации капчи
+passed_count = 0
+failed_count = 0
+
+
+def user_tag(user):
+    if user.username:
+        return f"@{user.username}"
+    return f"<a href='tg://user?id={user.id}'>{user.full_name}</a>"
+
+
 def build_captcha():
     a = random.randint(1, 9)
     b = random.randint(1, 9)
     answer = a + b
 
-    # Генерируем варианты
     options = list({answer, answer + 1, answer - 1, answer + 2})
     random.shuffle(options)
 
-    # Inline кнопки
     kb = InlineKeyboardBuilder()
     for opt in options:
         kb.button(text=str(opt), callback_data=f"captcha:{opt}")
     kb.adjust(len(options))
     return f"{a} + {b} = ?", answer, kb.as_markup()
 
-# ==============================
-# Новый пользователь вступил в группу
+
 @dp.chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER))
 async def on_user_join(event: ChatMemberUpdated):
     chat_id = event.chat.id
     if chat_id not in ALLOWED_CHATS:
-        return  # Игнорируем другие чаты
+        return
 
     user = event.new_chat_member.user
 
     question, answer, keyboard = build_captcha()
     pending_users[user.id] = answer
 
-    # Ограничиваем пользователя до прохождения капчи
     await bot.restrict_chat_member(
         chat_id,
         user.id,
         ChatPermissions(can_send_messages=False)
     )
 
-    # Отправляем капчу
     msg = await bot.send_message(
         chat_id,
         f"👋 <b>{user.full_name}</b>, чтобы получить доступ к чату, реши капчу:\n\n<b>{question}</b>",
         reply_markup=keyboard
     )
 
-    # Таймер на капчу
     async def timeout():
+        global failed_count
         await asyncio.sleep(CAPTCHA_TIMEOUT)
         if user.id in pending_users:
             pending_users.pop(user.id, None)
+            failed_count += 1
 
-            # Логируем в консоль
-            print(f"[BANNED] user_id={user.id} | username=@{user.username} | name={user.full_name} | chat_id={chat_id}")
+            print(f"[BANNED] user_id={user.id} | username=@{user.username}")
 
-            # Бан + анбан
             await bot.ban_chat_member(chat_id, user.id)
             await bot.unban_chat_member(chat_id, user.id)
-            await msg.delete()
+
+            try:
+                await msg.delete()
+            except:
+                pass
+
+            await bot.send_message(
+                chat_id,
+                f"❌ {user_tag(user)} провалил испытание"
+            )
 
     asyncio.create_task(timeout())
 
-# ==============================
-# Обработка нажатий кнопок капчи
+
 @dp.callback_query(F.data.startswith("captcha:"))
 async def captcha_handler(callback):
+    global passed_count
+
     chat_id = callback.message.chat.id
     if chat_id not in ALLOWED_CHATS:
         return
@@ -107,8 +113,8 @@ async def captcha_handler(callback):
 
     if value == pending_users[user_id]:
         pending_users.pop(user_id, None)
+        passed_count += 1
 
-        # Разрешаем пользователю писать
         await bot.restrict_chat_member(
             chat_id,
             user_id,
@@ -120,16 +126,36 @@ async def captcha_handler(callback):
             )
         )
 
-        # Удаляем капчу
-        await callback.message.delete()
-        await callback.answer("✅ Проверка пройдена")
+        try:
+            await callback.message.delete()
+        except:
+            pass
+
+        await bot.send_message(
+            chat_id,
+            f"✅ {user_tag(callback.from_user)} справился с испытанием"
+        )
+
+        print(f"[PASSED] user_id={user_id}")
+        await callback.answer("Проверка пройдена")
+
     else:
-        # Логируем неверный ответ
-        print(f"[WRONG CAPTCHA] user_id={user_id} | username=@{callback.from_user.username} | name={callback.from_user.full_name} | chat_id={chat_id} | pressed={value} | correct={pending_users[user_id]}")
+        print(f"[WRONG CAPTCHA] user_id={user_id}")
         await callback.answer("❌ Неверно", show_alert=True)
 
-# ==============================
-# Удаляем сообщения от пользователей, которые ещё не прошли капчу
+
+@dp.message(Command("stats"))
+async def stats_cmd(message):
+    if message.chat.id not in ALLOWED_CHATS:
+        return
+
+    await message.reply(
+        f"📊 Статистика бота:\n"
+        f"✅ Справились с испытанием: <b>{passed_count}</b>\n"
+        f"❌ Провалили испытание: <b>{failed_count}</b>"
+    )
+
+
 @dp.message()
 async def delete_messages_from_pending(message):
     chat_id = message.chat.id
@@ -137,12 +163,15 @@ async def delete_messages_from_pending(message):
         return
 
     if message.from_user.id in pending_users:
-        await message.delete()
+        try:
+            await message.delete()
+        except:
+            pass
 
-# ==============================
-# Старт polling
+
 async def main():
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
