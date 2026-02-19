@@ -12,7 +12,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set in environment variables")
 
-ALLOWED_CHATS = [-1002619489118]
+ALLOWED_CHATS = [-1002619489118, -1003237014529]
 
 bot = Bot(
     token=TOKEN,
