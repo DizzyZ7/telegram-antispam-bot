@@ -118,10 +118,10 @@ async def captcha_handler(callback):
 
         await bot.send_message(
             chat_id,
-            f"✅ {user_tag(callback.from_user)} получил доступ к чату"
+            f"✅ {user_tag(callback.from_user)} прошел испытание"
         )
 
-        await callback.answer("Проверка пройдена")
+        await callback.answer("Испытание пройдено")
     else:
         failed_users.add(target_user_id)
         await callback.answer("❌ Неверно", show_alert=True)
@@ -135,8 +135,8 @@ async def stats_cmd(message):
     await message.reply(
         f"📊 Статистика бота:\n"
         f"⏳ Ожидают: <b>{len(pending_users)}</b>\n"
-        f"✅ Прошли: <b>{len(passed_users)}</b>\n"
-        f"❌ Не прошли (были ошибки): <b>{len(failed_users)}</b>"
+        f"✅ Прошли испытание: <b>{len(passed_users)}</b>\n"
+        f"❌ Не прошли испытание (были ошибки): <b>{len(failed_users)}</b>"
     )
 
 
