@@ -21,10 +21,8 @@ bot = Bot(
 dp = Dispatcher()
 
 pending_users = {}
-CAPTCHA_TIMEOUT = 60
-
-passed_count = 0
-failed_count = 0
+passed_users = set()
+failed_users = set()
 
 
 def user_tag(user):
@@ -33,7 +31,7 @@ def user_tag(user):
     return f"<a href='tg://user?id={user.id}'>{user.full_name}</a>"
 
 
-def build_captcha():
+def build_captcha(user_id):
     a = random.randint(1, 9)
     b = random.randint(1, 9)
     answer = a + b
@@ -43,8 +41,12 @@ def build_captcha():
 
     kb = InlineKeyboardBuilder()
     for opt in options:
-        kb.button(text=str(opt), callback_data=f"captcha:{opt}")
+        kb.button(
+            text=str(opt),
+            callback_data=f"captcha:{user_id}:{opt}"
+        )
     kb.adjust(len(options))
+
     return f"{a} + {b} = ?", answer, kb.as_markup()
 
 
@@ -56,7 +58,10 @@ async def on_user_join(event: ChatMemberUpdated):
 
     user = event.new_chat_member.user
 
-    question, answer, keyboard = build_captcha()
+    if user.id in passed_users:
+        return
+
+    question, answer, keyboard = build_captcha(user.id)
     pending_users[user.id] = answer
 
     await bot.restrict_chat_member(
@@ -65,59 +70,39 @@ async def on_user_join(event: ChatMemberUpdated):
         ChatPermissions(can_send_messages=False)
     )
 
-    msg = await bot.send_message(
+    await bot.send_message(
         chat_id,
         f"👋 <b>{user.full_name}</b>, чтобы получить доступ к чату, реши капчу:\n\n<b>{question}</b>",
         reply_markup=keyboard
     )
 
-    async def timeout():
-        global failed_count
-        await asyncio.sleep(CAPTCHA_TIMEOUT)
-        if user.id in pending_users:
-            pending_users.pop(user.id, None)
-            failed_count += 1
-
-            print(f"[BANNED] user_id={user.id} | username=@{user.username}")
-
-            await bot.ban_chat_member(chat_id, user.id)
-            await bot.unban_chat_member(chat_id, user.id)
-
-            try:
-                await msg.delete()
-            except:
-                pass
-
-            await bot.send_message(
-                chat_id,
-                f"❌ {user_tag(user)} провалил испытание"
-            )
-
-    asyncio.create_task(timeout())
-
 
 @dp.callback_query(F.data.startswith("captcha:"))
 async def captcha_handler(callback):
-    global passed_count
-
     chat_id = callback.message.chat.id
     if chat_id not in ALLOWED_CHATS:
         return
 
-    user_id = callback.from_user.id
-    value = int(callback.data.split(":")[1])
+    _, target_user_id, value = callback.data.split(":")
+    target_user_id = int(target_user_id)
+    value = int(value)
 
-    if user_id not in pending_users:
+    if callback.from_user.id != target_user_id:
+        await callback.answer("Это не твоя проверка", show_alert=True)
+        return
+
+    if target_user_id not in pending_users:
         await callback.answer("Проверка уже завершена")
         return
 
-    if value == pending_users[user_id]:
-        pending_users.pop(user_id, None)
-        passed_count += 1
+    if value == pending_users[target_user_id]:
+        pending_users.pop(target_user_id, None)
+        passed_users.add(target_user_id)
+        failed_users.discard(target_user_id)
 
         await bot.restrict_chat_member(
             chat_id,
-            user_id,
+            target_user_id,
             ChatPermissions(
                 can_send_messages=True,
                 can_send_media_messages=True,
@@ -133,14 +118,12 @@ async def captcha_handler(callback):
 
         await bot.send_message(
             chat_id,
-            f"✅ {user_tag(callback.from_user)} справился с испытанием"
+            f"✅ {user_tag(callback.from_user)} получил доступ к чату"
         )
 
-        print(f"[PASSED] user_id={user_id}")
         await callback.answer("Проверка пройдена")
-
     else:
-        print(f"[WRONG CAPTCHA] user_id={user_id}")
+        failed_users.add(target_user_id)
         await callback.answer("❌ Неверно", show_alert=True)
 
 
@@ -151,8 +134,9 @@ async def stats_cmd(message):
 
     await message.reply(
         f"📊 Статистика бота:\n"
-        f"✅ Справились с испытанием: <b>{passed_count}</b>\n"
-        f"❌ Провалили испытание: <b>{failed_count}</b>"
+        f"⏳ Ожидают: <b>{len(pending_users)}</b>\n"
+        f"✅ Прошли: <b>{len(passed_users)}</b>\n"
+        f"❌ Не прошли (были ошибки): <b>{len(failed_users)}</b>"
     )
 
 
