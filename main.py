@@ -14,7 +14,15 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
 from aiogram.filters import ChatMemberUpdatedFilter, Command, IS_MEMBER, IS_NOT_MEMBER
-from aiogram.types import ChatMemberUpdated, ChatPermissions, Message
+from aiogram.types import (
+    ChatMemberUpdated,
+    ChatPermissions,
+    Message,
+    MessageReactionUpdated,
+    ReactionTypeCustomEmoji,
+    ReactionTypeEmoji,
+    ReactionTypePaid,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -129,6 +137,14 @@ DECISION_CUES = ("решили", "договорились", "итог", "буд
 POSITIVE_WORDS = {"хорошо", "отлично", "супер", "класс", "спасибо", "done", "ok", "готово"}
 NEGATIVE_WORDS = {"плохо", "ошибка", "сломалось", "проблема", "критично", "bug", "fail"}
 ANSWER_CUES = ("сделаю", "сделал", "готово", "да", "нет", "потому", "проверил", "исправил")
+EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F1E6-\U0001F1FF"
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000026FF"
+    "\U00002700-\U000027BF"
+    "]"
+)
 
 
 def user_tag(user):
@@ -188,6 +204,40 @@ def tokenize(text: str) -> list[str]:
     return [token for token in tokens if token not in STOP_WORDS and not token.isdigit()]
 
 
+def extract_emojis(text: str) -> list[str]:
+    return EMOJI_PATTERN.findall(text)
+
+
+def is_emoji_only_text(text: str) -> bool:
+    if not text.strip():
+        return False
+    if not extract_emojis(text):
+        return False
+    normalized = re.sub(r"[\s\u200d\ufe0f]", "", text)
+    normalized = EMOJI_PATTERN.sub("", normalized)
+    return normalized == ""
+
+
+def reaction_key(reaction: object) -> str:
+    if isinstance(reaction, ReactionTypeEmoji):
+        return reaction.emoji
+    if isinstance(reaction, ReactionTypeCustomEmoji):
+        return f"custom:{reaction.custom_emoji_id}"
+    if isinstance(reaction, ReactionTypePaid):
+        return "paid"
+    return "unknown"
+
+
+def reaction_label(value: str) -> str:
+    if value.startswith("custom:"):
+        return "custom_emoji"
+    if value == "paid":
+        return "paid"
+    if value == "unknown":
+        return "unknown"
+    return value
+
+
 @dataclass(slots=True)
 class StoredMessage:
     chat_id: int
@@ -212,6 +262,16 @@ class ChatSetting:
     summary_time: str
     enabled: bool
     last_sent_date: str | None
+
+
+@dataclass(slots=True)
+class DayEngagementStat:
+    sticker_count: int
+    reaction_count: int
+    emoji_count: int
+    emoji_messages: int
+    emoji_only_messages: int
+    top_reactions: list[tuple[str, int]]
 
 
 class SummaryStorage:
@@ -244,6 +304,25 @@ class SummaryStorage:
         )
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(timestamp)"
+        )
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER,
+                event_type TEXT NOT NULL,
+                event_value TEXT,
+                quantity INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL
+            )
+            """
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_chat_time ON events(chat_id, timestamp)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_time ON events(timestamp)"
         )
         await self._conn.execute(
             """
@@ -362,10 +441,57 @@ class SummaryStorage:
             )
             await self._conn.commit()
 
+    async def add_event(
+        self,
+        chat_id: int,
+        user_id: int | None,
+        event_type: str,
+        event_value: str | None,
+        quantity: int,
+        timestamp: int,
+    ) -> None:
+        if quantity <= 0:
+            return
+
+        assert self._conn is not None
+        cutoff = timestamp - self._ttl_seconds
+        async with self._lock:
+            await self._conn.execute("DELETE FROM messages WHERE timestamp < ?", (cutoff,))
+            await self._conn.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+            await self._conn.execute(
+                """
+                INSERT INTO events(chat_id, user_id, event_type, event_value, quantity, timestamp)
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (chat_id, user_id, event_type, event_value, quantity, timestamp),
+            )
+            await self._conn.commit()
+
+    async def add_sticker_event(self, chat_id: int, user_id: int, sticker_emoji: str, timestamp: int) -> None:
+        await self.add_event(
+            chat_id=chat_id,
+            user_id=user_id,
+            event_type="sticker",
+            event_value=sticker_emoji,
+            quantity=1,
+            timestamp=timestamp,
+        )
+
+    async def add_reaction_event(self, chat_id: int, reaction: str, quantity: int, timestamp: int) -> None:
+        await self.add_event(
+            chat_id=chat_id,
+            user_id=None,
+            event_type="reaction",
+            event_value=reaction,
+            quantity=quantity,
+            timestamp=timestamp,
+        )
+
     async def clear_chat_messages(self, chat_id: int) -> None:
         assert self._conn is not None
         async with self._lock:
             await self._conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+            await self._conn.execute("DELETE FROM events WHERE chat_id = ?", (chat_id,))
             await self._conn.commit()
 
     async def prune_expired_messages(self, now_ts: int) -> None:
@@ -373,6 +499,7 @@ class SummaryStorage:
         cutoff = now_ts - self._ttl_seconds
         async with self._lock:
             await self._conn.execute("DELETE FROM messages WHERE timestamp < ?", (cutoff,))
+            await self._conn.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
             await self._conn.commit()
 
     async def get_messages_between(self, chat_id: int, start_ts: int, end_ts: int) -> list[StoredMessage]:
@@ -427,6 +554,44 @@ class SummaryStorage:
             for row in rows
         ]
 
+    async def get_engagement_events(
+        self,
+        chat_id: int,
+        start_ts: int,
+        end_ts: int,
+    ) -> tuple[int, int, list[tuple[str, int]]]:
+        assert self._conn is not None
+        async with self._lock:
+            async with self._conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN event_type = 'sticker' THEN quantity ELSE 0 END), 0) AS sticker_count,
+                    COALESCE(SUM(CASE WHEN event_type = 'reaction' THEN quantity ELSE 0 END), 0) AS reaction_count
+                FROM events
+                WHERE chat_id = ? AND timestamp >= ? AND timestamp <= ?
+                """,
+                (chat_id, start_ts, end_ts),
+            ) as cursor:
+                totals_row = await cursor.fetchone()
+
+            async with self._conn.execute(
+                """
+                SELECT event_value, SUM(quantity) AS total
+                FROM events
+                WHERE chat_id = ? AND timestamp >= ? AND timestamp <= ? AND event_type = 'reaction'
+                GROUP BY event_value
+                ORDER BY total DESC
+                LIMIT 5
+                """,
+                (chat_id, start_ts, end_ts),
+            ) as cursor:
+                reaction_rows = await cursor.fetchall()
+
+        sticker_count = int(totals_row["sticker_count"]) if totals_row else 0
+        reaction_count = int(totals_row["reaction_count"]) if totals_row else 0
+        top_reactions = [(row["event_value"] or "unknown", int(row["total"])) for row in reaction_rows]
+        return sticker_count, reaction_count, top_reactions
+
 
 class DailySummaryService:
     def __init__(self, storage_backend: SummaryStorage, tz: ZoneInfo, min_messages: int) -> None:
@@ -445,11 +610,41 @@ class DailySummaryService:
             return f"@{stat.username}"
         return stat.full_name or str(stat.user_id)
 
-    async def _collect_day_data(self, chat_id: int) -> tuple[list[StoredMessage], list[ParticipantStat]]:
+    def _build_emoji_stats(self, messages: list[StoredMessage]) -> tuple[int, int, int]:
+        emoji_total = 0
+        emoji_messages = 0
+        emoji_only_messages = 0
+
+        for item in messages:
+            emojis = extract_emojis(item.text)
+            if not emojis:
+                continue
+            emoji_messages += 1
+            emoji_total += len(emojis)
+            if is_emoji_only_text(item.text):
+                emoji_only_messages += 1
+        return emoji_total, emoji_messages, emoji_only_messages
+
+    async def _collect_day_data(
+        self,
+        chat_id: int,
+    ) -> tuple[list[StoredMessage], list[ParticipantStat], DayEngagementStat]:
         start_ts, end_ts = self._day_bounds()
         messages = await self.storage.get_messages_between(chat_id, start_ts, end_ts)
         participants = await self.storage.get_top_participants(chat_id, start_ts, end_ts, limit=5)
-        return messages, participants
+        sticker_count, reaction_count, top_reactions = await self.storage.get_engagement_events(
+            chat_id, start_ts, end_ts
+        )
+        emoji_count, emoji_messages, emoji_only_messages = self._build_emoji_stats(messages)
+        engagement = DayEngagementStat(
+            sticker_count=sticker_count,
+            reaction_count=reaction_count,
+            emoji_count=emoji_count,
+            emoji_messages=emoji_messages,
+            emoji_only_messages=emoji_only_messages,
+            top_reactions=top_reactions,
+        )
+        return messages, participants, engagement
 
     def _extract_topics(self, messages: list[StoredMessage], limit: int = 3) -> list[str]:
         tokens = []
@@ -570,15 +765,21 @@ class DailySummaryService:
         return f"В целом тон был {mood}. {activity}"
 
     async def build_stats_text(self, chat_id: int) -> str:
-        messages, participants = await self._collect_day_data(chat_id)
-        total = len(messages)
+        messages, participants, engagement = await self._collect_day_data(chat_id)
+        text_total = len(messages)
+        total_activity = text_total + engagement.sticker_count + engagement.reaction_count
 
-        if total == 0:
-            return "📊 За сегодня в чате пока нет текстовых сообщений."
+        if total_activity == 0:
+            return "📊 За сегодня в чате пока нет данных активности."
 
         lines = [
             "📊 Краткая статистика за сегодня:",
-            f"Всего сообщений: <b>{total}</b>",
+            f"Текстовых сообщений: <b>{text_total}</b>",
+            f"Стикеров: <b>{engagement.sticker_count}</b>",
+            f"Эмодзи в текстах: <b>{engagement.emoji_count}</b>",
+            f"Сообщений с эмодзи: <b>{engagement.emoji_messages}</b>",
+            f"Сообщений только из эмодзи: <b>{engagement.emoji_only_messages}</b>",
+            f"Реакций: <b>{engagement.reaction_count}</b>",
             "Самые активные участники:",
         ]
 
@@ -588,16 +789,22 @@ class DailySummaryService:
         else:
             lines.append("— Нет данных")
 
-        if total < self.min_messages:
+        if engagement.top_reactions:
+            lines.append("Топ реакций:")
+            for reaction, count in engagement.top_reactions[:3]:
+                lines.append(f"— {reaction_label(reaction)}: {count}")
+
+        if text_total < self.min_messages:
             lines.append("")
             lines.append("Сегодня в чате было мало сообщений для полноценной аналитики.")
         return "\n".join(lines)
 
     async def build_summary_text(self, chat_id: int) -> str:
-        messages, participants = await self._collect_day_data(chat_id)
-        total = len(messages)
+        messages, participants, engagement = await self._collect_day_data(chat_id)
+        text_total = len(messages)
+        activity_total = text_total + engagement.sticker_count + engagement.reaction_count
 
-        if total < self.min_messages:
+        if text_total < self.min_messages and activity_total < self.min_messages:
             return "Сегодня в чате было мало сообщений для полноценной аналитики."
 
         topics = self._extract_topics(messages, limit=3)
@@ -618,7 +825,11 @@ class DailySummaryService:
             [
                 "",
                 "Активность:",
-                f"Всего сообщений: {total}",
+                f"Текстовых сообщений: {text_total}",
+                f"Стикеров: {engagement.sticker_count}",
+                f"Эмодзи в текстах: {engagement.emoji_count}",
+                f"Сообщений только из эмодзи: {engagement.emoji_only_messages}",
+                f"Реакций: {engagement.reaction_count}",
                 "Самые активные участники:",
             ]
         )
@@ -627,6 +838,11 @@ class DailySummaryService:
                 lines.append(f"— {self._display_name(stat)}: {stat.message_count} сообщений")
         else:
             lines.append("— Нет данных")
+
+        if engagement.top_reactions:
+            lines.append("Топ реакций:")
+            for reaction, count in engagement.top_reactions[:3]:
+                lines.append(f"— {reaction_label(reaction)}: {count}")
 
         lines.extend(["", "Важные моменты:"])
         if key_points:
@@ -706,6 +922,18 @@ class SchedulerService:
 async def is_chat_admin(chat_id: int, user_id: int) -> bool:
     member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
     return member.status in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}
+
+
+async def handle_pending_user_message(message: Message) -> bool:
+    if message.from_user is None:
+        return False
+    if message.from_user.id not in pending_users:
+        return False
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    return True
 
 
 @dp.chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER))
@@ -890,11 +1118,7 @@ async def collect_text_messages(message: Message):
     if message.from_user is None:
         return
 
-    if message.from_user.id in pending_users:
-        try:
-            await message.delete()
-        except Exception:
-            pass
+    if await handle_pending_user_message(message):
         return
 
     if not message.text or message.text.startswith("/"):
@@ -913,6 +1137,51 @@ async def collect_text_messages(message: Message):
         text=message.text,
         timestamp=timestamp,
     )
+
+
+@dp.message(F.sticker)
+async def collect_sticker_messages(message: Message):
+    if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
+        return
+    if message.from_user is None:
+        return
+
+    if await handle_pending_user_message(message):
+        return
+
+    assert storage is not None
+    sticker_emoji = message.sticker.emoji if message.sticker and message.sticker.emoji else "sticker"
+    await storage.add_sticker_event(
+        chat_id=message.chat.id,
+        user_id=message.from_user.id,
+        sticker_emoji=sticker_emoji,
+        timestamp=int(message.date.timestamp()),
+    )
+
+
+@dp.message_reaction()
+async def collect_reaction_updates(update: MessageReactionUpdated):
+    chat_id = update.chat.id
+    if not is_allowed_chat(chat_id):
+        return
+    if update.chat.type not in GROUP_CHAT_TYPES:
+        return
+
+    old_counter = Counter(reaction_key(item) for item in update.old_reaction)
+    new_counter = Counter(reaction_key(item) for item in update.new_reaction)
+    delta = new_counter - old_counter
+    if not delta:
+        return
+
+    assert storage is not None
+    timestamp = int(update.date.timestamp())
+    for key, count in delta.items():
+        await storage.add_reaction_event(
+            chat_id=chat_id,
+            reaction=key,
+            quantity=int(count),
+            timestamp=timestamp,
+        )
 
 
 async def setup_services() -> None:
@@ -944,8 +1213,9 @@ async def shutdown_services() -> None:
 async def main():
     logging.basicConfig(level=logging.INFO)
     await setup_services()
+    allowed_updates = dp.resolve_used_update_types()
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, allowed_updates=allowed_updates)
     finally:
         await shutdown_services()
 
