@@ -1,28 +1,134 @@
 import asyncio
-import random
+import logging
 import os
+import random
+import re
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import aiosqlite
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import ChatPermissions, ChatMemberUpdated
-from aiogram.filters import ChatMemberUpdatedFilter, IS_NOT_MEMBER, IS_MEMBER, Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
+from aiogram.filters import ChatMemberUpdatedFilter, Command, IS_MEMBER, IS_NOT_MEMBER
+from aiogram.types import ChatMemberUpdated, ChatPermissions, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set in environment variables")
 
-ALLOWED_CHATS = [-1002619489118, -1003237014529, -1003643412493]
+DEFAULT_ALLOWED_CHATS = [-1002619489118, -1003237014529, -1003643412493]
+SUMMARY_STORAGE_PATH = os.getenv("SUMMARY_STORAGE_PATH", "daily_summary.db")
+SUMMARY_DEFAULT_TIME = os.getenv("SUMMARY_DEFAULT_TIME", "23:59")
+SUMMARY_TIMEZONE = os.getenv("SUMMARY_TIMEZONE", "Europe/Moscow")
+SUMMARY_MIN_MESSAGES = int(os.getenv("SUMMARY_MIN_MESSAGES", "12"))
+MESSAGE_TTL_SECONDS = 24 * 60 * 60
+
+
+def parse_allowed_chats() -> list[int]:
+    raw = os.getenv("ALLOWED_CHATS")
+    if not raw:
+        return DEFAULT_ALLOWED_CHATS
+
+    values = []
+    for item in raw.replace(";", ",").split(","):
+        chunk = item.strip()
+        if not chunk:
+            continue
+        values.append(int(chunk))
+    return values
+
+
+ALLOWED_CHATS = parse_allowed_chats()
+GROUP_CHAT_TYPES = {ChatType.GROUP, ChatType.SUPERGROUP}
 
 bot = Bot(
     token=TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
 
 pending_users = {}
 passed_users = set()
 failed_users = set()
+
+storage = None
+summary_service = None
+scheduler_service = None
+
+STOP_WORDS = {
+    "это",
+    "как",
+    "что",
+    "чтобы",
+    "или",
+    "для",
+    "когда",
+    "где",
+    "почему",
+    "который",
+    "которая",
+    "которые",
+    "если",
+    "потом",
+    "пока",
+    "сегодня",
+    "вчера",
+    "завтра",
+    "просто",
+    "очень",
+    "будет",
+    "быть",
+    "можно",
+    "нужно",
+    "надо",
+    "тоже",
+    "еще",
+    "ещё",
+    "также",
+    "через",
+    "этот",
+    "эта",
+    "эти",
+    "того",
+    "того",
+    "про",
+    "после",
+    "перед",
+    "под",
+    "над",
+    "при",
+    "без",
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "that",
+    "this",
+    "have",
+    "has",
+    "will",
+    "would",
+    "can",
+    "could",
+    "just",
+    "about",
+    "you",
+    "your",
+    "our",
+    "they",
+    "them",
+}
+TASK_CUES = ("нужно", "надо", "сделать", "добавить", "проверить", "починить", "todo", "задача")
+DECISION_CUES = ("решили", "договорились", "итог", "будем", "приняли", "выбрали", "согласовали")
+POSITIVE_WORDS = {"хорошо", "отлично", "супер", "класс", "спасибо", "done", "ok", "готово"}
+NEGATIVE_WORDS = {"плохо", "ошибка", "сломалось", "проблема", "критично", "bug", "fail"}
+ANSWER_CUES = ("сделаю", "сделал", "готово", "да", "нет", "потому", "проверил", "исправил")
 
 
 def user_tag(user):
@@ -43,21 +149,572 @@ def build_captcha(user_id):
     for opt in options:
         kb.button(
             text=str(opt),
-            callback_data=f"captcha:{user_id}:{opt}"
+            callback_data=f"captcha:{user_id}:{opt}",
         )
     kb.adjust(len(options))
 
     return f"{a} + {b} = ?", answer, kb.as_markup()
 
 
+def is_group_chat(message: Message) -> bool:
+    return message.chat.type in GROUP_CHAT_TYPES
+
+
+def is_allowed_chat(chat_id: int) -> bool:
+    return chat_id in ALLOWED_CHATS
+
+
+def normalize_time(value: str) -> str | None:
+    value = value.strip()
+    if not re.match(r"^\d{1,2}:\d{2}$", value):
+        return None
+    hh, mm = value.split(":")
+    hour = int(hh)
+    minute = int(mm)
+    if hour > 23 or minute > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def compact_line(text: str, limit: int = 120) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return f"{cleaned[: limit - 1]}…"
+
+
+def tokenize(text: str) -> list[str]:
+    tokens = re.findall(r"[A-Za-zА-Яа-я0-9_]{3,}", text.lower())
+    return [token for token in tokens if token not in STOP_WORDS and not token.isdigit()]
+
+
+@dataclass(slots=True)
+class StoredMessage:
+    chat_id: int
+    user_id: int
+    username: str
+    full_name: str
+    text: str
+    timestamp: int
+
+
+@dataclass(slots=True)
+class ParticipantStat:
+    user_id: int
+    username: str
+    full_name: str
+    message_count: int
+
+
+@dataclass(slots=True)
+class ChatSetting:
+    chat_id: int
+    summary_time: str
+    enabled: bool
+    last_sent_date: str | None
+
+
+class SummaryStorage:
+    def __init__(self, db_path: str, ttl_seconds: int) -> None:
+        self._db_path = db_path
+        self._ttl_seconds = ttl_seconds
+        self._conn: aiosqlite.Connection | None = None
+        self._lock = asyncio.Lock()
+
+    async def initialize(self) -> None:
+        self._conn = await aiosqlite.connect(self._db_path)
+        self._conn.row_factory = aiosqlite.Row
+        await self._conn.execute("PRAGMA journal_mode=WAL;")
+        await self._conn.execute("PRAGMA synchronous=NORMAL;")
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                full_name TEXT NOT NULL,
+                text TEXT NOT NULL,
+                timestamp INTEGER NOT NULL
+            )
+            """
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_id, timestamp)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(timestamp)"
+        )
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_settings (
+                chat_id INTEGER PRIMARY KEY,
+                summary_time TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_sent_date TEXT
+            )
+            """
+        )
+        await self._conn.commit()
+
+    async def close(self) -> None:
+        if self._conn is None:
+            return
+        await self._conn.close()
+        self._conn = None
+
+    async def ensure_chat_setting(self, chat_id: int, summary_time: str) -> None:
+        assert self._conn is not None
+        async with self._lock:
+            await self._conn.execute(
+                """
+                INSERT INTO chat_settings(chat_id, summary_time, enabled, last_sent_date)
+                VALUES(?, ?, 1, NULL)
+                ON CONFLICT(chat_id) DO NOTHING
+                """,
+                (chat_id, summary_time),
+            )
+            await self._conn.commit()
+
+    async def set_chat_setting(self, chat_id: int, summary_time: str, enabled: bool) -> None:
+        assert self._conn is not None
+        async with self._lock:
+            await self._conn.execute(
+                """
+                INSERT INTO chat_settings(chat_id, summary_time, enabled, last_sent_date)
+                VALUES(?, ?, ?, NULL)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    summary_time=excluded.summary_time,
+                    enabled=excluded.enabled
+                """,
+                (chat_id, summary_time, int(enabled)),
+            )
+            await self._conn.commit()
+
+    async def get_chat_setting(self, chat_id: int, default_time: str) -> ChatSetting:
+        assert self._conn is not None
+        async with self._lock:
+            async with self._conn.execute(
+                "SELECT chat_id, summary_time, enabled, last_sent_date FROM chat_settings WHERE chat_id = ?",
+                (chat_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        if row is None:
+            return ChatSetting(chat_id=chat_id, summary_time=default_time, enabled=True, last_sent_date=None)
+        return ChatSetting(
+            chat_id=row["chat_id"],
+            summary_time=row["summary_time"],
+            enabled=bool(row["enabled"]),
+            last_sent_date=row["last_sent_date"],
+        )
+
+    async def get_enabled_chat_settings(self) -> list[ChatSetting]:
+        assert self._conn is not None
+        async with self._lock:
+            async with self._conn.execute(
+                """
+                SELECT chat_id, summary_time, enabled, last_sent_date
+                FROM chat_settings
+                WHERE enabled = 1
+                """
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+        return [
+            ChatSetting(
+                chat_id=row["chat_id"],
+                summary_time=row["summary_time"],
+                enabled=bool(row["enabled"]),
+                last_sent_date=row["last_sent_date"],
+            )
+            for row in rows
+        ]
+
+    async def mark_summary_sent(self, chat_id: int, sent_date: str) -> None:
+        assert self._conn is not None
+        async with self._lock:
+            await self._conn.execute(
+                "UPDATE chat_settings SET last_sent_date = ? WHERE chat_id = ?",
+                (sent_date, chat_id),
+            )
+            await self._conn.commit()
+
+    async def add_message(
+        self,
+        chat_id: int,
+        user_id: int,
+        username: str,
+        full_name: str,
+        text: str,
+        timestamp: int,
+    ) -> None:
+        assert self._conn is not None
+        cutoff = timestamp - self._ttl_seconds
+        async with self._lock:
+            await self._conn.execute("DELETE FROM messages WHERE timestamp < ?", (cutoff,))
+            await self._conn.execute(
+                """
+                INSERT INTO messages(chat_id, user_id, username, full_name, text, timestamp)
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (chat_id, user_id, username, full_name, text, timestamp),
+            )
+            await self._conn.commit()
+
+    async def clear_chat_messages(self, chat_id: int) -> None:
+        assert self._conn is not None
+        async with self._lock:
+            await self._conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+            await self._conn.commit()
+
+    async def prune_expired_messages(self, now_ts: int) -> None:
+        assert self._conn is not None
+        cutoff = now_ts - self._ttl_seconds
+        async with self._lock:
+            await self._conn.execute("DELETE FROM messages WHERE timestamp < ?", (cutoff,))
+            await self._conn.commit()
+
+    async def get_messages_between(self, chat_id: int, start_ts: int, end_ts: int) -> list[StoredMessage]:
+        assert self._conn is not None
+        async with self._lock:
+            async with self._conn.execute(
+                """
+                SELECT chat_id, user_id, username, full_name, text, timestamp
+                FROM messages
+                WHERE chat_id = ? AND timestamp >= ? AND timestamp <= ?
+                ORDER BY timestamp ASC
+                """,
+                (chat_id, start_ts, end_ts),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+        return [
+            StoredMessage(
+                chat_id=row["chat_id"],
+                user_id=row["user_id"],
+                username=row["username"],
+                full_name=row["full_name"],
+                text=row["text"],
+                timestamp=row["timestamp"],
+            )
+            for row in rows
+        ]
+
+    async def get_top_participants(self, chat_id: int, start_ts: int, end_ts: int, limit: int = 5) -> list[ParticipantStat]:
+        assert self._conn is not None
+        async with self._lock:
+            async with self._conn.execute(
+                """
+                SELECT user_id, username, full_name, COUNT(*) AS message_count
+                FROM messages
+                WHERE chat_id = ? AND timestamp >= ? AND timestamp <= ?
+                GROUP BY user_id
+                ORDER BY message_count DESC
+                LIMIT ?
+                """,
+                (chat_id, start_ts, end_ts, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+        return [
+            ParticipantStat(
+                user_id=row["user_id"],
+                username=row["username"],
+                full_name=row["full_name"],
+                message_count=row["message_count"],
+            )
+            for row in rows
+        ]
+
+
+class DailySummaryService:
+    def __init__(self, storage_backend: SummaryStorage, tz: ZoneInfo, min_messages: int) -> None:
+        self.storage = storage_backend
+        self.tz = tz
+        self.min_messages = min_messages
+
+    def _day_bounds(self) -> tuple[int, int]:
+        now_local = datetime.now(self.tz)
+        day_start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        return int(day_start_local.timestamp()), int(now_local.timestamp())
+
+    @staticmethod
+    def _display_name(stat: ParticipantStat) -> str:
+        if stat.username:
+            return f"@{stat.username}"
+        return stat.full_name or str(stat.user_id)
+
+    async def _collect_day_data(self, chat_id: int) -> tuple[list[StoredMessage], list[ParticipantStat]]:
+        start_ts, end_ts = self._day_bounds()
+        messages = await self.storage.get_messages_between(chat_id, start_ts, end_ts)
+        participants = await self.storage.get_top_participants(chat_id, start_ts, end_ts, limit=5)
+        return messages, participants
+
+    def _extract_topics(self, messages: list[StoredMessage], limit: int = 3) -> list[str]:
+        tokens = []
+        for item in messages:
+            tokens.extend(tokenize(item.text))
+        if not tokens:
+            return []
+        freq = Counter(tokens)
+        topics = []
+        for token, _ in freq.most_common(limit):
+            topics.append(token.capitalize())
+        return topics
+
+    def _extract_key_points(self, messages: list[StoredMessage], limit: int = 3) -> list[str]:
+        points = []
+        for item in messages:
+            text = compact_line(item.text)
+            lower = text.lower()
+            if any(cue in lower for cue in DECISION_CUES):
+                points.append(text)
+                continue
+            if any(cue in lower for cue in TASK_CUES):
+                points.append(text)
+                continue
+            if len(text.split()) >= 8:
+                points.append(text)
+        unique = []
+        seen = set()
+        for point in points:
+            key = point.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(point)
+            if len(unique) >= limit:
+                break
+        return unique
+
+    def _extract_tasks_and_agreements(self, messages: list[StoredMessage], limit: int = 3) -> list[str]:
+        items = []
+        for message in messages:
+            text = compact_line(message.text)
+            lower = text.lower()
+            if any(cue in lower for cue in TASK_CUES) or any(cue in lower for cue in DECISION_CUES):
+                items.append(text)
+
+        unique = []
+        seen = set()
+        for item in items:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+            if len(unique) >= limit:
+                break
+        return unique
+
+    def _is_question_answered(self, messages: list[StoredMessage], idx: int) -> bool:
+        source = messages[idx]
+        for next_message in messages[idx + 1 : idx + 9]:
+            if next_message.user_id == source.user_id:
+                continue
+            candidate = next_message.text.strip().lower()
+            if not candidate:
+                continue
+            if "?" not in candidate:
+                return True
+            if any(cue in candidate for cue in ANSWER_CUES):
+                return True
+        return False
+
+    def _extract_open_questions(self, messages: list[StoredMessage], limit: int = 3) -> list[str]:
+        questions = []
+        for idx, item in enumerate(messages):
+            text = item.text.strip()
+            if "?" not in text:
+                continue
+            if self._is_question_answered(messages, idx):
+                continue
+            questions.append(compact_line(text))
+
+        unique = []
+        seen = set()
+        for question in questions:
+            key = question.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(question)
+            if len(unique) >= limit:
+                break
+        return unique
+
+    def _tone(self, messages: list[StoredMessage]) -> str:
+        pos = 0
+        neg = 0
+        for item in messages:
+            lower = item.text.lower()
+            pos += sum(1 for token in POSITIVE_WORDS if token in lower)
+            neg += sum(1 for token in NEGATIVE_WORDS if token in lower)
+
+        score = pos - neg
+        if score >= 2:
+            mood = "в целом позитивным и рабочим"
+        elif score <= -2:
+            mood = "напряженным, с акцентом на проблемы"
+        else:
+            mood = "нейтральным и рабочим"
+
+        volume = len(messages)
+        if volume >= 120:
+            activity = "Обсуждение было очень активным."
+        elif volume >= 40:
+            activity = "Обсуждение было активным."
+        else:
+            activity = "Обсуждение было спокойным."
+        return f"В целом тон был {mood}. {activity}"
+
+    async def build_stats_text(self, chat_id: int) -> str:
+        messages, participants = await self._collect_day_data(chat_id)
+        total = len(messages)
+
+        if total == 0:
+            return "📊 За сегодня в чате пока нет текстовых сообщений."
+
+        lines = [
+            "📊 Краткая статистика за сегодня:",
+            f"Всего сообщений: <b>{total}</b>",
+            "Самые активные участники:",
+        ]
+
+        if participants:
+            for stat in participants:
+                lines.append(f"— {self._display_name(stat)}: {stat.message_count}")
+        else:
+            lines.append("— Нет данных")
+
+        if total < self.min_messages:
+            lines.append("")
+            lines.append("Сегодня в чате было мало сообщений для полноценной аналитики.")
+        return "\n".join(lines)
+
+    async def build_summary_text(self, chat_id: int) -> str:
+        messages, participants = await self._collect_day_data(chat_id)
+        total = len(messages)
+
+        if total < self.min_messages:
+            return "Сегодня в чате было мало сообщений для полноценной аналитики."
+
+        topics = self._extract_topics(messages, limit=3)
+        key_points = self._extract_key_points(messages, limit=3)
+        tasks_and_agreements = self._extract_tasks_and_agreements(messages, limit=3)
+        open_questions = self._extract_open_questions(messages, limit=3)
+        tone = self._tone(messages)
+
+        lines = ["Итоги дня в чате:", ""]
+        lines.append("Сегодня в чате больше всего обсуждали:")
+        if topics:
+            for idx, topic in enumerate(topics, start=1):
+                lines.append(f"{idx}. {topic}")
+        else:
+            lines.append("1. Недостаточно данных для устойчивого выделения тем")
+
+        lines.extend(
+            [
+                "",
+                "Активность:",
+                f"Всего сообщений: {total}",
+                "Самые активные участники:",
+            ]
+        )
+        if participants:
+            for stat in participants:
+                lines.append(f"— {self._display_name(stat)}: {stat.message_count} сообщений")
+        else:
+            lines.append("— Нет данных")
+
+        lines.extend(["", "Важные моменты:"])
+        if key_points:
+            for item in key_points:
+                lines.append(f"— {item}")
+        else:
+            lines.append("— Явные важные решения или идеи не выделены")
+
+        lines.extend(["", "Задачи и договоренности:"])
+        if tasks_and_agreements:
+            for item in tasks_and_agreements:
+                lines.append(f"— {item}")
+        else:
+            lines.append("— Явные задачи или договоренности не зафиксированы")
+
+        lines.extend(["", "Открытые вопросы:"])
+        if open_questions:
+            for question in open_questions:
+                lines.append(f"— {question}")
+        else:
+            lines.append("— Критичных незакрытых вопросов не найдено")
+
+        lines.extend(["", "Тон общения:", tone])
+        return "\n".join(lines)
+
+
+class SchedulerService:
+    def __init__(
+        self,
+        tg_bot: Bot,
+        storage_backend: SummaryStorage,
+        summary_backend: DailySummaryService,
+        tz: ZoneInfo,
+    ) -> None:
+        self.bot = tg_bot
+        self.storage = storage_backend
+        self.summary = summary_backend
+        self.tz = tz
+        self.scheduler = AsyncIOScheduler(timezone=tz)
+
+    def start(self) -> None:
+        self.scheduler.add_job(self._run_auto_summary_tick, "cron", second=0)
+        self.scheduler.add_job(self._cleanup_tick, "interval", minutes=30)
+        self.scheduler.start()
+
+    async def shutdown(self) -> None:
+        if self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
+
+    async def _cleanup_tick(self) -> None:
+        now_ts = int(datetime.now(self.tz).timestamp())
+        await self.storage.prune_expired_messages(now_ts)
+
+    async def _run_auto_summary_tick(self) -> None:
+        now_local = datetime.now(self.tz)
+        current_hm = now_local.strftime("%H:%M")
+        today_str = now_local.date().isoformat()
+
+        settings = await self.storage.get_enabled_chat_settings()
+        for setting in settings:
+            if setting.summary_time != current_hm:
+                continue
+            if setting.last_sent_date == today_str:
+                continue
+
+            summary_text = await self.summary.build_summary_text(setting.chat_id)
+            try:
+                await self.bot.send_message(setting.chat_id, summary_text)
+            except Exception:
+                logging.exception("Failed to send daily summary for chat %s", setting.chat_id)
+                continue
+
+            await self.storage.mark_summary_sent(setting.chat_id, today_str)
+            await self.storage.clear_chat_messages(setting.chat_id)
+
+
+async def is_chat_admin(chat_id: int, user_id: int) -> bool:
+    member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+    return member.status in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}
+
+
 @dp.chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER))
 async def on_user_join(event: ChatMemberUpdated):
     chat_id = event.chat.id
-    if chat_id not in ALLOWED_CHATS:
+    if not is_allowed_chat(chat_id):
         return
 
     user = event.new_chat_member.user
-
     if user.id in passed_users:
         return
 
@@ -67,20 +724,22 @@ async def on_user_join(event: ChatMemberUpdated):
     await bot.restrict_chat_member(
         chat_id,
         user.id,
-        ChatPermissions(can_send_messages=False)
+        ChatPermissions(can_send_messages=False),
     )
 
     await bot.send_message(
         chat_id,
         f"👋 <b>{user.full_name}</b>, чтобы получить доступ к чату, реши капчу:\n\n<b>{question}</b>",
-        reply_markup=keyboard
+        reply_markup=keyboard,
     )
 
 
 @dp.callback_query(F.data.startswith("captcha:"))
 async def captcha_handler(callback):
+    if callback.message is None:
+        return
     chat_id = callback.message.chat.id
-    if chat_id not in ALLOWED_CHATS:
+    if not is_allowed_chat(chat_id):
         return
 
     _, target_user_id, value = callback.data.split(":")
@@ -107,54 +766,188 @@ async def captcha_handler(callback):
                 can_send_messages=True,
                 can_send_media_messages=True,
                 can_send_other_messages=True,
-                can_add_web_page_previews=True
-            )
+                can_add_web_page_previews=True,
+            ),
         )
 
         try:
             await callback.message.delete()
-        except:
+        except Exception:
             pass
 
-        await bot.send_message(
-            chat_id,
-            f"✅ {user_tag(callback.from_user)} прошел испытание"
-        )
-
+        await bot.send_message(chat_id, f"✅ {user_tag(callback.from_user)} прошел испытание")
         await callback.answer("Испытание пройдено")
     else:
         failed_users.add(target_user_id)
         await callback.answer("❌ Неверно", show_alert=True)
 
 
-@dp.message(Command("stats"))
-async def stats_cmd(message):
-    if message.chat.id not in ALLOWED_CHATS:
+@dp.message(Command("captcha_stats"))
+async def captcha_stats_cmd(message: Message):
+    if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
         return
 
     await message.reply(
-        f"📊 Статистика бота:\n"
+        f"📊 Статистика антиспама:\n"
         f"⏳ Ожидают: <b>{len(pending_users)}</b>\n"
         f"✅ Прошли испытание: <b>{len(passed_users)}</b>\n"
-        f"❌ Не прошли испытание (были ошибки): <b>{len(failed_users)}</b>"
+        f"❌ Были ошибки: <b>{len(failed_users)}</b>"
     )
 
 
-@dp.message()
-async def delete_messages_from_pending(message):
-    chat_id = message.chat.id
-    if chat_id not in ALLOWED_CHATS:
+@dp.message(Command("stats"))
+async def stats_cmd(message: Message):
+    if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
+        return
+
+    assert summary_service is not None
+    text = await summary_service.build_stats_text(message.chat.id)
+    await message.reply(text)
+
+
+@dp.message(Command(commands=["summary", "today"]))
+async def summary_cmd(message: Message):
+    if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
+        return
+
+    assert summary_service is not None
+    text = await summary_service.build_summary_text(message.chat.id)
+    await message.reply(text)
+
+
+@dp.message(Command("reset_stats"))
+async def reset_stats_cmd(message: Message):
+    if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
+        return
+    if message.from_user is None:
+        return
+
+    if not await is_chat_admin(message.chat.id, message.from_user.id):
+        await message.reply("Команда доступна только администраторам чата.")
+        return
+
+    assert storage is not None
+    await storage.clear_chat_messages(message.chat.id)
+    await message.reply("Статистика по текущему чату очищена.")
+
+
+@dp.message(Command("summary_settings"))
+async def summary_settings_cmd(message: Message):
+    if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
+        return
+    if message.from_user is None:
+        return
+
+    if not await is_chat_admin(message.chat.id, message.from_user.id):
+        await message.reply("Команда доступна только администраторам чата.")
+        return
+
+    assert storage is not None
+    setting = await storage.get_chat_setting(message.chat.id, SUMMARY_DEFAULT_TIME)
+
+    parts = message.text.split(maxsplit=1) if message.text else ["/summary_settings"]
+    if len(parts) == 1:
+        status = "включена" if setting.enabled else "выключена"
+        await message.reply(
+            f"Текущие настройки сводки:\n"
+            f"Статус: <b>{status}</b>\n"
+            f"Время: <b>{setting.summary_time}</b> ({SUMMARY_TIMEZONE})\n\n"
+            f"Примеры:\n"
+            f"/summary_settings 23:59\n"
+            f"/summary_settings off\n"
+            f"/summary_settings on"
+        )
+        return
+
+    value = parts[1].strip().lower()
+    if value in {"off", "disable", "0"}:
+        await storage.set_chat_setting(message.chat.id, setting.summary_time, enabled=False)
+        await message.reply("Автоматическая дневная сводка выключена.")
+        return
+
+    if value in {"on", "enable", "1"}:
+        await storage.set_chat_setting(message.chat.id, setting.summary_time, enabled=True)
+        await message.reply(
+            f"Автоматическая дневная сводка включена. Время отправки: <b>{setting.summary_time}</b> ({SUMMARY_TIMEZONE})."
+        )
+        return
+
+    normalized = normalize_time(value)
+    if normalized is None:
+        await message.reply("Неверный формат времени. Используйте HH:MM, например 23:59.")
+        return
+
+    await storage.set_chat_setting(message.chat.id, normalized, enabled=True)
+    await message.reply(
+        f"Время автоматической сводки обновлено: <b>{normalized}</b> ({SUMMARY_TIMEZONE})."
+    )
+
+
+@dp.message(F.text)
+async def collect_text_messages(message: Message):
+    if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
+        return
+    if message.from_user is None:
         return
 
     if message.from_user.id in pending_users:
         try:
             await message.delete()
-        except:
+        except Exception:
             pass
+        return
+
+    if not message.text or message.text.startswith("/"):
+        return
+
+    assert storage is not None
+    timestamp = int(message.date.timestamp())
+    username = message.from_user.username or ""
+    full_name = message.from_user.full_name or str(message.from_user.id)
+
+    await storage.add_message(
+        chat_id=message.chat.id,
+        user_id=message.from_user.id,
+        username=username,
+        full_name=full_name,
+        text=message.text,
+        timestamp=timestamp,
+    )
+
+
+async def setup_services() -> None:
+    global storage, summary_service, scheduler_service
+    tz = ZoneInfo(SUMMARY_TIMEZONE)
+
+    storage = SummaryStorage(SUMMARY_STORAGE_PATH, MESSAGE_TTL_SECONDS)
+    await storage.initialize()
+    for chat_id in ALLOWED_CHATS:
+        await storage.ensure_chat_setting(chat_id, SUMMARY_DEFAULT_TIME)
+
+    summary_service = DailySummaryService(storage_backend=storage, tz=tz, min_messages=SUMMARY_MIN_MESSAGES)
+    scheduler_service = SchedulerService(
+        tg_bot=bot,
+        storage_backend=storage,
+        summary_backend=summary_service,
+        tz=tz,
+    )
+    scheduler_service.start()
+
+
+async def shutdown_services() -> None:
+    if scheduler_service is not None:
+        await scheduler_service.shutdown()
+    if storage is not None:
+        await storage.close()
 
 
 async def main():
-    await dp.start_polling(bot)
+    logging.basicConfig(level=logging.INFO)
+    await setup_services()
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await shutdown_services()
 
 
 if __name__ == "__main__":
