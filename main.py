@@ -6,6 +6,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
+from html import escape as html_escape
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -70,6 +71,21 @@ scheduler_service = None
 
 STOP_WORDS = {
     "это",
+    "вот",
+    "там",
+    "тут",
+    "так",
+    "же",
+    "ли",
+    "бы",
+    "ну",
+    "да",
+    "нет",
+    "ага",
+    "ой",
+    "уже",
+    "все",
+    "всё",
     "как",
     "что",
     "чтобы",
@@ -103,7 +119,15 @@ STOP_WORDS = {
     "эта",
     "эти",
     "того",
-    "того",
+    "тому",
+    "тем",
+    "тех",
+    "кто",
+    "кого",
+    "кому",
+    "чем",
+    "чего",
+    "чему",
     "про",
     "после",
     "перед",
@@ -111,6 +135,68 @@ STOP_WORDS = {
     "над",
     "при",
     "без",
+    "меня",
+    "мне",
+    "мной",
+    "мною",
+    "мой",
+    "моя",
+    "мое",
+    "моё",
+    "мои",
+    "тебя",
+    "тебе",
+    "тобой",
+    "твой",
+    "твоя",
+    "твое",
+    "твоё",
+    "твои",
+    "вас",
+    "вам",
+    "вами",
+    "ваш",
+    "ваша",
+    "ваше",
+    "ваши",
+    "нас",
+    "нам",
+    "нами",
+    "наш",
+    "наша",
+    "наше",
+    "наши",
+    "себя",
+    "себе",
+    "собой",
+    "его",
+    "ему",
+    "ним",
+    "ней",
+    "нее",
+    "неё",
+    "она",
+    "оно",
+    "они",
+    "них",
+    "ими",
+    "сам",
+    "сама",
+    "сами",
+    "само",
+    "было",
+    "была",
+    "были",
+    "есть",
+    "раз",
+    "ладно",
+    "короче",
+    "вообще",
+    "именно",
+    "может",
+    "куда",
+    "сюда",
+    "туда",
     "the",
     "and",
     "for",
@@ -145,12 +231,50 @@ EMOJI_PATTERN = re.compile(
     "\U00002700-\U000027BF"
     "]"
 )
+TELEGRAM_MENTION_PATTERN = re.compile(r"(?<![\w/])@([A-Za-z0-9_]{1,32})")
+URL_PATTERN = re.compile(r"https?://\S+|t\.me/\S+")
+RUSSIAN_MONTHS = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
 
 
 def user_tag(user):
     if user.username:
-        return f"@{user.username}"
-    return f"<a href='tg://user?id={user.id}'>{user.full_name}</a>"
+        return html_escape(user.username, quote=False)
+    return safe_output_text(user.full_name or str(user.id))
+
+
+def remove_telegram_mentions(text: str) -> str:
+    return TELEGRAM_MENTION_PATTERN.sub(r"\1", text)
+
+
+def safe_output_text(text: str) -> str:
+    return html_escape(remove_telegram_mentions(text), quote=False)
+
+
+def format_russian_datetime(value: datetime) -> str:
+    month = RUSSIAN_MONTHS[value.month - 1]
+    return f"{value.day} {month} {value.year} в {value:%H:%M}"
+
+
+def ensure_sentence(text: str) -> str:
+    text = text.strip()
+    if not text:
+        return text
+    if text[-1] not in ".!?":
+        return f"{text}."
+    return text
 
 
 def build_captcha(user_id):
@@ -607,8 +731,8 @@ class DailySummaryService:
     @staticmethod
     def _display_name(stat: ParticipantStat) -> str:
         if stat.username:
-            return f"@{stat.username}"
-        return stat.full_name or str(stat.user_id)
+            return safe_output_text(stat.username)
+        return safe_output_text(stat.full_name or str(stat.user_id))
 
     def _build_emoji_stats(self, messages: list[StoredMessage]) -> tuple[int, int, int]:
         emoji_total = 0
@@ -657,6 +781,161 @@ class DailySummaryService:
         for token, _ in freq.most_common(limit):
             topics.append(token.capitalize())
         return topics
+
+    @staticmethod
+    def _clean_summary_source(text: str) -> str:
+        cleaned = remove_telegram_mentions(text)
+        cleaned = URL_PATTERN.sub("", cleaned)
+        cleaned = EMOJI_PATTERN.sub("", cleaned)
+        return compact_line(cleaned, limit=150)
+
+    @staticmethod
+    def _clean_news_point(text: str) -> str:
+        text = compact_line(text, limit=240)
+        text = text.strip(" -–—")
+        return ensure_sentence(text)
+
+    @staticmethod
+    def _chat_title(chat_title: str | None, chat_id: int) -> str:
+        if chat_title:
+            return safe_output_text(compact_line(chat_title, limit=80))
+        return f"Чат {chat_id}"
+
+    @staticmethod
+    def _chat_source(chat_title: str | None, chat_username: str | None, chat_id: int) -> str:
+        if chat_username:
+            return safe_output_text(chat_username)
+        if chat_title:
+            return safe_output_text(compact_line(chat_title, limit=80))
+        return f"chat {chat_id}"
+
+    @staticmethod
+    def _is_news_candidate(text: str, tokens: list[str]) -> bool:
+        if len(text) < 14:
+            return False
+        if len(tokens) < 2:
+            return False
+        if len(text.split()) < 3:
+            return False
+
+        lower = text.lower().strip(" .,!?)(")
+        low_value_phrases = {
+            "доброе утро",
+            "доброй ночи",
+            "спокойной ночи",
+            "всем привет",
+            "привет всем",
+            "спасибо большое",
+        }
+        return lower not in low_value_phrases
+
+    @staticmethod
+    def _is_summary_candidate(text: str, tokens: list[str]) -> bool:
+        if len(text) < 18:
+            return False
+        lower_text = text.lower()
+        if any(cue in lower_text for cue in TASK_CUES) or any(cue in lower_text for cue in DECISION_CUES):
+            return False
+        if len(tokens) < 3:
+            return False
+        words = text.split()
+        if len(words) < 4:
+            return False
+
+        lower = lower_text.strip(" .,!?)(")
+        low_value_phrases = {
+            "доброе утро",
+            "доброй ночи",
+            "спокойной ночи",
+            "всем привет",
+            "привет всем",
+            "спасибо большое",
+        }
+        if lower in low_value_phrases:
+            return False
+        return True
+
+    @staticmethod
+    def _token_similarity(left: set[str], right: set[str]) -> float:
+        if not left or not right:
+            return 0.0
+        return len(left & right) / len(left | right)
+
+    def _extract_discussion_points(self, messages: list[StoredMessage], limit: int = 4) -> list[str]:
+        candidates = []
+        token_freq = Counter()
+
+        for idx, item in enumerate(messages):
+            text = self._clean_summary_source(item.text)
+            if not text or is_emoji_only_text(text):
+                continue
+            tokens = tokenize(text)
+            if not self._is_summary_candidate(text, tokens):
+                continue
+            unique_tokens = set(tokens)
+            candidates.append((idx, text, unique_tokens, tokens))
+            token_freq.update(unique_tokens)
+
+        scored = []
+        for idx, text, unique_tokens, tokens in candidates:
+            score = sum(token_freq[token] for token in unique_tokens)
+            scored.append((score, idx, text, unique_tokens))
+
+        selected = []
+        selected_tokens = []
+        for _, idx, text, unique_tokens in sorted(scored, key=lambda item: (-item[0], item[1])):
+            if any(self._token_similarity(unique_tokens, existing) >= 0.55 for existing in selected_tokens):
+                continue
+            selected.append((idx, text))
+            selected_tokens.append(unique_tokens)
+            if len(selected) >= limit:
+                break
+
+        selected.sort(key=lambda item: item[0])
+        return [text for _, text in selected]
+
+    def _extract_news_points(self, messages: list[StoredMessage], limit: int = 5) -> list[str]:
+        candidates = []
+        token_freq = Counter()
+
+        for idx, item in enumerate(messages):
+            text = self._clean_summary_source(item.text)
+            if not text or is_emoji_only_text(text):
+                continue
+            tokens = tokenize(text)
+            if not self._is_news_candidate(text, tokens):
+                continue
+
+            unique_tokens = set(tokens)
+            candidates.append((idx, text, unique_tokens))
+            token_freq.update(unique_tokens)
+
+        scored = []
+        for idx, text, unique_tokens in candidates:
+            lower = text.lower()
+            score = sum(token_freq[token] for token in unique_tokens)
+            if any(cue in lower for cue in DECISION_CUES):
+                score += 5
+            if any(cue in lower for cue in TASK_CUES):
+                score += 4
+            if "?" in text:
+                score += 1
+            if 50 <= len(text) <= 220:
+                score += 2
+            scored.append((score, idx, text, unique_tokens))
+
+        selected = []
+        selected_tokens = []
+        for _, idx, text, unique_tokens in sorted(scored, key=lambda item: (-item[0], item[1])):
+            if any(self._token_similarity(unique_tokens, existing) >= 0.5 for existing in selected_tokens):
+                continue
+            selected.append((idx, self._clean_news_point(text)))
+            selected_tokens.append(unique_tokens)
+            if len(selected) >= limit:
+                break
+
+        selected.sort(key=lambda item: item[0])
+        return [text for _, text in selected]
 
     def _extract_key_points(self, messages: list[StoredMessage], limit: int = 3) -> list[str]:
         points = []
@@ -799,73 +1078,63 @@ class DailySummaryService:
             lines.append("Сегодня в чате было мало сообщений для полноценной аналитики.")
         return "\n".join(lines)
 
-    async def build_summary_text(self, chat_id: int) -> str:
-        messages, participants, engagement = await self._collect_day_data(chat_id)
+    async def build_summary_text(
+        self,
+        chat_id: int,
+        chat_title: str | None = None,
+        chat_username: str | None = None,
+    ) -> str:
+        messages, _, engagement = await self._collect_day_data(chat_id)
         text_total = len(messages)
         activity_total = text_total + engagement.sticker_count + engagement.reaction_count
+        now_local = datetime.now(self.tz)
+        title = self._chat_title(chat_title, chat_id)
+        source = self._chat_source(chat_title, chat_username, chat_id)
+        date_label = format_russian_datetime(now_local)
 
         if text_total < self.min_messages and activity_total < self.min_messages:
-            return "Сегодня в чате было мало сообщений для полноценной аналитики."
+            return "\n".join(
+                [
+                    f"<b>{title}</b>",
+                    f"{source} • {date_label}",
+                    "Сегодня в чате пока мало содержательных сообщений для нормальной новостной сводки.",
+                    "",
+                    "<b>Cocoon AI Summary</b>",
+                    "Недостаточно данных: за текущие сутки не набралось обсуждений, из которых можно собрать дайджест.",
+                ]
+            )
 
-        topics = self._extract_topics(messages, limit=3)
-        key_points = self._extract_key_points(messages, limit=3)
-        tasks_and_agreements = self._extract_tasks_and_agreements(messages, limit=3)
-        open_questions = self._extract_open_questions(messages, limit=3)
-        tone = self._tone(messages)
+        news_points = self._extract_news_points(messages, limit=5)
+        if not news_points:
+            return "\n".join(
+                [
+                    f"<b>{title}</b>",
+                    f"{source} • {date_label}",
+                    "Сегодня в чате были сообщения, но без устойчивой темы для новостной сводки.",
+                    "",
+                    "<b>Cocoon AI Summary</b>",
+                    "Содержательные новости дня не выделены: сообщения слишком короткие или повторяются без контекста.",
+                ]
+            )
 
-        lines = ["Итоги дня в чате:", ""]
-        lines.append("Сегодня в чате больше всего обсуждали:")
-        if topics:
-            for idx, topic in enumerate(topics, start=1):
-                lines.append(f"{idx}. {topic}")
-        else:
-            lines.append("1. Недостаточно данных для устойчивого выделения тем")
-
-        lines.extend(
-            [
-                "",
-                "Активность:",
-                f"Текстовых сообщений: {text_total}",
-                f"Стикеров: {engagement.sticker_count}",
-                f"Эмодзи в текстах: {engagement.emoji_count}",
-                f"Сообщений только из эмодзи: {engagement.emoji_only_messages}",
-                f"Реакций: {engagement.reaction_count}",
-                "Самые активные участники:",
-            ]
+        lead = ensure_sentence(
+            f"{title} — {safe_output_text(news_points[0])}"
         )
-        if participants:
-            for stat in participants:
-                lines.append(f"— {self._display_name(stat)}: {stat.message_count} сообщений")
-        else:
-            lines.append("— Нет данных")
+        overview = ensure_sentence(
+            f"{title} - дневная новостная сводка чата за текущие сутки. Главное: {safe_output_text(news_points[0])}"
+        )
 
-        if engagement.top_reactions:
-            lines.append("Топ реакций:")
-            for reaction, count in engagement.top_reactions[:3]:
-                lines.append(f"— {reaction_label(reaction)}: {count}")
-
-        lines.extend(["", "Важные моменты:"])
-        if key_points:
-            for item in key_points:
-                lines.append(f"— {item}")
-        else:
-            lines.append("— Явные важные решения или идеи не выделены")
-
-        lines.extend(["", "Задачи и договоренности:"])
-        if tasks_and_agreements:
-            for item in tasks_and_agreements:
-                lines.append(f"— {item}")
-        else:
-            lines.append("— Явные задачи или договоренности не зафиксированы")
-
-        lines.extend(["", "Открытые вопросы:"])
-        if open_questions:
-            for question in open_questions:
-                lines.append(f"— {question}")
-        else:
-            lines.append("— Критичных незакрытых вопросов не найдено")
-
-        lines.extend(["", "Тон общения:", tone])
+        lines = [
+            f"<b>{title}</b>",
+            f"{source} • {date_label}",
+            lead,
+            "",
+            "<b>Cocoon AI Summary</b>",
+            overview,
+            "",
+        ]
+        for point in news_points:
+            lines.append(f"⬤) {safe_output_text(point)}")
         return "\n".join(lines)
 
 
@@ -908,7 +1177,20 @@ class SchedulerService:
             if setting.last_sent_date == today_str:
                 continue
 
-            summary_text = await self.summary.build_summary_text(setting.chat_id)
+            chat_title = None
+            chat_username = None
+            try:
+                chat = await self.bot.get_chat(setting.chat_id)
+                chat_title = getattr(chat, "title", None)
+                chat_username = getattr(chat, "username", None)
+            except Exception:
+                logging.exception("Failed to load chat metadata for summary %s", setting.chat_id)
+
+            summary_text = await self.summary.build_summary_text(
+                setting.chat_id,
+                chat_title=chat_title,
+                chat_username=chat_username,
+            )
             try:
                 await self.bot.send_message(setting.chat_id, summary_text)
             except Exception:
@@ -957,7 +1239,7 @@ async def on_user_join(event: ChatMemberUpdated):
 
     await bot.send_message(
         chat_id,
-        f"👋 <b>{user.full_name}</b>, чтобы получить доступ к чату, реши капчу:\n\n<b>{question}</b>",
+        f"👋 <b>{safe_output_text(user.full_name or str(user.id))}</b>, чтобы получить доступ к чату, реши капчу:\n\n<b>{question}</b>",
         reply_markup=keyboard,
     )
 
@@ -1039,8 +1321,16 @@ async def summary_cmd(message: Message):
         return
 
     assert summary_service is not None
-    text = await summary_service.build_summary_text(message.chat.id)
-    await message.reply(text)
+    text = await summary_service.build_summary_text(
+        message.chat.id,
+        chat_title=message.chat.title,
+        chat_username=message.chat.username,
+    )
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await message.answer(text)
 
 
 @dp.message(Command("reset_stats"))
