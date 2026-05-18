@@ -10,7 +10,6 @@ from html import escape as html_escape
 from zoneinfo import ZoneInfo
 
 import aiosqlite
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
@@ -32,7 +31,6 @@ if not TOKEN:
 
 DEFAULT_ALLOWED_CHATS = [-1002619489118, -1003237014529, -1003643412493, -1003687304800]
 SUMMARY_STORAGE_PATH = os.getenv("SUMMARY_STORAGE_PATH", "daily_summary.db")
-SUMMARY_DEFAULT_TIME = os.getenv("SUMMARY_DEFAULT_TIME", "23:59")
 SUMMARY_TIMEZONE = os.getenv("SUMMARY_TIMEZONE", "Europe/Moscow")
 SUMMARY_MIN_MESSAGES = int(os.getenv("SUMMARY_MIN_MESSAGES", "12"))
 MESSAGE_TTL_SECONDS = 24 * 60 * 60
@@ -67,7 +65,6 @@ failed_users = set()
 
 storage = None
 summary_service = None
-scheduler_service = None
 
 STOP_WORDS = {
     "это",
@@ -304,18 +301,6 @@ def is_allowed_chat(chat_id: int) -> bool:
     return chat_id in ALLOWED_CHATS
 
 
-def normalize_time(value: str) -> str | None:
-    value = value.strip()
-    if not re.match(r"^\d{1,2}:\d{2}$", value):
-        return None
-    hh, mm = value.split(":")
-    hour = int(hh)
-    minute = int(mm)
-    if hour > 23 or minute > 59:
-        return None
-    return f"{hour:02d}:{minute:02d}"
-
-
 def compact_line(text: str, limit: int = 120) -> str:
     cleaned = re.sub(r"\s+", " ", text).strip()
     if len(cleaned) <= limit:
@@ -381,14 +366,6 @@ class ParticipantStat:
 
 
 @dataclass(slots=True)
-class ChatSetting:
-    chat_id: int
-    summary_time: str
-    enabled: bool
-    last_sent_date: str | None
-
-
-@dataclass(slots=True)
 class DayEngagementStat:
     sticker_count: int
     reaction_count: int
@@ -448,16 +425,6 @@ class SummaryStorage:
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_events_time ON events(timestamp)"
         )
-        await self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS chat_settings (
-                chat_id INTEGER PRIMARY KEY,
-                summary_time TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                last_sent_date TEXT
-            )
-            """
-        )
         await self._conn.commit()
 
     async def close(self) -> None:
@@ -465,83 +432,6 @@ class SummaryStorage:
             return
         await self._conn.close()
         self._conn = None
-
-    async def ensure_chat_setting(self, chat_id: int, summary_time: str) -> None:
-        assert self._conn is not None
-        async with self._lock:
-            await self._conn.execute(
-                """
-                INSERT INTO chat_settings(chat_id, summary_time, enabled, last_sent_date)
-                VALUES(?, ?, 1, NULL)
-                ON CONFLICT(chat_id) DO NOTHING
-                """,
-                (chat_id, summary_time),
-            )
-            await self._conn.commit()
-
-    async def set_chat_setting(self, chat_id: int, summary_time: str, enabled: bool) -> None:
-        assert self._conn is not None
-        async with self._lock:
-            await self._conn.execute(
-                """
-                INSERT INTO chat_settings(chat_id, summary_time, enabled, last_sent_date)
-                VALUES(?, ?, ?, NULL)
-                ON CONFLICT(chat_id) DO UPDATE SET
-                    summary_time=excluded.summary_time,
-                    enabled=excluded.enabled
-                """,
-                (chat_id, summary_time, int(enabled)),
-            )
-            await self._conn.commit()
-
-    async def get_chat_setting(self, chat_id: int, default_time: str) -> ChatSetting:
-        assert self._conn is not None
-        async with self._lock:
-            async with self._conn.execute(
-                "SELECT chat_id, summary_time, enabled, last_sent_date FROM chat_settings WHERE chat_id = ?",
-                (chat_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-
-        if row is None:
-            return ChatSetting(chat_id=chat_id, summary_time=default_time, enabled=True, last_sent_date=None)
-        return ChatSetting(
-            chat_id=row["chat_id"],
-            summary_time=row["summary_time"],
-            enabled=bool(row["enabled"]),
-            last_sent_date=row["last_sent_date"],
-        )
-
-    async def get_enabled_chat_settings(self) -> list[ChatSetting]:
-        assert self._conn is not None
-        async with self._lock:
-            async with self._conn.execute(
-                """
-                SELECT chat_id, summary_time, enabled, last_sent_date
-                FROM chat_settings
-                WHERE enabled = 1
-                """
-            ) as cursor:
-                rows = await cursor.fetchall()
-
-        return [
-            ChatSetting(
-                chat_id=row["chat_id"],
-                summary_time=row["summary_time"],
-                enabled=bool(row["enabled"]),
-                last_sent_date=row["last_sent_date"],
-            )
-            for row in rows
-        ]
-
-    async def mark_summary_sent(self, chat_id: int, sent_date: str) -> None:
-        assert self._conn is not None
-        async with self._lock:
-            await self._conn.execute(
-                "UPDATE chat_settings SET last_sent_date = ? WHERE chat_id = ?",
-                (sent_date, chat_id),
-            )
-            await self._conn.commit()
 
     async def add_message(
         self,
@@ -1138,69 +1028,6 @@ class DailySummaryService:
         return "\n".join(lines)
 
 
-class SchedulerService:
-    def __init__(
-        self,
-        tg_bot: Bot,
-        storage_backend: SummaryStorage,
-        summary_backend: DailySummaryService,
-        tz: ZoneInfo,
-    ) -> None:
-        self.bot = tg_bot
-        self.storage = storage_backend
-        self.summary = summary_backend
-        self.tz = tz
-        self.scheduler = AsyncIOScheduler(timezone=tz)
-
-    def start(self) -> None:
-        self.scheduler.add_job(self._run_auto_summary_tick, "cron", second=0)
-        self.scheduler.add_job(self._cleanup_tick, "interval", minutes=30)
-        self.scheduler.start()
-
-    async def shutdown(self) -> None:
-        if self.scheduler.running:
-            self.scheduler.shutdown(wait=False)
-
-    async def _cleanup_tick(self) -> None:
-        now_ts = int(datetime.now(self.tz).timestamp())
-        await self.storage.prune_expired_messages(now_ts)
-
-    async def _run_auto_summary_tick(self) -> None:
-        now_local = datetime.now(self.tz)
-        current_hm = now_local.strftime("%H:%M")
-        today_str = now_local.date().isoformat()
-
-        settings = await self.storage.get_enabled_chat_settings()
-        for setting in settings:
-            if setting.summary_time != current_hm:
-                continue
-            if setting.last_sent_date == today_str:
-                continue
-
-            chat_title = None
-            chat_username = None
-            try:
-                chat = await self.bot.get_chat(setting.chat_id)
-                chat_title = getattr(chat, "title", None)
-                chat_username = getattr(chat, "username", None)
-            except Exception:
-                logging.exception("Failed to load chat metadata for summary %s", setting.chat_id)
-
-            summary_text = await self.summary.build_summary_text(
-                setting.chat_id,
-                chat_title=chat_title,
-                chat_username=chat_username,
-            )
-            try:
-                await self.bot.send_message(setting.chat_id, summary_text)
-            except Exception:
-                logging.exception("Failed to send daily summary for chat %s", setting.chat_id)
-                continue
-
-            await self.storage.mark_summary_sent(setting.chat_id, today_str)
-            await self.storage.clear_chat_messages(setting.chat_id)
-
-
 async def is_chat_admin(chat_id: int, user_id: int) -> bool:
     member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
     return member.status in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}
@@ -1349,58 +1176,6 @@ async def reset_stats_cmd(message: Message):
     await message.reply("Статистика по текущему чату очищена.")
 
 
-@dp.message(Command("summary_settings"))
-async def summary_settings_cmd(message: Message):
-    if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
-        return
-    if message.from_user is None:
-        return
-
-    if not await is_chat_admin(message.chat.id, message.from_user.id):
-        await message.reply("Команда доступна только администраторам чата.")
-        return
-
-    assert storage is not None
-    setting = await storage.get_chat_setting(message.chat.id, SUMMARY_DEFAULT_TIME)
-
-    parts = message.text.split(maxsplit=1) if message.text else ["/summary_settings"]
-    if len(parts) == 1:
-        status = "включена" if setting.enabled else "выключена"
-        await message.reply(
-            f"Текущие настройки сводки:\n"
-            f"Статус: <b>{status}</b>\n"
-            f"Время: <b>{setting.summary_time}</b> ({SUMMARY_TIMEZONE})\n\n"
-            f"Примеры:\n"
-            f"/summary_settings 23:59\n"
-            f"/summary_settings off\n"
-            f"/summary_settings on"
-        )
-        return
-
-    value = parts[1].strip().lower()
-    if value in {"off", "disable", "0"}:
-        await storage.set_chat_setting(message.chat.id, setting.summary_time, enabled=False)
-        await message.reply("Автоматическая дневная сводка выключена.")
-        return
-
-    if value in {"on", "enable", "1"}:
-        await storage.set_chat_setting(message.chat.id, setting.summary_time, enabled=True)
-        await message.reply(
-            f"Автоматическая дневная сводка включена. Время отправки: <b>{setting.summary_time}</b> ({SUMMARY_TIMEZONE})."
-        )
-        return
-
-    normalized = normalize_time(value)
-    if normalized is None:
-        await message.reply("Неверный формат времени. Используйте HH:MM, например 23:59.")
-        return
-
-    await storage.set_chat_setting(message.chat.id, normalized, enabled=True)
-    await message.reply(
-        f"Время автоматической сводки обновлено: <b>{normalized}</b> ({SUMMARY_TIMEZONE})."
-    )
-
-
 @dp.message(F.text)
 async def collect_text_messages(message: Message):
     if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
@@ -1475,27 +1250,15 @@ async def collect_reaction_updates(update: MessageReactionUpdated):
 
 
 async def setup_services() -> None:
-    global storage, summary_service, scheduler_service
+    global storage, summary_service
     tz = ZoneInfo(SUMMARY_TIMEZONE)
 
     storage = SummaryStorage(SUMMARY_STORAGE_PATH, MESSAGE_TTL_SECONDS)
     await storage.initialize()
-    for chat_id in ALLOWED_CHATS:
-        await storage.ensure_chat_setting(chat_id, SUMMARY_DEFAULT_TIME)
-
     summary_service = DailySummaryService(storage_backend=storage, tz=tz, min_messages=SUMMARY_MIN_MESSAGES)
-    scheduler_service = SchedulerService(
-        tg_bot=bot,
-        storage_backend=storage,
-        summary_backend=summary_service,
-        tz=tz,
-    )
-    scheduler_service.start()
 
 
 async def shutdown_services() -> None:
-    if scheduler_service is not None:
-        await scheduler_service.shutdown()
     if storage is not None:
         await storage.close()
 

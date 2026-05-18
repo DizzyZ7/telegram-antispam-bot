@@ -1,3 +1,2 @@
 aiogram>=3.24
 aiosqlite>=0.20
-apscheduler>=3.10
