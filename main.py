@@ -246,12 +246,6 @@ RUSSIAN_MONTHS = (
 )
 
 
-def user_tag(user):
-    if user.username:
-        return html_escape(user.username, quote=False)
-    return safe_output_text(user.full_name or str(user.id))
-
-
 def remove_telegram_mentions(text: str) -> str:
     return TELEGRAM_MENTION_PATTERN.sub(r"\1", text)
 
@@ -1107,7 +1101,6 @@ async def captcha_handler(callback):
         except Exception:
             pass
 
-        await bot.send_message(chat_id, f"✅ {user_tag(callback.from_user)} прошел испытание")
         await callback.answer("Испытание пройдено")
     else:
         failed_users.add(target_user_id)
