@@ -254,6 +254,12 @@ def safe_output_text(text: str) -> str:
     return html_escape(remove_telegram_mentions(text), quote=False)
 
 
+def user_tag(user):
+    if user.username:
+        return html_escape(user.username, quote=False)
+    return safe_output_text(user.full_name or str(user.id))
+
+
 def format_russian_datetime(value: datetime) -> str:
     month = RUSSIAN_MONTHS[value.month - 1]
     return f"{value.day} {month} {value.year} в {value:%H:%M}"
@@ -1101,6 +1107,7 @@ async def captcha_handler(callback):
         except Exception:
             pass
 
+        await bot.send_message(chat_id, f"✅ {user_tag(callback.from_user)} прошел испытание")
         await callback.answer("Испытание пройдено")
     else:
         failed_users.add(target_user_id)
