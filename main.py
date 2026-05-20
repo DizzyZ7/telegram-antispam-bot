@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import aiosqlite
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
+from aiogram.enums import ChatType, ParseMode
 from aiogram.filters import ChatMemberUpdatedFilter, Command, IS_MEMBER, IS_NOT_MEMBER
 from aiogram.types import (
     ChatMemberUpdated,
@@ -1028,11 +1028,6 @@ class DailySummaryService:
         return "\n".join(lines)
 
 
-async def is_chat_admin(chat_id: int, user_id: int) -> bool:
-    member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-    return member.status in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}
-
-
 async def handle_pending_user_message(message: Message) -> bool:
     if message.from_user is None:
         return False
@@ -1119,19 +1114,6 @@ async def captcha_handler(callback):
         await callback.answer("❌ Неверно", show_alert=True)
 
 
-@dp.message(Command("captcha_stats"))
-async def captcha_stats_cmd(message: Message):
-    if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
-        return
-
-    await message.reply(
-        f"📊 Статистика антиспама:\n"
-        f"⏳ Ожидают: <b>{len(pending_users)}</b>\n"
-        f"✅ Прошли испытание: <b>{len(passed_users)}</b>\n"
-        f"❌ Были ошибки: <b>{len(failed_users)}</b>"
-    )
-
-
 @dp.message(Command("stats"))
 async def stats_cmd(message: Message):
     if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
@@ -1158,22 +1140,6 @@ async def summary_cmd(message: Message):
     except Exception:
         pass
     await message.answer(text)
-
-
-@dp.message(Command("reset_stats"))
-async def reset_stats_cmd(message: Message):
-    if not is_group_chat(message) or not is_allowed_chat(message.chat.id):
-        return
-    if message.from_user is None:
-        return
-
-    if not await is_chat_admin(message.chat.id, message.from_user.id):
-        await message.reply("Команда доступна только администраторам чата.")
-        return
-
-    assert storage is not None
-    await storage.clear_chat_messages(message.chat.id)
-    await message.reply("Статистика по текущему чату очищена.")
 
 
 @dp.message(F.text)
