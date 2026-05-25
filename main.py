@@ -256,7 +256,7 @@ def safe_output_text(text: str) -> str:
 
 def user_tag(user):
     if user.username:
-        return html_escape(user.username, quote=False)
+        return f"@{html_escape(user.username, quote=False)}"
     return safe_output_text(user.full_name or str(user.id))
 
 
