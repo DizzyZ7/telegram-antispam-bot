@@ -11,7 +11,14 @@ from typing import Any
 
 from aiogram import F
 from aiogram.filters import BaseFilter, ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
-from aiogram.types import CallbackQuery, Chat, ChatMemberUpdated, ChatPermissions, Message
+from aiogram.types import (
+    CallbackQuery,
+    Chat,
+    ChatMemberUpdated,
+    ChatPermissions,
+    LinkPreviewOptions,
+    Message,
+)
 
 LOGGER = logging.getLogger(__name__)
 WRITERS_CHAT_USERNAME = os.getenv("WRITERS_CHAT_USERNAME", "chat_ikf").lstrip("@").lower()
@@ -20,6 +27,7 @@ WRITERS_RULES_URL = os.getenv(
     "https://t.me/" + "chat_IKF/168194/168197",
 )
 WARNING_COOLDOWN_SECONDS = max(10, int(os.getenv("WRITERS_WARNING_COOLDOWN_SECONDS", "60")))
+RULES_LINK_PREVIEW_OPTIONS = LinkPreviewOptions(is_disabled=True)
 
 LOOKALIKE_MAP = str.maketrans(
     {
@@ -206,6 +214,7 @@ def register_writers_chat_handlers(module: Any) -> WritersChatScope:
             event.chat.id,
             build_welcome_text(name, question),
             reply_markup=keyboard,
+            link_preview_options=RULES_LINK_PREVIEW_OPTIONS,
         )
 
     @module.dp.callback_query(F.data.startswith("captcha:"), captcha_filter)
@@ -259,6 +268,7 @@ def register_writers_chat_handlers(module: Any) -> WritersChatScope:
         params: dict[str, Any] = {
             "chat_id": chat_id,
             "text": build_captcha_success_text(module.user_tag(callback.from_user)),
+            "link_preview_options": RULES_LINK_PREVIEW_OPTIONS,
         }
         if message_thread_id is not None:
             params["message_thread_id"] = message_thread_id
@@ -282,6 +292,7 @@ def register_writers_chat_handlers(module: Any) -> WritersChatScope:
         params: dict[str, Any] = {
             "chat_id": message.chat.id,
             "text": build_warning_text(),
+            "link_preview_options": RULES_LINK_PREVIEW_OPTIONS,
         }
         if message.message_thread_id is not None:
             params["message_thread_id"] = message.message_thread_id
