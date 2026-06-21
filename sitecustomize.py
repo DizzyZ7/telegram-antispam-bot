@@ -37,24 +37,37 @@ def _decode(encoded: str) -> str:
     return base64.b64decode(encoded).decode("utf-8")
 
 
-EXACT_TOKENS = frozenset(
+CYRILLIC_EXACT_TOKENS = frozenset(
     _decode(value)
     for value in (
-        "0LHRgtGP", "0LHRgtGM", "0LHRgtC+", "ZnVjaw==", "ZmNr", "c2hpdA==",
-        "Yml0Y2g=", "YXNzaG9sZQ==", "ZGljaw==", "Ymx5YXQ=", "Ymx5YWQ=",
-        "cGl6ZGE=", "cGl6ZGVj", "cGl6ZGV0cw==", "ZWJhdA==", "eWViYXQ=",
-        "aHV5", "aHVp", "aHVpbnlh",
+        "0LHQu9GP", "0LHQu9GP0YLRjA==", "0LHQu9GP0YI=",
     )
 )
 
-PREFIX_TOKENS = tuple(
+CYRILLIC_PREFIX_TOKENS = tuple(
     _decode(value)
     for value in (
         "0LHQu9GP0LQ=", "0LXQsQ==", "0L/QuNC30LQ=", "0YXRg9C5",
         "0LfQsNC70YPQvw==", "0LXQsdC70LDQvQ==", "0YPQtdCx",
         "0LTQvtC70LHQvtC10LE=", "0LPQsNC90LTQvtC9", "0L/QuNC00L7RgA==",
         "0L/QuNC00YA=", "0L/QtdC00LjQug==", "0LzRg9C00LDQug==",
-        "0LzRg9C00LjQu9Cw", "Ymx5YWQ=", "cGl6ZA==",
+        "0LzRg9C00LjQu9Cw",
+    )
+)
+
+LATIN_EXACT_TOKENS = frozenset(
+    _decode(value)
+    for value in (
+        "ZnVjaw==", "ZmNr", "c2hpdA==", "Yml0Y2g=", "YXNzaG9sZQ==", "ZGljaw==",
+        "Ymx5YXQ=", "Ymx5YWQ=", "cGl6ZGE=", "cGl6ZGVj", "cGl6ZGV0cw==",
+        "ZWJhdA==", "eWViYXQ=", "aHV5", "aHVp", "aHVpbnlh",
+    )
+)
+
+LATIN_PREFIX_TOKENS = tuple(
+    _decode(value)
+    for value in (
+        "Ymx5YWQ=", "cGl6ZA==",
     )
 )
 
@@ -91,12 +104,24 @@ def _normalize_token(token: str) -> str:
     return re.sub(r"(.)\1{2,}", r"\1", token)
 
 
+def _latin_token(token: str) -> str:
+    token = unicodedata.normalize("NFKC", token).casefold()
+    token = re.sub(r"[^a-z0-9]", "", token)
+    return re.sub(r"(.)\1{2,}", r"\1", token)
+
+
 def contains_banned_language(text: str) -> bool:
     for raw_token in re.findall(r"[а-яa-z0-9@#$]+", text, flags=re.IGNORECASE):
-        token = _normalize_token(raw_token)
-        if token in EXACT_TOKENS:
+        latin_token = _latin_token(raw_token)
+        if latin_token in LATIN_EXACT_TOKENS:
             return True
-        if any(token.startswith(prefix) for prefix in PREFIX_TOKENS):
+        if any(latin_token.startswith(prefix) for prefix in LATIN_PREFIX_TOKENS):
+            return True
+
+        token = _normalize_token(raw_token)
+        if token in CYRILLIC_EXACT_TOKENS:
+            return True
+        if any(token.startswith(prefix) for prefix in CYRILLIC_PREFIX_TOKENS):
             return True
     return False
 
@@ -135,9 +160,7 @@ def _register_first(observer, handler, *filters) -> None:
     observer.handlers.insert(0, observer.handlers.pop())
 
 
-def _install(dispatcher: Dispatcher, module) -> None:
-    scope = WritersChatScope()
-
+def _install(dispatcher: Dispatcher, module, scope: WritersChatScope) -> None:
     async def on_writers_chat_join(event: ChatMemberUpdated) -> None:
         if not scope.matches(event.chat):
             raise SkipHandler
@@ -211,7 +234,7 @@ async def _patched_start_polling(self: Dispatcher, *bots, **kwargs):
         if module is not None and all(hasattr(module, name) for name in required):
             scope = WritersChatScope()
             await scope.resolve(module.bot)
-            _install(self, module)
+            _install(self, module, scope)
             self._writers_chat_moderation_installed = True
     return await _original_start_polling(self, *bots, **kwargs)
 
