@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+
+os.environ.setdefault("WRITERS_CHAT_ID", "-1002619489118")
 
 import legacy_main as app
 from writers_moderation import register_writers_chat_handlers
