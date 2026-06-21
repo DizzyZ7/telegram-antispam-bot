@@ -146,12 +146,13 @@ class WritersChatFilter(BaseFilter):
 
 class ProhibitedLanguageFilter(BaseFilter):
     async def __call__(self, message: Message) -> bool:
+        content = message.text or message.caption or ""
         return bool(
             message.from_user
             and not message.from_user.is_bot
-            and message.text
-            and not message.text.startswith("/")
-            and contains_prohibited_language(message.text)
+            and content
+            and not content.startswith("/")
+            and contains_prohibited_language(content)
         )
 
 
