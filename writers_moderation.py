@@ -28,6 +28,11 @@ WRITERS_RULES_URL = os.getenv(
 )
 WARNING_COOLDOWN_SECONDS = max(10, int(os.getenv("WRITERS_WARNING_COOLDOWN_SECONDS", "60")))
 RULES_LINK_PREVIEW_OPTIONS = LinkPreviewOptions(is_disabled=True)
+EXTRA_BLOCKED_TERMS_RAW = tuple(
+    item.strip()
+    for item in re.split(r"[,;\n]", os.getenv("WRITERS_EXTRA_BLOCKED_TERMS", ""))
+    if item.strip()
+)
 
 LOOKALIKE_MAP = str.maketrans(
     {
@@ -136,18 +141,37 @@ def _normalize_latin_token(value: str) -> str:
     return _collapse_repeats(value)
 
 
+def _build_extra_blocked_tokens() -> frozenset[str]:
+    normalized_terms: set[str] = set()
+    for raw_term in EXTRA_BLOCKED_TERMS_RAW:
+        mixed_term = _normalize_mixed_token(raw_term)
+        latin_term = _normalize_latin_token(raw_term)
+        if mixed_term:
+            normalized_terms.add(mixed_term)
+        if latin_term:
+            normalized_terms.add(latin_term)
+    return frozenset(normalized_terms)
+
+
+EXTRA_BLOCKED_TOKENS = _build_extra_blocked_tokens()
+
+
 def _matches_any(value: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
     return any(pattern.fullmatch(value) for pattern in patterns)
 
 
 def _is_prohibited_token(raw_token: str) -> bool:
     latin_token = _normalize_latin_token(raw_token)
+    if latin_token in EXTRA_BLOCKED_TOKENS:
+        return True
     if _matches_any(latin_token, OBSCENE_LATIN_PATTERNS):
         return True
     if _matches_any(latin_token, TOXIC_INSULT_LATIN_PATTERNS):
         return True
 
     token = _normalize_mixed_token(raw_token)
+    if token in EXTRA_BLOCKED_TOKENS:
+        return True
     if _matches_any(token, OBSCENE_CYRILLIC_PATTERNS):
         return True
     return _matches_any(token, TOXIC_INSULT_CYRILLIC_PATTERNS)
