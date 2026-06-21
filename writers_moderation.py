@@ -39,21 +39,61 @@ LOOKALIKE_MAP = str.maketrans(
     }
 )
 
-CYRILLIC_PATTERNS = (
+WORD_TOKEN_PATTERN = re.compile(r"[A-Za-zА-Яа-я0-9@#$]+")
+SPACED_TOKEN_PATTERN = re.compile(
+    r"(?<![A-Za-zА-Яа-я0-9@#$])"
+    r"(?:[A-Za-zА-Яа-я0-9@#$][\s._*|!/\\\-\u200b]+){2,}"
+    r"[A-Za-zА-Яа-я0-9@#$]"
+    r"(?![A-Za-zА-Яа-я0-9@#$])"
+)
+
+OBSCENE_CYRILLIC_PATTERNS = (
     re.compile(r"^бля+$"),
     re.compile(r"^бляд[а-я]*$"),
     re.compile(r"^блят[а-я]*$"),
-    re.compile(r"^(?:еб|заеб|выеб|доеб|наеб|поеб)[а-я]*$"),
+    re.compile(r"^(?:еб|заеб|выеб|доеб|наеб|поеб|уеб|разеб|разъеб)[а-я]*$"),
     re.compile(r"^(?:пизд|пезд)[а-я]*$"),
-    re.compile(r"^(?:хуй|хуе|хуи|оху|наху|поху)[а-я]*$"),
-    re.compile(r"^(?:долбоеб|гандон)[а-я]*$"),
-    re.compile(r"^мудак(?:и|а|у|ом|е|ов|ами)?$"),
+    re.compile(r"^(?:хуй|хуе|хуи|хуя|оху|наху|поху)[а-я]*$"),
+    re.compile(r"^(?:залуп|хуесос|пиздобол|пиздюк|пиздюл|пиздот|пиздат)[а-я]*$"),
+    re.compile(r"^(?:долбоеб|гандон|мудак|мудач|мудил)[а-я]*$"),
     re.compile(r"^сука$"),
-    re.compile(r"^(?:пидор|пидарас|пидорас|пидр|педик)$"),
+    re.compile(r"^пид(?:ор|орас|арас)[а-я]*$"),
+    re.compile(r"^педик(?:а|у|ом|е|и|ов|ам|ами)?$"),
 )
-LATIN_PATTERNS = (
+
+TOXIC_INSULT_CYRILLIC_PATTERNS = (
+    re.compile(r"^дебил[а-я]*$"),
+    re.compile(r"^кретин[а-я]*$"),
+    re.compile(r"^имбецил[а-я]*$"),
+    re.compile(r"^дегенерат[а-я]*$"),
+    re.compile(r"^ублюд[а-я]*$"),
+    re.compile(r"^мраз[а-я]*$"),
+    re.compile(r"^сволоч[а-я]*$"),
+    re.compile(r"^гнид[а-я]*$"),
+    re.compile(r"^чмо(?:шник|шница|шка)?[а-я]*$"),
+    re.compile(r"^тупиц[а-я]*$"),
+    re.compile(r"^недоумок[а-я]*$"),
+)
+
+OBSCENE_LATIN_PATTERNS = (
     re.compile(r"^(?:fuck|fck|shit|bitch|asshole|dick)[a-z]*$"),
-    re.compile(r"^(?:blya|blyad|blyat|pizd[a-z]*|ebat|yebat|huy|hui|huinya|suka|mudak|gandon|pidor|pidar)$"),
+    re.compile(r"^(?:blya|blyad|blyat|pizd[a-z]*|ebat|yebat|huy|hui|huinya)$"),
+    re.compile(r"^(?:suka|mudak|gandon|dolboeb)[a-z]*$"),
+    re.compile(r"^pid(?:or|ar|oras|aras|as)[a-z]*$"),
+    re.compile(r"^pedor[a-z]*$"),
+)
+
+TOXIC_INSULT_LATIN_PATTERNS = (
+    re.compile(r"^debil[a-z]*$"),
+    re.compile(r"^cretin[a-z]*$"),
+    re.compile(r"^imbecil[a-z]*$"),
+    re.compile(r"^degenerat[a-z]*$"),
+    re.compile(r"^ublyud[a-z]*$"),
+    re.compile(r"^mraz[a-z]*$"),
+    re.compile(r"^svoloch[a-z]*$"),
+    re.compile(r"^gnida[a-z]*$"),
+    re.compile(r"^chmo[a-z]*$"),
+    re.compile(r"^tupica[a-z]*$"),
 )
 
 
@@ -80,7 +120,7 @@ class WritersChatScope:
 
 
 def _collapse_repeats(value: str) -> str:
-    return re.sub(r"(.)\1{2,}", r"\1", value)
+    return re.sub(r"(.)\1+", r"\1", value)
 
 
 def _normalize_mixed_token(value: str) -> str:
@@ -96,15 +136,33 @@ def _normalize_latin_token(value: str) -> str:
     return _collapse_repeats(value)
 
 
+def _matches_any(value: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
+    return any(pattern.fullmatch(value) for pattern in patterns)
+
+
+def _is_prohibited_token(raw_token: str) -> bool:
+    latin_token = _normalize_latin_token(raw_token)
+    if _matches_any(latin_token, OBSCENE_LATIN_PATTERNS):
+        return True
+    if _matches_any(latin_token, TOXIC_INSULT_LATIN_PATTERNS):
+        return True
+
+    token = _normalize_mixed_token(raw_token)
+    if _matches_any(token, OBSCENE_CYRILLIC_PATTERNS):
+        return True
+    return _matches_any(token, TOXIC_INSULT_CYRILLIC_PATTERNS)
+
+
 def contains_prohibited_language(text: str) -> bool:
-    for raw_token in re.findall(r"[A-Za-zА-Яа-я0-9@#$]+", text):
-        latin_token = _normalize_latin_token(raw_token)
-        if any(pattern.fullmatch(latin_token) for pattern in LATIN_PATTERNS):
+    for raw_token in WORD_TOKEN_PATTERN.findall(text):
+        if _is_prohibited_token(raw_token):
             return True
 
-        token = _normalize_mixed_token(raw_token)
-        if any(pattern.fullmatch(token) for pattern in CYRILLIC_PATTERNS):
+    for match in SPACED_TOKEN_PATTERN.finditer(text):
+        compact_token = re.sub(r"[^A-Za-zА-Яа-я0-9@#$]", "", match.group())
+        if _is_prohibited_token(compact_token):
             return True
+
     return False
 
 
@@ -143,7 +201,7 @@ def build_warning_text() -> str:
         (
             "⚠️ <b>Сообщение удалено</b>",
             "",
-            "В этом чате общаются авторы, читатели и люди, которым важны истории. Мат здесь не используем — давай оставим разговор комфортным и понятным для всех.",
+            "В этом чате общаются авторы, читатели и люди, которым важны истории. Мат и прямые оскорбления здесь не используем — давай оставим разговор комфортным и понятным для всех.",
             "",
             f"📖 <a href=\"{WRITERS_RULES_URL}\">Правила чата</a>",
             "(°-°)",
@@ -199,7 +257,7 @@ def register_writers_chat_handlers(module: Any) -> WritersChatScope:
     )
     async def on_writers_chat_join(event: ChatMemberUpdated) -> None:
         user = event.new_chat_member.user
-        if user.id in module.passed_users:
+        if user.is_bot or user.id in module.passed_users:
             return
 
         question, answer, keyboard = module.build_captcha(user.id)
