@@ -1,6 +1,7 @@
 import unittest
 
 from writers_moderation import (
+    RULES_LINK_PREVIEW_OPTIONS,
     WRITERS_RULES_URL,
     build_captcha_success_text,
     contains_prohibited_language,
@@ -23,6 +24,9 @@ class ProhibitedLanguageTests(unittest.TestCase):
         self.assertIn("@qraxos", text)
         self.assertIn(WRITERS_RULES_URL, text)
         self.assertIn("Правила чата", text)
+
+    def test_rules_link_preview_is_disabled(self):
+        self.assertTrue(RULES_LINK_PREVIEW_OPTIONS.is_disabled)
 
 
 if __name__ == "__main__":
