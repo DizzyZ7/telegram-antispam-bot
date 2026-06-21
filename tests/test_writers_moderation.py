@@ -1,6 +1,10 @@
 import unittest
 
-from writers_moderation import contains_prohibited_language
+from writers_moderation import (
+    WRITERS_RULES_URL,
+    build_captcha_success_text,
+    contains_prohibited_language,
+)
 
 
 class ProhibitedLanguageTests(unittest.TestCase):
@@ -13,6 +17,12 @@ class ProhibitedLanguageTests(unittest.TestCase):
         for text in ("бляха", "суккулент", "педикюр", "хулиган", "обычный разговор"):
             with self.subTest(text=text):
                 self.assertFalse(contains_prohibited_language(text))
+
+    def test_captcha_success_repeats_rules_link(self):
+        text = build_captcha_success_text("@qraxos")
+        self.assertIn("@qraxos", text)
+        self.assertIn(WRITERS_RULES_URL, text)
+        self.assertIn("Правила чата", text)
 
 
 if __name__ == "__main__":
