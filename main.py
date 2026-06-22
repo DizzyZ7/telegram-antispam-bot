@@ -18,7 +18,7 @@ RUNTIME_LEXICON_PATH = RUNTIME_DATA_DIR / "moderation_lexicon.json"
 STRICT_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
     "exact": {
         "obscene": (
-            "\u0434\u0435\u0440\u044c\u043c\u043e", "\u0433\u043e\u0432\u043d\u043e", "\u0433\u043e\u0432\u043d\u0438\u0449\u0435", "\u0433\u043e\u0432\u043d\u044e\u043a",
+            "\u0431\u0434\u044c", "\u0434\u0435\u0440\u044c\u043c\u043e", "\u0433\u043e\u0432\u043d\u043e", "\u0433\u043e\u0432\u043d\u0438\u0449\u0435", "\u0433\u043e\u0432\u043d\u044e\u043a",
             "\u0445\u0435\u0440\u043d\u044f", "\u043f\u0437\u0434\u0446",
         ),
         "severe_insult": (
@@ -30,7 +30,7 @@ STRICT_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "prefix": {
         "obscene": (
-            "\u0430\u0445\u0443", "\u0445\u0435\u0440\u043d", "\u043f\u043e\u0445\u0435\u0440", "\u043d\u0430\u0445\u0435\u0440", "\u0433\u043e\u0432\u043d", "\u0433\u0430\u0432\u043d",
+            "\u0445\u0439", "\u043f\u0437\u0434", "\u0430\u0445\u0443", "\u0445\u0435\u0440\u043d", "\u043f\u043e\u0445\u0435\u0440", "\u043d\u0430\u0445\u0435\u0440", "\u0433\u043e\u0432\u043d", "\u0433\u0430\u0432\u043d",
             "\u0434\u0435\u0440\u044c\u043c", "\u0441\u0440\u0430\u043d", "\u0441\u0441\u044b\u043a", "\u0434\u0440\u043e\u0447", "\u0448\u043b\u044e\u0445", "\u0448\u0430\u043b\u0430\u0432",
             "\u0448\u043c\u0430\u0440", "\u043f\u0430\u0441\u043a\u0443\u0434", "\u043f\u0430\u0434\u043b", "\u0434\u0440\u0438\u0441\u0442", "\u043e\u0431\u043e\u0441\u0441", "\u0437\u0430\u0441\u0440\u0430\u043d",
         ),
@@ -41,7 +41,7 @@ STRICT_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
             "\u0438\u043c\u0431\u0435\u0446\u0438\u043b\u043a", "\u0443\u0431\u043b\u044e\u0434\u0438\u0449", "\u0433\u0430\u0432\u043d\u044e\u043a", "\u0441\u0441\u044b\u043a\u0443\u043d", "\u0434\u0440\u043e\u0447\u0435\u0440", "\u0434\u0440\u043e\u0447\u0438\u043b",
         ),
         "latin_translit": (
-            "ahu", "ohu", "oher", "naher", "poher", "hernya", "govn", "gavno", "derm", "sran", "ssyk", "droch",
+            "pzd", "xj", "ahu", "ohu", "oher", "naher", "poher", "hernya", "govn", "gavno", "derm", "sran", "ssyk", "droch",
             "shlyuh", "shalav", "shmar", "paskud", "padla", "drist", "oboss", "pzdts", "pzdc", "blya", "ueb", "razeb", "eblan", "ebanut", "ebuch",
         ),
     },
