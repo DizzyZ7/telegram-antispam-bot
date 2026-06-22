@@ -7,6 +7,8 @@ from moderation_dataset import DATASET_PATH, install_curated_terms, load_curated
 install_curated_terms()
 
 from writers_moderation import (
+    LEXICON_PATH,
+    MODERATION_LEXICON,
     RULES_LINK_PREVIEW_OPTIONS,
     WRITERS_RULES_URL,
     build_captcha_success_text,
@@ -21,7 +23,12 @@ class ProhibitedLanguageTests(unittest.TestCase):
     def _load_evaluation_data() -> dict:
         return json.loads(EVALUATION_PATH.read_text(encoding="utf-8"))
 
-    def test_curated_lexicon_is_available_and_active(self):
+    def test_primary_lexicon_is_loaded(self):
+        self.assertTrue(LEXICON_PATH.exists())
+        self.assertEqual(MODERATION_LEXICON.schema_version, 1)
+        self.assertGreaterEqual(MODERATION_LEXICON.rule_count, 80)
+
+    def test_curated_supplemental_lexicon_is_active(self):
         terms = load_curated_terms()
         self.assertTrue(DATASET_PATH.exists())
         self.assertGreaterEqual(len(terms), 40)
