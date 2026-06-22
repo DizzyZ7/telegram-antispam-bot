@@ -15,6 +15,7 @@ APP_DIR = Path(__file__).resolve().parent
 BUNDLED_LEXICON_PATH = APP_DIR / "bundled_moderation_lexicon.json"
 RUNTIME_DATA_DIR = Path(os.getenv("DATA_DIR", APP_DIR / "data"))
 RUNTIME_LEXICON_PATH = RUNTIME_DATA_DIR / "moderation_lexicon.json"
+IGNORED_WRITERS_TOPIC_IDS = frozenset({14637, 42817, 292358})
 
 STRICT_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
     "exact": {
@@ -48,8 +49,6 @@ STRICT_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
-# A Latin transliteration rule was normalized into the mixed-script prefix "\u043d\u0443".
-# That is too short and incorrectly matches normal Russian words such as "\u043d\u0443\u0436\u043d\u0430".
 UNSAFE_MIXED_PREFIXES = frozenset({"\u043d\u0443"})
 
 
@@ -109,9 +108,29 @@ def remove_unsafe_mixed_prefixes() -> int:
     return removed
 
 
+def install_ignored_topic_filter() -> None:
+    import writers_moderation as moderation
+
+    original_call = moderation.ProhibitedLanguageFilter.__call__
+
+    async def scoped_call(instance: object, message: object) -> bool:
+        message_thread_id = getattr(message, "message_thread_id", None)
+        if message_thread_id in IGNORED_WRITERS_TOPIC_IDS:
+            return False
+        return await original_call(instance, message)
+
+    moderation.ProhibitedLanguageFilter.__call__ = scoped_call
+    print(
+        "WRITERS_TOPIC_EXCLUSIONS_READY "
+        f"ids={','.join(str(value) for value in sorted(IGNORED_WRITERS_TOPIC_IDS))}",
+        flush=True,
+    )
+
+
 sync_moderation_lexicon()
 apply_strict_rule_overlay()
 remove_unsafe_mixed_prefixes()
+install_ignored_topic_filter()
 
 import legacy_main as app
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
