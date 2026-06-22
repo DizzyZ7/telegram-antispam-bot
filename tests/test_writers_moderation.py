@@ -2,7 +2,10 @@ import json
 import unittest
 from pathlib import Path
 
-from moderation_dataset import DATASET_PATH, load_curated_terms
+from moderation_dataset import DATASET_PATH, install_curated_terms, load_curated_terms
+
+install_curated_terms()
+
 from writers_moderation import (
     RULES_LINK_PREVIEW_OPTIONS,
     WRITERS_RULES_URL,
@@ -18,11 +21,12 @@ class ProhibitedLanguageTests(unittest.TestCase):
     def _load_evaluation_data() -> dict:
         return json.loads(EVALUATION_PATH.read_text(encoding="utf-8"))
 
-    def test_curated_lexicon_is_available(self):
+    def test_curated_lexicon_is_available_and_active(self):
         terms = load_curated_terms()
         self.assertTrue(DATASET_PATH.exists())
         self.assertGreaterEqual(len(terms), 40)
         self.assertEqual(len(terms), len(set(term.casefold() for term in terms)))
+        self.assertTrue(contains_prohibited_language(terms[0]))
 
     def test_evaluation_corpus(self):
         data = self._load_evaluation_data()
