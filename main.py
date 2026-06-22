@@ -21,20 +21,20 @@ STRICT_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
     "exact": {
         "obscene": (
             "\u0431\u0434\u044c", "\u0434\u0435\u0440\u044c\u043c\u043e", "\u0433\u043e\u0432\u043d\u043e", "\u0433\u043e\u0432\u043d\u0438\u0449\u0435", "\u0433\u043e\u0432\u043d\u044e\u043a",
-            "\u0445\u0435\u0440\u043d\u044f", "\u043f\u0437\u0434\u0446",
+            "\u0445\u0435\u0440\u043d\u044f", "\u043f\u0437\u0434\u0446", "\u043e\u0431\u043e\u0441\u0441\u0430\u043b", "\u043e\u0431\u043e\u0441\u0441\u0430\u043b\u0438", "\u043e\u0431\u043e\u0441\u0441\u0430\u043d", "\u043e\u0431\u043e\u0441\u0441\u0430\u0442\u044c",
         ),
         "severe_insult": (
             "\u043f\u0430\u0441\u043a\u0443\u0434\u0430", "\u043f\u0430\u0434\u043b\u0430",
         ),
         "english_obscene": (
-            "cunt", "motherfucker", "slut", "whore", "bastard", "xj",
+            "cunt", "motherfucker", "slut", "whore", "bastard", "xj", "oboss",
         ),
     },
     "prefix": {
         "obscene": (
             "\u0445\u0439", "\u043f\u0437\u0434", "\u0430\u0445\u0443", "\u0445\u0435\u0440\u043d", "\u043f\u043e\u0445\u0435\u0440", "\u043d\u0430\u0445\u0435\u0440", "\u0433\u043e\u0432\u043d", "\u0433\u0430\u0432\u043d",
             "\u0434\u0435\u0440\u044c\u043c", "\u0441\u0440\u0430\u043d", "\u0441\u0441\u044b\u043a", "\u0434\u0440\u043e\u0447", "\u0448\u043b\u044e\u0445", "\u0448\u0430\u043b\u0430\u0432",
-            "\u0448\u043c\u0430\u0440", "\u043f\u0430\u0441\u043a\u0443\u0434", "\u043f\u0430\u0434\u043b", "\u0434\u0440\u0438\u0441\u0442", "\u043e\u0431\u043e\u0441\u0441", "\u0437\u0430\u0441\u0440\u0430\u043d",
+            "\u0448\u043c\u0430\u0440", "\u043f\u0430\u0441\u043a\u0443\u0434", "\u043f\u0430\u0434\u043b", "\u0434\u0440\u0438\u0441\u0442", "\u0437\u0430\u0441\u0440\u0430\u043d",
         ),
         "toxic_insult": (
             "\u0438\u043c\u0431\u0435\u0446\u0438\u043b", "\u0432\u044b\u0440\u043e\u0434",
@@ -44,12 +44,13 @@ STRICT_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
         ),
         "latin_translit": (
             "pzd", "ahu", "ohu", "oher", "naher", "poher", "hernya", "govn", "gavno", "derm", "sran", "ssyk", "droch",
-            "shlyuh", "shalav", "shmar", "paskud", "padla", "drist", "oboss", "pzdts", "pzdc", "blya", "ueb", "razeb", "eblan", "ebanut", "ebuch",
+            "shlyuh", "shalav", "shmar", "paskud", "padla", "drist", "pzdts", "pzdc", "blya", "ueb", "razeb", "eblan", "ebanut", "ebuch",
         ),
     },
 }
 
-UNSAFE_MIXED_PREFIXES = frozenset({"\u043d\u0443"})
+# Transliterated roots must not become short Cyrillic prefixes that collide with normal words.
+UNSAFE_MIXED_PREFIXES = frozenset({"\u043d\u0443", "\u043e\u0431\u043e\u0441"})
 
 
 def sync_moderation_lexicon() -> None:
