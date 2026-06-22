@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 from pathlib import Path
@@ -13,6 +14,38 @@ APP_DIR = Path(__file__).resolve().parent
 BUNDLED_LEXICON_PATH = APP_DIR / "bundled_moderation_lexicon.json"
 RUNTIME_DATA_DIR = Path(os.getenv("DATA_DIR", APP_DIR / "data"))
 RUNTIME_LEXICON_PATH = RUNTIME_DATA_DIR / "moderation_lexicon.json"
+
+STRICT_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
+    "exact": {
+        "obscene": (
+            "\u0434\u0435\u0440\u044c\u043c\u043e", "\u0433\u043e\u0432\u043d\u043e", "\u0433\u043e\u0432\u043d\u0438\u0449\u0435", "\u0433\u043e\u0432\u043d\u044e\u043a",
+            "\u0445\u0435\u0440\u043d\u044f", "\u043f\u0437\u0434\u0446",
+        ),
+        "severe_insult": (
+            "\u043f\u0430\u0441\u043a\u0443\u0434\u0430", "\u043f\u0430\u0434\u043b\u0430",
+        ),
+        "english_obscene": (
+            "cunt", "motherfucker", "slut", "whore", "bastard",
+        ),
+    },
+    "prefix": {
+        "obscene": (
+            "\u0430\u0445\u0443", "\u0445\u0435\u0440\u043d", "\u043f\u043e\u0445\u0435\u0440", "\u043d\u0430\u0445\u0435\u0440", "\u0433\u043e\u0432\u043d", "\u0433\u0430\u0432\u043d",
+            "\u0434\u0435\u0440\u044c\u043c", "\u0441\u0440\u0430\u043d", "\u0441\u0441\u044b\u043a", "\u0434\u0440\u043e\u0447", "\u0448\u043b\u044e\u0445", "\u0448\u0430\u043b\u0430\u0432",
+            "\u0448\u043c\u0430\u0440", "\u043f\u0430\u0441\u043a\u0443\u0434", "\u043f\u0430\u0434\u043b", "\u0434\u0440\u0438\u0441\u0442", "\u043e\u0431\u043e\u0441\u0441", "\u0437\u0430\u0441\u0440\u0430\u043d",
+        ),
+        "toxic_insult": (
+            "\u0438\u043c\u0431\u0435\u0446\u0438\u043b", "\u0432\u044b\u0440\u043e\u0434",
+        ),
+        "rare_insult": (
+            "\u0438\u043c\u0431\u0435\u0446\u0438\u043b\u043a", "\u0443\u0431\u043b\u044e\u0434\u0438\u0449", "\u0433\u0430\u0432\u043d\u044e\u043a", "\u0441\u0441\u044b\u043a\u0443\u043d", "\u0434\u0440\u043e\u0447\u0435\u0440", "\u0434\u0440\u043e\u0447\u0438\u043b",
+        ),
+        "latin_translit": (
+            "ahu", "ohu", "oher", "naher", "poher", "hernya", "govn", "gavno", "derm", "sran", "ssyk", "droch",
+            "shlyuh", "shalav", "shmar", "paskud", "padla", "drist", "oboss", "pzdts", "pzdc", "blya", "ueb", "razeb", "eblan", "ebanut", "ebuch",
+        ),
+    },
+}
 
 
 def sync_moderation_lexicon() -> None:
@@ -29,7 +62,31 @@ def sync_moderation_lexicon() -> None:
     )
 
 
+def apply_strict_rule_overlay() -> None:
+    payload = json.loads(RUNTIME_LEXICON_PATH.read_text(encoding="utf-8"))
+    rules = payload.setdefault("rules", {})
+    added = 0
+
+    for match_mode, categories in STRICT_RULE_OVERLAY.items():
+        target_categories = rules.setdefault(match_mode, {})
+        for category, terms in categories.items():
+            target_terms = target_categories.setdefault(category, [])
+            known_terms = set(target_terms)
+            for term in terms:
+                if term not in known_terms:
+                    target_terms.append(term)
+                    known_terms.add(term)
+                    added += 1
+
+    RUNTIME_LEXICON_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    print(f"WRITERS_LEXICON_OVERLAY_READY added={added}", flush=True)
+
+
 sync_moderation_lexicon()
+apply_strict_rule_overlay()
 
 import legacy_main as app
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
