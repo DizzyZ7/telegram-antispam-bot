@@ -2,10 +2,6 @@ import json
 import unittest
 from pathlib import Path
 
-from moderation_dataset import DATASET_PATH, install_curated_terms, load_curated_terms
-
-install_curated_terms()
-
 from writers_moderation import (
     LEXICON_PATH,
     MODERATION_LEXICON,
@@ -13,6 +9,7 @@ from writers_moderation import (
     WRITERS_RULES_URL,
     build_captcha_success_text,
     contains_prohibited_language,
+    detect_prohibited_language,
 )
 
 EVALUATION_PATH = Path(__file__).parents[1] / "data" / "writers_moderation_eval.json"
@@ -23,27 +20,24 @@ class ProhibitedLanguageTests(unittest.TestCase):
     def _load_evaluation_data() -> dict:
         return json.loads(EVALUATION_PATH.read_text(encoding="utf-8"))
 
-    def test_primary_lexicon_is_loaded(self):
+    def test_versioned_lexicon_is_loaded(self):
         self.assertTrue(LEXICON_PATH.exists())
         self.assertEqual(MODERATION_LEXICON.schema_version, 1)
-        self.assertGreaterEqual(MODERATION_LEXICON.rule_count, 80)
-
-    def test_curated_supplemental_lexicon_is_active(self):
-        terms = load_curated_terms()
-        self.assertTrue(DATASET_PATH.exists())
-        self.assertGreaterEqual(len(terms), 40)
-        self.assertEqual(len(terms), len(set(term.casefold() for term in terms)))
-        self.assertTrue(contains_prohibited_language(terms[0]))
+        self.assertGreaterEqual(MODERATION_LEXICON.rule_count, 100)
+        self.assertTrue(MODERATION_LEXICON.exact_mixed)
+        self.assertTrue(MODERATION_LEXICON.prefix_mixed)
 
     def test_evaluation_corpus(self):
         data = self._load_evaluation_data()
         for text in data["must_block"]:
             with self.subTest(kind="must_block", text=text):
                 self.assertTrue(contains_prohibited_language(text))
+                self.assertIsNotNone(detect_prohibited_language(text))
 
         for text in data["must_allow"]:
             with self.subTest(kind="must_allow", text=text):
                 self.assertFalse(contains_prohibited_language(text))
+                self.assertIsNone(detect_prohibited_language(text))
 
     def test_captcha_success_repeats_rules_link(self):
         text = build_captcha_success_text("@qraxos")
