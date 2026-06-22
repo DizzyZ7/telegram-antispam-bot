@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 os.environ.setdefault("WRITERS_CHAT_ID", "-1002619489118")
@@ -47,6 +48,10 @@ STRICT_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
+# A Latin transliteration rule was normalized into the mixed-script prefix "\u043d\u0443".
+# That is too short and incorrectly matches normal Russian words such as "\u043d\u0443\u0436\u043d\u0430".
+UNSAFE_MIXED_PREFIXES = frozenset({"\u043d\u0443"})
+
 
 def sync_moderation_lexicon() -> None:
     if not BUNDLED_LEXICON_PATH.is_file():
@@ -85,8 +90,28 @@ def apply_strict_rule_overlay() -> None:
     print(f"WRITERS_LEXICON_OVERLAY_READY added={added}", flush=True)
 
 
+def remove_unsafe_mixed_prefixes() -> int:
+    import writers_moderation as moderation
+
+    filtered_prefixes = tuple(
+        item
+        for item in moderation.MODERATION_LEXICON.prefix_mixed
+        if item[0] not in UNSAFE_MIXED_PREFIXES
+    )
+    removed = len(moderation.MODERATION_LEXICON.prefix_mixed) - len(filtered_prefixes)
+    if removed:
+        moderation.MODERATION_LEXICON = replace(
+            moderation.MODERATION_LEXICON,
+            prefix_mixed=filtered_prefixes,
+            rule_count=max(0, moderation.MODERATION_LEXICON.rule_count - removed),
+        )
+    print(f"WRITERS_LEXICON_SAFETY_PATCH removed_mixed_prefixes={removed}", flush=True)
+    return removed
+
+
 sync_moderation_lexicon()
 apply_strict_rule_overlay()
+remove_unsafe_mixed_prefixes()
 
 import legacy_main as app
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
