@@ -44,17 +44,25 @@ LOOKALIKE_MAP = str.maketrans(
         "a": "а", "b": "б", "c": "с", "d": "д", "e": "е", "g": "г",
         "h": "н", "i": "и", "k": "к", "l": "л", "m": "м", "o": "о",
         "p": "р", "t": "т", "v": "в", "x": "х", "y": "у", "z": "з",
+        "u": "у", "n": "н", "r": "р", "f": "ф", "j": "й",
         "0": "о", "1": "и", "2": "з", "3": "з", "4": "а", "5": "с",
         "6": "б", "7": "т", "8": "в", "9": "я", "@": "а", "$": "с",
     }
 )
 
-WORD_TOKEN_PATTERN = re.compile(r"[A-Za-zА-Яа-я0-9@#$]+")
+TOKEN_CHAR_CLASS = r"A-Za-zА-Яа-яЁё0-9@#$"
+WORD_TOKEN_PATTERN = re.compile(rf"[{TOKEN_CHAR_CLASS}]+")
 SPACED_TOKEN_PATTERN = re.compile(
-    r"(?<![A-Za-zА-Яа-я0-9@#$])"
-    r"(?:[A-Za-zА-Яа-я0-9@#$][\s._*|!/\\\-\u200b]+){2,}"
-    r"[A-Za-zА-Яа-я0-9@#$]"
-    r"(?![A-Za-zА-Яа-я0-9@#$])"
+    rf"(?<![{TOKEN_CHAR_CLASS}])"
+    rf"(?:[{TOKEN_CHAR_CLASS}][\s._*|!/\\\-\u200b]+){{1,}}"
+    rf"[{TOKEN_CHAR_CLASS}]"
+    rf"(?![{TOKEN_CHAR_CLASS}])"
+)
+SYMBOL_OBFUSCATION_PATTERN = re.compile(
+    rf"(?<![{TOKEN_CHAR_CLASS}])"
+    rf"[{TOKEN_CHAR_CLASS}](?:[^\w\s]+[{TOKEN_CHAR_CLASS}])+[{TOKEN_CHAR_CLASS}]*"
+    rf"(?![{TOKEN_CHAR_CLASS}])",
+    re.UNICODE,
 )
 
 
@@ -73,6 +81,10 @@ def _normalize_latin_token(value: str) -> str:
     value = unicodedata.normalize("NFKC", value).casefold()
     value = re.sub(r"[^a-z0-9]", "", value)
     return _collapse_repeats(value)
+
+
+def _compact_candidate(value: str) -> str:
+    return re.sub(rf"[^{TOKEN_CHAR_CLASS}]", "", value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,19 +241,28 @@ def _detect_prohibited_token(raw_token: str) -> str | None:
     )
 
 
+def _detect_candidates(matches: list[str] | Any) -> str | None:
+    for match in matches:
+        compact_token = _compact_candidate(match)
+        if not compact_token:
+            continue
+        category = _detect_prohibited_token(compact_token)
+        if category is not None:
+            return category
+    return None
+
+
 def detect_prohibited_language(text: str) -> str | None:
     for raw_token in WORD_TOKEN_PATTERN.findall(text):
         category = _detect_prohibited_token(raw_token)
         if category is not None:
             return category
 
-    for match in SPACED_TOKEN_PATTERN.finditer(text):
-        compact_token = re.sub(r"[^A-Za-zА-Яа-я0-9@#$]", "", match.group())
-        category = _detect_prohibited_token(compact_token)
-        if category is not None:
-            return category
+    category = _detect_candidates(SPACED_TOKEN_PATTERN.findall(text))
+    if category is not None:
+        return category
 
-    return None
+    return _detect_candidates(SYMBOL_OBFUSCATION_PATTERN.findall(text))
 
 
 def contains_prohibited_language(text: str) -> bool:
