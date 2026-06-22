@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -16,6 +17,8 @@ BUNDLED_LEXICON_PATH = APP_DIR / "bundled_moderation_lexicon.json"
 RUNTIME_DATA_DIR = Path(os.getenv("DATA_DIR", APP_DIR / "data"))
 RUNTIME_LEXICON_PATH = RUNTIME_DATA_DIR / "moderation_lexicon.json"
 IGNORED_WRITERS_TOPIC_IDS = frozenset({14637, 42817, 292358})
+ASCII_LATIN_PATTERN = re.compile(r"[A-Za-z]")
+CYRILLIC_PATTERN = re.compile(r"[А-Яа-яЁё]")
 
 STRICT_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
     "exact": {
@@ -109,6 +112,66 @@ def remove_unsafe_mixed_prefixes() -> int:
     return removed
 
 
+def _is_pure_latin_rule(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(ASCII_LATIN_PATTERN.search(value))
+        and not CYRILLIC_PATTERN.search(value)
+    )
+
+
+def remove_cross_script_rule_collisions() -> int:
+    """Remove Cyrillic-normalized copies of rules that originated in Latin only."""
+    import writers_moderation as moderation
+
+    payload = json.loads(RUNTIME_LEXICON_PATH.read_text(encoding="utf-8"))
+    exact_collisions: set[str] = set()
+    prefix_collisions: set[str] = set()
+
+    for match_mode, categories in payload.get("rules", {}).items():
+        if match_mode not in {"exact", "prefix"} or not isinstance(categories, dict):
+            continue
+        for terms in categories.values():
+            if not isinstance(terms, list):
+                continue
+            for raw_term in terms:
+                if not _is_pure_latin_rule(raw_term):
+                    continue
+                mixed_term = moderation._normalize_mixed_token(raw_term)
+                if not mixed_term:
+                    continue
+                if match_mode == "exact":
+                    exact_collisions.add(mixed_term)
+                else:
+                    prefix_collisions.add(mixed_term)
+
+    exact_mixed = {
+        term: category
+        for term, category in moderation.MODERATION_LEXICON.exact_mixed.items()
+        if term not in exact_collisions
+    }
+    prefix_mixed = tuple(
+        item
+        for item in moderation.MODERATION_LEXICON.prefix_mixed
+        if item[0] not in prefix_collisions
+    )
+    removed = (
+        len(moderation.MODERATION_LEXICON.exact_mixed) - len(exact_mixed)
+        + len(moderation.MODERATION_LEXICON.prefix_mixed) - len(prefix_mixed)
+    )
+
+    if removed:
+        moderation.MODERATION_LEXICON = replace(
+            moderation.MODERATION_LEXICON,
+            exact_mixed=exact_mixed,
+            prefix_mixed=prefix_mixed,
+            rule_count=max(0, moderation.MODERATION_LEXICON.rule_count - removed),
+        )
+
+    print(f"WRITERS_CROSS_SCRIPT_SAFETY_PATCH removed_rules={removed}", flush=True)
+    return removed
+
+
 def install_ignored_topic_filter() -> None:
     import writers_moderation as moderation
 
@@ -131,6 +194,7 @@ def install_ignored_topic_filter() -> None:
 sync_moderation_lexicon()
 apply_strict_rule_overlay()
 remove_unsafe_mixed_prefixes()
+remove_cross_script_rule_collisions()
 install_ignored_topic_filter()
 
 import legacy_main as app
