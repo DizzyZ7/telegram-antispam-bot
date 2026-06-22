@@ -7,6 +7,10 @@ import os
 
 os.environ.setdefault("WRITERS_CHAT_ID", "-1002619489118")
 
+from moderation_dataset import install_curated_terms
+
+install_curated_terms()
+
 import legacy_main as app
 from writers_moderation import register_writers_chat_handlers
 
