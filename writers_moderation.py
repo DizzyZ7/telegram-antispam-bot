@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import time
 import unicodedata
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from aiogram import F
@@ -28,6 +31,8 @@ WRITERS_RULES_URL = os.getenv(
 )
 WARNING_COOLDOWN_SECONDS = max(10, int(os.getenv("WRITERS_WARNING_COOLDOWN_SECONDS", "60")))
 RULES_LINK_PREVIEW_OPTIONS = LinkPreviewOptions(is_disabled=True)
+LEXICON_PATH = Path(__file__).resolve().parent / "data" / "moderation_lexicon.json"
+
 EXTRA_BLOCKED_TERMS_RAW = tuple(
     item.strip()
     for item in re.split(r"[,;\n]", os.getenv("WRITERS_EXTRA_BLOCKED_TERMS", ""))
@@ -52,77 +57,6 @@ SPACED_TOKEN_PATTERN = re.compile(
     r"(?![A-Za-zА-Яа-я0-9@#$])"
 )
 
-OBSCENE_CYRILLIC_PATTERNS = (
-    re.compile(r"^бля+$"),
-    re.compile(r"^бляд[а-я]*$"),
-    re.compile(r"^блят[а-я]*$"),
-    re.compile(r"^(?:еб|заеб|выеб|доеб|наеб|поеб|уеб|разеб|разъеб)[а-я]*$"),
-    re.compile(r"^(?:пизд|пезд)[а-я]*$"),
-    re.compile(r"^(?:хуй|хуе|хуи|хуя|оху|наху|поху)[а-я]*$"),
-    re.compile(r"^(?:залуп|хуесос|пиздобол|пиздюк|пиздюл|пиздот|пиздат)[а-я]*$"),
-    re.compile(r"^(?:долбоеб|гандон|мудак|мудач|мудил)[а-я]*$"),
-    re.compile(r"^сука$"),
-    re.compile(r"^пид(?:ор|орас|арас)[а-я]*$"),
-    re.compile(r"^педик(?:а|у|ом|е|и|ов|ам|ами)?$"),
-)
-
-TOXIC_INSULT_CYRILLIC_PATTERNS = (
-    re.compile(r"^дебил[а-я]*$"),
-    re.compile(r"^кретин[а-я]*$"),
-    re.compile(r"^имбецил[а-я]*$"),
-    re.compile(r"^дегенерат[а-я]*$"),
-    re.compile(r"^ублюд[а-я]*$"),
-    re.compile(r"^мраз[а-я]*$"),
-    re.compile(r"^сволоч[а-я]*$"),
-    re.compile(r"^гнид[а-я]*$"),
-    re.compile(r"^чмо(?:шник|шница|шка)?[а-я]*$"),
-    re.compile(r"^тупиц[а-я]*$"),
-    re.compile(r"^недоумок[а-я]*$"),
-)
-
-OBSCENE_LATIN_PATTERNS = (
-    re.compile(r"^(?:fuck|fck|shit|bitch|asshole|dick)[a-z]*$"),
-    re.compile(r"^(?:blya|blyad|blyat|pizd[a-z]*|ebat|yebat|huy|hui|huinya)$"),
-    re.compile(r"^(?:suka|mudak|gandon|dolboeb)[a-z]*$"),
-    re.compile(r"^pid(?:or|ar|oras|aras|as)[a-z]*$"),
-    re.compile(r"^pedor[a-z]*$"),
-)
-
-TOXIC_INSULT_LATIN_PATTERNS = (
-    re.compile(r"^debil[a-z]*$"),
-    re.compile(r"^cretin[a-z]*$"),
-    re.compile(r"^imbecil[a-z]*$"),
-    re.compile(r"^degenerat[a-z]*$"),
-    re.compile(r"^ublyud[a-z]*$"),
-    re.compile(r"^mraz[a-z]*$"),
-    re.compile(r"^svoloch[a-z]*$"),
-    re.compile(r"^gnida[a-z]*$"),
-    re.compile(r"^chmo[a-z]*$"),
-    re.compile(r"^tupica[a-z]*$"),
-)
-
-
-class WritersChatScope:
-    def __init__(self) -> None:
-        configured_id = os.getenv("WRITERS_CHAT_ID", "").strip()
-        self.chat_id = int(configured_id) if configured_id.lstrip("-").isdigit() else None
-
-    async def resolve(self, bot: Any) -> None:
-        if self.chat_id is not None:
-            return
-        try:
-            chat = await bot.get_chat("@" + WRITERS_CHAT_USERNAME)
-        except Exception as exc:
-            LOGGER.warning("Could not resolve writers chat id: %s", exc)
-            return
-        self.chat_id = chat.id
-        LOGGER.info("Writers chat id resolved: %s", self.chat_id)
-
-    def matches(self, chat: Chat) -> bool:
-        if self.chat_id is not None:
-            return chat.id == self.chat_id
-        return (chat.username or "").lower() == WRITERS_CHAT_USERNAME
-
 
 def _collapse_repeats(value: str) -> str:
     return re.sub(r"(.)\1+", r"\1", value)
@@ -141,6 +75,107 @@ def _normalize_latin_token(value: str) -> str:
     return _collapse_repeats(value)
 
 
+@dataclass(frozen=True, slots=True)
+class ModerationLexicon:
+    schema_version: int
+    allow_mixed: frozenset[str]
+    allow_latin: frozenset[str]
+    exact_mixed: dict[str, str]
+    exact_latin: dict[str, str]
+    prefix_mixed: tuple[tuple[str, str], ...]
+    prefix_latin: tuple[tuple[str, str], ...]
+    rule_count: int
+
+
+def _empty_lexicon() -> ModerationLexicon:
+    return ModerationLexicon(
+        schema_version=0,
+        allow_mixed=frozenset(),
+        allow_latin=frozenset(),
+        exact_mixed={},
+        exact_latin={},
+        prefix_mixed=(),
+        prefix_latin=(),
+        rule_count=0,
+    )
+
+
+def _load_moderation_lexicon() -> ModerationLexicon:
+    try:
+        payload = json.loads(LEXICON_PATH.read_text(encoding="utf-8"))
+        schema_version = int(payload["schema_version"])
+        if schema_version != 1:
+            raise ValueError(f"Unsupported moderation lexicon schema: {schema_version}")
+
+        allow_exact = payload.get("allow_exact", [])
+        rule_groups = payload.get("rules", {})
+        if not isinstance(allow_exact, list) or not isinstance(rule_groups, dict):
+            raise ValueError("Moderation lexicon has an invalid shape")
+
+        allow_mixed: set[str] = set()
+        allow_latin: set[str] = set()
+        for raw_term in allow_exact:
+            if not isinstance(raw_term, str):
+                continue
+            mixed = _normalize_mixed_token(raw_term)
+            latin = _normalize_latin_token(raw_term)
+            if mixed:
+                allow_mixed.add(mixed)
+            if latin:
+                allow_latin.add(latin)
+
+        exact_mixed: dict[str, str] = {}
+        exact_latin: dict[str, str] = {}
+        prefix_mixed: list[tuple[str, str]] = []
+        prefix_latin: list[tuple[str, str]] = []
+        rule_count = 0
+
+        for match_mode, categories in rule_groups.items():
+            if match_mode not in {"exact", "prefix"} or not isinstance(categories, dict):
+                raise ValueError(f"Unsupported moderation rule group: {match_mode}")
+
+            for category, terms in categories.items():
+                if not isinstance(category, str) or not isinstance(terms, list):
+                    raise ValueError("Moderation lexicon category is invalid")
+
+                for raw_term in terms:
+                    if not isinstance(raw_term, str):
+                        continue
+                    mixed = _normalize_mixed_token(raw_term)
+                    latin = _normalize_latin_token(raw_term)
+                    if not mixed and not latin:
+                        continue
+                    rule_count += 1
+
+                    if match_mode == "exact":
+                        if mixed:
+                            exact_mixed.setdefault(mixed, category)
+                        if latin:
+                            exact_latin.setdefault(latin, category)
+                    else:
+                        if mixed:
+                            prefix_mixed.append((mixed, category))
+                        if latin:
+                            prefix_latin.append((latin, category))
+
+        return ModerationLexicon(
+            schema_version=schema_version,
+            allow_mixed=frozenset(allow_mixed),
+            allow_latin=frozenset(allow_latin),
+            exact_mixed=exact_mixed,
+            exact_latin=exact_latin,
+            prefix_mixed=tuple(sorted(prefix_mixed, key=lambda item: len(item[0]), reverse=True)),
+            prefix_latin=tuple(sorted(prefix_latin, key=lambda item: len(item[0]), reverse=True)),
+            rule_count=rule_count,
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        LOGGER.error("Could not load moderation lexicon from %s: %s", LEXICON_PATH, exc)
+        return _empty_lexicon()
+
+
+MODERATION_LEXICON = _load_moderation_lexicon()
+
+
 def _build_extra_blocked_tokens() -> frozenset[str]:
     normalized_terms: set[str] = set()
     for raw_term in EXTRA_BLOCKED_TERMS_RAW:
@@ -156,38 +191,61 @@ def _build_extra_blocked_tokens() -> frozenset[str]:
 EXTRA_BLOCKED_TOKENS = _build_extra_blocked_tokens()
 
 
-def _matches_any(value: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
-    return any(pattern.fullmatch(value) for pattern in patterns)
+def _match_compiled_rules(
+    value: str,
+    exact_rules: dict[str, str],
+    prefix_rules: tuple[tuple[str, str], ...],
+) -> str | None:
+    if value in exact_rules:
+        return exact_rules[value]
+    for prefix, category in prefix_rules:
+        if value.startswith(prefix):
+            return category
+    return None
 
 
-def _is_prohibited_token(raw_token: str) -> bool:
+def _detect_prohibited_token(raw_token: str) -> str | None:
     latin_token = _normalize_latin_token(raw_token)
     if latin_token in EXTRA_BLOCKED_TOKENS:
-        return True
-    if _matches_any(latin_token, OBSCENE_LATIN_PATTERNS):
-        return True
-    if _matches_any(latin_token, TOXIC_INSULT_LATIN_PATTERNS):
-        return True
+        return "extra"
+    if latin_token not in MODERATION_LEXICON.allow_latin:
+        category = _match_compiled_rules(
+            latin_token,
+            MODERATION_LEXICON.exact_latin,
+            MODERATION_LEXICON.prefix_latin,
+        )
+        if category is not None:
+            return category
 
     token = _normalize_mixed_token(raw_token)
     if token in EXTRA_BLOCKED_TOKENS:
-        return True
-    if _matches_any(token, OBSCENE_CYRILLIC_PATTERNS):
-        return True
-    return _matches_any(token, TOXIC_INSULT_CYRILLIC_PATTERNS)
+        return "extra"
+    if token in MODERATION_LEXICON.allow_mixed:
+        return None
+    return _match_compiled_rules(
+        token,
+        MODERATION_LEXICON.exact_mixed,
+        MODERATION_LEXICON.prefix_mixed,
+    )
 
 
-def contains_prohibited_language(text: str) -> bool:
+def detect_prohibited_language(text: str) -> str | None:
     for raw_token in WORD_TOKEN_PATTERN.findall(text):
-        if _is_prohibited_token(raw_token):
-            return True
+        category = _detect_prohibited_token(raw_token)
+        if category is not None:
+            return category
 
     for match in SPACED_TOKEN_PATTERN.finditer(text):
         compact_token = re.sub(r"[^A-Za-zА-Яа-я0-9@#$]", "", match.group())
-        if _is_prohibited_token(compact_token):
-            return True
+        category = _detect_prohibited_token(compact_token)
+        if category is not None:
+            return category
 
-    return False
+    return None
+
+
+def contains_prohibited_language(text: str) -> bool:
+    return detect_prohibited_language(text) is not None
 
 
 def build_welcome_text(name: str, question: str) -> str:
@@ -231,6 +289,28 @@ def build_warning_text() -> str:
             "(°-°)",
         )
     )
+
+
+class WritersChatScope:
+    def __init__(self) -> None:
+        configured_id = os.getenv("WRITERS_CHAT_ID", "").strip()
+        self.chat_id = int(configured_id) if configured_id.lstrip("-").isdigit() else None
+
+    async def resolve(self, bot: Any) -> None:
+        if self.chat_id is not None:
+            return
+        try:
+            chat = await bot.get_chat("@" + WRITERS_CHAT_USERNAME)
+        except Exception as exc:
+            LOGGER.warning("Could not resolve writers chat id: %s", exc)
+            return
+        self.chat_id = chat.id
+        LOGGER.info("Writers chat id resolved: %s", self.chat_id)
+
+    def matches(self, chat: Chat) -> bool:
+        if self.chat_id is not None:
+            return chat.id == self.chat_id
+        return (chat.username or "").lower() == WRITERS_CHAT_USERNAME
 
 
 class WritersChatFilter(BaseFilter):
