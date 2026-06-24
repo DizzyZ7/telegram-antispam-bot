@@ -20,40 +20,20 @@ IGNORED_WRITERS_TOPIC_IDS = frozenset({14637, 42817, 292358})
 ASCII_LATIN_PATTERN = re.compile(r"[A-Za-z]")
 CYRILLIC_PATTERN = re.compile(r"[А-Яа-яЁё]")
 
-STRICT_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
+# Only rules missing from the bundled source are overlaid at startup.
+RUNTIME_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
     "exact": {
-        "obscene": (
-            "\u0431\u0434\u044c", "\u0434\u0435\u0440\u044c\u043c\u043e", "\u0433\u043e\u0432\u043d\u043e", "\u0433\u043e\u0432\u043d\u0438\u0449\u0435", "\u0433\u043e\u0432\u043d\u044e\u043a",
-            "\u0445\u0435\u0440\u043d\u044f", "\u043f\u0437\u0434\u0446", "\u043e\u0431\u043e\u0441\u0441\u0430\u043b", "\u043e\u0431\u043e\u0441\u0441\u0430\u043b\u0438", "\u043e\u0431\u043e\u0441\u0441\u0430\u043d", "\u043e\u0431\u043e\u0441\u0441\u0430\u0442\u044c",
-        ),
-        "severe_insult": (
-            "\u043f\u0430\u0441\u043a\u0443\u0434\u0430", "\u043f\u0430\u0434\u043b\u0430",
-        ),
-        "english_obscene": (
-            "cunt", "motherfucker", "slut", "whore", "bastard", "xj", "oboss",
-        ),
+        "obscene": ("\u0431\u0434\u044c",),
+        "english_obscene": ("xj",),
     },
     "prefix": {
-        "obscene": (
-            "\u0445\u0439", "\u043f\u0437\u0434", "\u0430\u0445\u0443", "\u0445\u0435\u0440\u043d", "\u043f\u043e\u0445\u0435\u0440", "\u043d\u0430\u0445\u0435\u0440", "\u0433\u043e\u0432\u043d", "\u0433\u0430\u0432\u043d",
-            "\u0434\u0435\u0440\u044c\u043c", "\u0441\u0440\u0430\u043d", "\u0441\u0441\u044b\u043a", "\u0434\u0440\u043e\u0447", "\u0448\u043b\u044e\u0445", "\u0448\u0430\u043b\u0430\u0432",
-            "\u0448\u043c\u0430\u0440", "\u043f\u0430\u0441\u043a\u0443\u0434", "\u043f\u0430\u0434\u043b", "\u0434\u0440\u0438\u0441\u0442", "\u0437\u0430\u0441\u0440\u0430\u043d",
-        ),
-        "toxic_insult": (
-            "\u0438\u043c\u0431\u0435\u0446\u0438\u043b", "\u0432\u044b\u0440\u043e\u0434",
-        ),
-        "rare_insult": (
-            "\u0438\u043c\u0431\u0435\u0446\u0438\u043b\u043a", "\u0443\u0431\u043b\u044e\u0434\u0438\u0449", "\u0433\u0430\u0432\u043d\u044e\u043a", "\u0441\u0441\u044b\u043a\u0443\u043d", "\u0434\u0440\u043e\u0447\u0435\u0440", "\u0434\u0440\u043e\u0447\u0438\u043b",
-        ),
-        "latin_translit": (
-            "pzd", "ahu", "ohu", "oher", "naher", "poher", "hernya", "govn", "gavno", "derm", "sran", "ssyk", "droch",
-            "shlyuh", "shalav", "shmar", "paskud", "padla", "drist", "pzdts", "pzdc", "blya", "ueb", "razeb", "eblan", "ebanut", "ebuch",
-        ),
+        "obscene": ("\u0445\u0439", "\u043f\u0437\u0434"),
+        "latin_translit": ("pzd",),
     },
 }
 
-# Transliterated roots must not become short Cyrillic prefixes that collide with normal words.
-UNSAFE_MIXED_PREFIXES = frozenset({"\u043d\u0443", "\u043e\u0431\u043e\u0441"})
+# These broad roots collide with normal Russian words after normalization.
+UNSAFE_MIXED_PREFIXES = frozenset({"\u043d\u0443", "\u043e\u0431\u043e\u0441", "\u043f\u0430\u0434\u043b"})
 
 
 def sync_moderation_lexicon() -> None:
@@ -70,12 +50,12 @@ def sync_moderation_lexicon() -> None:
     )
 
 
-def apply_strict_rule_overlay() -> None:
+def apply_runtime_rule_overlay() -> int:
     payload = json.loads(RUNTIME_LEXICON_PATH.read_text(encoding="utf-8"))
     rules = payload.setdefault("rules", {})
     added = 0
 
-    for match_mode, categories in STRICT_RULE_OVERLAY.items():
+    for match_mode, categories in RUNTIME_RULE_OVERLAY.items():
         target_categories = rules.setdefault(match_mode, {})
         for category, terms in categories.items():
             target_terms = target_categories.setdefault(category, [])
@@ -91,25 +71,7 @@ def apply_strict_rule_overlay() -> None:
         encoding="utf-8",
     )
     print(f"WRITERS_LEXICON_OVERLAY_READY added={added}", flush=True)
-
-
-def remove_unsafe_mixed_prefixes() -> int:
-    import writers_moderation as moderation
-
-    filtered_prefixes = tuple(
-        item
-        for item in moderation.MODERATION_LEXICON.prefix_mixed
-        if item[0] not in UNSAFE_MIXED_PREFIXES
-    )
-    removed = len(moderation.MODERATION_LEXICON.prefix_mixed) - len(filtered_prefixes)
-    if removed:
-        moderation.MODERATION_LEXICON = replace(
-            moderation.MODERATION_LEXICON,
-            prefix_mixed=filtered_prefixes,
-            rule_count=max(0, moderation.MODERATION_LEXICON.rule_count - removed),
-        )
-    print(f"WRITERS_LEXICON_SAFETY_PATCH removed_mixed_prefixes={removed}", flush=True)
-    return removed
+    return added
 
 
 def _is_pure_latin_rule(value: object) -> bool:
@@ -120,13 +82,13 @@ def _is_pure_latin_rule(value: object) -> bool:
     )
 
 
-def remove_cross_script_rule_collisions() -> int:
-    """Remove Cyrillic-normalized copies of rules that originated in Latin only."""
+def sanitize_compiled_lexicon() -> tuple[int, int]:
+    """Remove unsafe Cyrillic copies of Latin rules and ambiguous short prefixes."""
     import writers_moderation as moderation
 
     payload = json.loads(RUNTIME_LEXICON_PATH.read_text(encoding="utf-8"))
-    exact_collisions: set[str] = set()
-    prefix_collisions: set[str] = set()
+    latin_exact_collisions: set[str] = set()
+    latin_prefix_collisions: set[str] = set()
 
     for match_mode, categories in payload.get("rules", {}).items():
         if match_mode not in {"exact", "prefix"} or not isinstance(categories, dict):
@@ -141,35 +103,44 @@ def remove_cross_script_rule_collisions() -> int:
                 if not mixed_term:
                     continue
                 if match_mode == "exact":
-                    exact_collisions.add(mixed_term)
+                    latin_exact_collisions.add(mixed_term)
                 else:
-                    prefix_collisions.add(mixed_term)
+                    latin_prefix_collisions.add(mixed_term)
 
     exact_mixed = {
         term: category
         for term, category in moderation.MODERATION_LEXICON.exact_mixed.items()
-        if term not in exact_collisions
+        if term not in latin_exact_collisions
     }
     prefix_mixed = tuple(
         item
         for item in moderation.MODERATION_LEXICON.prefix_mixed
-        if item[0] not in prefix_collisions
+        if item[0] not in latin_prefix_collisions
+        and item[0] not in UNSAFE_MIXED_PREFIXES
     )
-    removed = (
+    removed_latin = (
         len(moderation.MODERATION_LEXICON.exact_mixed) - len(exact_mixed)
-        + len(moderation.MODERATION_LEXICON.prefix_mixed) - len(prefix_mixed)
+        + len(moderation.MODERATION_LEXICON.prefix_mixed)
+        - len(tuple(item for item in moderation.MODERATION_LEXICON.prefix_mixed if item[0] not in latin_prefix_collisions))
+    )
+    removed_ambiguous = (
+        len(tuple(item for item in moderation.MODERATION_LEXICON.prefix_mixed if item[0] not in latin_prefix_collisions))
+        - len(prefix_mixed)
     )
 
-    if removed:
-        moderation.MODERATION_LEXICON = replace(
-            moderation.MODERATION_LEXICON,
-            exact_mixed=exact_mixed,
-            prefix_mixed=prefix_mixed,
-            rule_count=max(0, moderation.MODERATION_LEXICON.rule_count - removed),
-        )
-
-    print(f"WRITERS_CROSS_SCRIPT_SAFETY_PATCH removed_rules={removed}", flush=True)
-    return removed
+    moderation.MODERATION_LEXICON = replace(
+        moderation.MODERATION_LEXICON,
+        exact_mixed=exact_mixed,
+        prefix_mixed=prefix_mixed,
+        rule_count=max(0, moderation.MODERATION_LEXICON.rule_count - removed_latin - removed_ambiguous),
+    )
+    print(
+        "WRITERS_LEXICON_SAFETY_PATCH "
+        f"removed_latin_collisions={removed_latin} "
+        f"removed_ambiguous_prefixes={removed_ambiguous}",
+        flush=True,
+    )
+    return removed_latin, removed_ambiguous
 
 
 def install_ignored_topic_filter() -> None:
@@ -178,8 +149,7 @@ def install_ignored_topic_filter() -> None:
     original_call = moderation.ProhibitedLanguageFilter.__call__
 
     async def scoped_call(instance: object, message: object) -> bool:
-        message_thread_id = getattr(message, "message_thread_id", None)
-        if message_thread_id in IGNORED_WRITERS_TOPIC_IDS:
+        if getattr(message, "message_thread_id", None) in IGNORED_WRITERS_TOPIC_IDS:
             return False
         return await original_call(instance, message)
 
@@ -192,9 +162,11 @@ def install_ignored_topic_filter() -> None:
 
 
 sync_moderation_lexicon()
-apply_strict_rule_overlay()
-remove_unsafe_mixed_prefixes()
-remove_cross_script_rule_collisions()
+apply_runtime_rule_overlay()
+
+import writers_moderation
+
+sanitize_compiled_lexicon()
 install_ignored_topic_filter()
 
 import legacy_main as app
