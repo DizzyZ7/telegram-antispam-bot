@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -12,6 +13,7 @@ from pathlib import Path
 
 os.environ.setdefault("WRITERS_CHAT_ID", "-1002619489118")
 
+LOGGER = logging.getLogger(__name__)
 APP_DIR = Path(__file__).resolve().parent
 BUNDLED_LEXICON_PATH = APP_DIR / "bundled_moderation_lexicon.json"
 RUNTIME_DATA_DIR = Path(os.getenv("DATA_DIR", APP_DIR / "data"))
@@ -20,7 +22,6 @@ IGNORED_WRITERS_TOPIC_IDS = frozenset({14637, 42817, 292358})
 ASCII_LATIN_PATTERN = re.compile(r"[A-Za-z]")
 CYRILLIC_PATTERN = re.compile(r"[А-Яа-яЁё]")
 
-# Only rules missing from the bundled source are overlaid at startup.
 RUNTIME_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
     "exact": {
         "obscene": ("\u0431\u0434\u044c",),
@@ -32,7 +33,6 @@ RUNTIME_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
-# These broad roots collide with normal Russian words after normalization.
 UNSAFE_MIXED_PREFIXES = frozenset({"\u043d\u0443", "\u043e\u0431\u043e\u0441", "\u043f\u0430\u0434\u043b"})
 
 
@@ -112,21 +112,21 @@ def sanitize_compiled_lexicon() -> tuple[int, int]:
         for term, category in moderation.MODERATION_LEXICON.exact_mixed.items()
         if term not in latin_exact_collisions
     }
-    prefix_mixed = tuple(
+    prefixes_without_latin_collisions = tuple(
         item
         for item in moderation.MODERATION_LEXICON.prefix_mixed
         if item[0] not in latin_prefix_collisions
-        and item[0] not in UNSAFE_MIXED_PREFIXES
+    )
+    prefix_mixed = tuple(
+        item
+        for item in prefixes_without_latin_collisions
+        if item[0] not in UNSAFE_MIXED_PREFIXES
     )
     removed_latin = (
         len(moderation.MODERATION_LEXICON.exact_mixed) - len(exact_mixed)
-        + len(moderation.MODERATION_LEXICON.prefix_mixed)
-        - len(tuple(item for item in moderation.MODERATION_LEXICON.prefix_mixed if item[0] not in latin_prefix_collisions))
+        + len(moderation.MODERATION_LEXICON.prefix_mixed) - len(prefixes_without_latin_collisions)
     )
-    removed_ambiguous = (
-        len(tuple(item for item in moderation.MODERATION_LEXICON.prefix_mixed if item[0] not in latin_prefix_collisions))
-        - len(prefix_mixed)
-    )
+    removed_ambiguous = len(prefixes_without_latin_collisions) - len(prefix_mixed)
 
     moderation.MODERATION_LEXICON = replace(
         moderation.MODERATION_LEXICON,
@@ -161,6 +161,36 @@ def install_ignored_topic_filter() -> None:
     )
 
 
+def install_stats_command_handler(app: object) -> None:
+    """Register /stats after moderation and move it to the front of message handlers."""
+    command_filter = getattr(app, "Command")
+    dispatcher = getattr(app, "dp")
+
+    @dispatcher.message(command_filter("stats"))
+    async def priority_stats_command(message: object) -> None:
+        if not app.is_group_chat(message) or not app.is_allowed_chat(message.chat.id):
+            return
+
+        service = app.summary_service
+        if service is None:
+            LOGGER.warning("Stats command received before summary service initialization")
+            await message.reply("⌛ Статистика еще запускается. Попробуй еще раз через несколько секунд.")
+            return
+
+        try:
+            text = await service.build_stats_text(message.chat.id)
+        except Exception:
+            LOGGER.exception("Could not build stats for chat_id=%s", message.chat.id)
+            await message.reply("⚠️ Не удалось собрать статистику. Попробуй еще раз через минуту.")
+            return
+
+        await message.reply(text)
+        LOGGER.info("Stats command completed for chat_id=%s", message.chat.id)
+
+    dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
+    print("WRITERS_STATS_COMMAND_READY", flush=True)
+
+
 sync_moderation_lexicon()
 apply_runtime_rule_overlay()
 
@@ -175,6 +205,7 @@ from writers_moderation import MODERATION_LEXICON, register_writers_chat_handler
 
 async def main() -> None:
     scope = register_writers_chat_handlers(app)
+    install_stats_command_handler(app)
     await scope.resolve(app.bot)
 
     if scope.chat_id is not None and scope.chat_id not in app.ALLOWED_CHATS:
