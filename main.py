@@ -4,18 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 import re
 import shutil
 from dataclasses import replace
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 os.environ.setdefault("WRITERS_CHAT_ID", "-1002619489118")
 
-LOGGER = logging.getLogger(__name__)
 APP_DIR = Path(__file__).resolve().parent
 BUNDLED_LEXICON_PATH = APP_DIR / "bundled_moderation_lexicon.json"
 RUNTIME_DATA_DIR = Path(os.getenv("DATA_DIR", APP_DIR / "data"))
@@ -163,100 +159,6 @@ def install_ignored_topic_filter() -> None:
     )
 
 
-def _telegram_day_bounds(message_date: datetime, tz: Any) -> tuple[int, int, datetime]:
-    if message_date.tzinfo is None:
-        message_date = message_date.replace(tzinfo=timezone.utc)
-    local_now = message_date.astimezone(tz)
-    local_day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return int(local_day_start.timestamp()), int(local_now.timestamp()), local_now
-
-
-async def build_stats_from_command_time(service: Any, chat_id: int, message_date: datetime) -> str:
-    start_ts, end_ts, local_now = _telegram_day_bounds(message_date, service.tz)
-    messages = await service.storage.get_messages_between(chat_id, start_ts, end_ts)
-    participants = await service.storage.get_top_participants(chat_id, start_ts, end_ts, limit=5)
-    sticker_count, reaction_count, top_reactions = await service.storage.get_engagement_events(
-        chat_id,
-        start_ts,
-        end_ts,
-    )
-    emoji_count, emoji_messages, emoji_only_messages = service._build_emoji_stats(messages)
-    text_total = len(messages)
-    total_activity = text_total + sticker_count + reaction_count
-
-    if total_activity == 0:
-        return "📊 За сегодня в чате пока нет данных активности."
-
-    lines = [
-        f"📊 Краткая статистика за сегодня на {local_now:%H:%M}:",
-        f"Текстовых сообщений: <b>{text_total}</b>",
-        f"Стикеров: <b>{sticker_count}</b>",
-        f"Эмодзи в текстах: <b>{emoji_count}</b>",
-        f"Сообщений с эмодзи: <b>{emoji_messages}</b>",
-        f"Сообщений только из эмодзи: <b>{emoji_only_messages}</b>",
-        f"Реакций: <b>{reaction_count}</b>",
-        "Самые активные участники:",
-    ]
-
-    if participants:
-        for stat in participants:
-            lines.append(f"— {service._display_name(stat)}: {stat.message_count}")
-    else:
-        lines.append("— Нет данных")
-
-    if top_reactions:
-        lines.append("Топ реакций:")
-        for reaction, count in top_reactions[:3]:
-            lines.append(f"— {app.reaction_label(reaction)}: {count}")
-
-    if text_total < service.min_messages:
-        lines.append("")
-        lines.append("Сегодня в чате было мало сообщений для полноценной аналитики.")
-
-    return "\n".join(lines)
-
-
-def install_stats_command_handler(app: object) -> None:
-    """Register /stats after moderation and move it to the front of message handlers."""
-    command_filter = getattr(app, "Command")
-    dispatcher = getattr(app, "dp")
-
-    @dispatcher.message(command_filter("stats"))
-    async def priority_stats_command(message: Any) -> None:
-        LOGGER.info(
-            "Stats command received chat_id=%s message_id=%s telegram_date=%s",
-            message.chat.id,
-            message.message_id,
-            message.date.isoformat(),
-        )
-        if not app.is_group_chat(message) or not app.is_allowed_chat(message.chat.id):
-            LOGGER.info("Stats command skipped for non-allowed chat_id=%s", message.chat.id)
-            return
-
-        service = app.summary_service
-        if service is None:
-            LOGGER.warning("Stats command received before summary service initialization")
-            await message.reply("⌛ Статистика еще запускается. Попробуй еще раз через несколько секунд.")
-            return
-
-        try:
-            text = await build_stats_from_command_time(service, message.chat.id, message.date)
-        except Exception:
-            LOGGER.exception("Could not build stats for chat_id=%s", message.chat.id)
-            await message.reply("⚠️ Не удалось собрать статистику. Попробуй еще раз через минуту.")
-            return
-
-        try:
-            await message.reply(text)
-        except Exception:
-            LOGGER.exception("Could not send stats reply for chat_id=%s", message.chat.id)
-            return
-        LOGGER.info("Stats command completed for chat_id=%s", message.chat.id)
-
-    dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
-    print("WRITERS_STATS_COMMAND_READY source=telegram_message_date", flush=True)
-
-
 sync_moderation_lexicon()
 apply_runtime_rule_overlay()
 
@@ -266,24 +168,31 @@ sanitize_compiled_lexicon()
 install_ignored_topic_filter()
 
 import legacy_main as app
+from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
 
 
 async def main() -> None:
-    scope = register_writers_chat_handlers(app)
-    install_stats_command_handler(app)
-    await scope.resolve(app.bot)
+    accurate_storage = AccurateStatsStorage(RUNTIME_DATA_DIR / "accurate_stats.db")
+    await accurate_storage.initialize()
+    accurate_stats = AccurateStatsService(app, accurate_storage, app.SUMMARY_TIMEZONE)
 
-    if scope.chat_id is not None and scope.chat_id not in app.ALLOWED_CHATS:
-        app.ALLOWED_CHATS.append(scope.chat_id)
+    try:
+        scope = register_writers_chat_handlers(app)
+        register_accurate_stats_handlers(app, accurate_stats)
+        await scope.resolve(app.bot)
 
-    print(
-        "WRITERS_MODERATION_READY "
-        f"chat_id={scope.chat_id} rules={MODERATION_LEXICON.rule_count}",
-        flush=True,
-    )
+        if scope.chat_id is not None and scope.chat_id not in app.ALLOWED_CHATS:
+            app.ALLOWED_CHATS.append(scope.chat_id)
 
-    await app.main()
+        print(
+            "WRITERS_MODERATION_READY "
+            f"chat_id={scope.chat_id} rules={MODERATION_LEXICON.rule_count}",
+            flush=True,
+        )
+        await app.main()
+    finally:
+        await accurate_storage.close()
 
 
 if __name__ == "__main__":
