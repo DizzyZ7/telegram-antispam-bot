@@ -9,9 +9,9 @@ a valid word attempt.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from typing import Any
 
 from aiogram.types import Message
 
@@ -28,9 +28,68 @@ from minigames import (
 
 LOGGER = logging.getLogger(__name__)
 
+LIVE_EXTRA_WORDS = frozenset(
+    {
+        # common words players naturally try in rounds like "конструкторская"
+        "контур",
+        "трактор",
+        "турок",
+        "носок",
+        "урок",
+        "крот",
+        "утка",
+        "корт",
+        "трос",
+        "торс",
+        "стук",
+        "сукно",
+        "ткань",
+        "танк",
+        "коса",
+        "кора",
+        "коса",
+        "сорт",
+        "сотка",
+        "сотня",
+        "скорняк",
+        "скорняк",
+        "настрой",
+        "настой",
+        "струна",
+        "строка",
+        "страна",
+        "страус",
+        "корона",
+        "корка",
+        "норка",
+        "нора",
+        "носка",
+        "скот",
+        "скат",
+        "срок",
+        "рост",
+        "трон",
+        "кран",
+        "крот",
+        "крон",
+        "кросс",
+        "коста",
+        "актер",
+        "терка",
+        "сектор",
+        "секатор",
+    }
+)
+
 
 class PatchedMiniGameService(MiniGameService):
     """Lexicon service with visible word acknowledgements and pinned source page."""
+
+    @classmethod
+    def load_dictionary_words(cls) -> set[str]:
+        words = set(super().load_dictionary_words())
+        words.update(LIVE_EXTRA_WORDS)
+        return words
 
     def found_words_line(self, round_data: WordGameRound, limit: int = 18) -> str | None:
         if not round_data.found_words:
@@ -116,11 +175,6 @@ class PatchedMiniGameService(MiniGameService):
                 message_thread_id=message.message_thread_id,
             )
             self.active_word_games[game_key] = round_data
-            round_data.finish_task = self.app.asyncio.create_task(self.finish_later(round_data)) if hasattr(self.app, "asyncio") else None
-
-        if round_data.finish_task is None:
-            import asyncio
-
             round_data.finish_task = asyncio.create_task(self.finish_later(round_data))
 
         sent_message = await message.answer(self.render_start(round_data))
