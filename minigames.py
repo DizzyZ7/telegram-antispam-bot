@@ -123,7 +123,7 @@ class MiniGameStorage:
                 )
             await self.connection.commit()
 
-    async def leaderboard(self, chat_id: int, limit: int = 5) -> list[tuple[str, int, int, int]]:
+    async def leaderboard(self, chat_id: int, limit: int = 7) -> list[tuple[str, int, int, int]]:
         assert self.connection is not None
         async with self.lock:
             async with self.connection.execute(
@@ -149,7 +149,7 @@ class MiniGameService:
         self.dictionary_words = self.load_dictionary_words()
         self.round_candidates = self.build_round_candidates()
         print(
-            "SLOVODEL_DICTIONARY_READY "
+            "LEXICON_DICTIONARY_READY "
             f"words={len(self.dictionary_words)} bases={len(BASE_WORDS)} playable={len(self.round_candidates)}",
             flush=True,
         )
@@ -168,7 +168,7 @@ class MiniGameService:
                     if word and WORD_RE.match(word):
                         words.add(word)
             except Exception:
-                LOGGER.exception("Could not load extra Slovodel words from %s", EXTRA_WORDS_PATH)
+                LOGGER.exception("Could not load extra Lexicon words from %s", EXTRA_WORDS_PATH)
         return {
             word
             for word in words
@@ -215,21 +215,11 @@ class MiniGameService:
         return "▰" * filled + "▱" * (width - filled)
 
     @staticmethod
-    def difficulty_label(total_words: int) -> str:
-        if total_words >= 80:
-            return "CHAOS"
-        if total_words >= 55:
-            return "RUSH"
-        if total_words >= 35:
-            return "FLOW"
-        return "FOCUS"
-
-    @staticmethod
     def mask_hint(word: str) -> str:
         if len(word) <= 4:
-            return word[0] + " _ " * (len(word) - 1)
+            return " ".join([word[0], *("_" for _ in range(len(word) - 1))])
         if len(word) <= 6:
-            return word[0] + " " + " ".join("_" for _ in range(len(word) - 2)) + " " + word[-1]
+            return " ".join([word[0], *("_" for _ in range(len(word) - 2)), word[-1]])
         middle = ["_" for _ in range(len(word) - 4)]
         return " ".join([word[0], word[1], *middle, word[-2], word[-1]])
 
@@ -270,10 +260,10 @@ class MiniGameService:
     def player_name(self, message: Message) -> str:
         user = message.from_user
         if user is None:
-            return "Игрок"
+            return "Автор"
         return user.username or user.full_name or str(user.id)
 
-    def top_players(self, round_data: WordGameRound, limit: int = 5) -> list[PlayerResult]:
+    def top_players(self, round_data: WordGameRound, limit: int = 7) -> list[PlayerResult]:
         return sorted(
             round_data.players.values(),
             key=lambda player: (-player.points, player.name.lower()),
@@ -297,75 +287,94 @@ class MiniGameService:
     def render_start(self, round_data: WordGameRound) -> str:
         total = len(round_data.allowed_words)
         return (
-            "🟣 <b>FOSGEN WORD//RUN</b>\n"
-            f"<code>ROUND #{round_data.round_code}</code> · режим <b>{self.difficulty_label(total)}</b>\n\n"
+            "📖 <b>ЛЕКСИКОН открыт</b>\n\n"
+            f"<code>Раунд #{round_data.round_code}</code>\n"
+            "Слово-источник:\n\n"
             f"<code>{self.spaced_word(round_data.base_word)}</code>\n\n"
-            f"⏱ <b>{self.format_duration(ROUND_SECONDS)}</b> · 🔡 от <b>{round_data.min_length}</b> букв · "
-            f"🎯 банк: <b>{total}</b> слов\n"
-            "Пиши одно слово одним сообщением. Первый нашедший забирает очки.\n\n"
-            "⚡ Комбо: длинные слова дают больше звезд.\n"
-            "⌁ Панель: /game · Подсказка: /hint · Стоп: /stopgame"
+            f"Из этих букв можно собрать <b>{total}</b> слов.\n"
+            f"Минимум — <b>{round_data.min_length}</b> буквы.\n"
+            f"Время до закрытия страницы — <b>{self.format_duration(ROUND_SECONDS)}</b>.\n\n"
+            "Пишите слова прямо в чат.\n"
+            "Первый, кто нашел слово, забирает его себе.\n\n"
+            "Чем длиннее слово, тем больше звезд:\n"
+            "4 буквы — 1🌟\n"
+            "5 букв — 2🌟\n"
+            "6 букв — 4🌟\n"
+            "7 букв — 7🌟\n"
+            "8+ букв — 10🌟 и выше\n\n"
+            "⌁ Страница раунда: /game\n"
+            "⌁ Намек: /hint\n"
+            "⌁ Закрыть досрочно: /stopgame"
         )
 
     def render_status(self, round_data: WordGameRound) -> str:
         left = int(round_data.ends_at - time.monotonic())
         found, total, percent, bar = self.round_stats(round_data)
-        players = self.top_players(round_data, limit=5)
+        players = self.top_players(round_data, limit=7)
         lines = [
-            "🟣 <b>WORD//RUN · LIVE</b>",
-            f"<code>ROUND #{round_data.round_code}</code> · осталось <b>{self.format_duration(left)}</b>",
-            f"<code>{bar}</code> <b>{percent}%</b>",
-            f"Найдено: <b>{found}</b>/<b>{total}</b> · подсказки: <b>{round_data.hint_count}</b>/<b>{HINT_LIMIT}</b>",
+            "📖 <b>ЛЕКСИКОН · текущая страница</b>",
             "",
-            "<b>Таблица сейчас</b>",
+            f"<code>Раунд #{round_data.round_code}</code>",
+            f"Осталось: <b>{self.format_duration(left)}</b>",
+            "",
+            f"<code>{bar}</code> <b>{percent}%</b>",
+            f"Найдено слов: <b>{found}</b> из <b>{total}</b>",
+            f"Намеков использовано: <b>{round_data.hint_count}</b>/<b>{HINT_LIMIT}</b>",
+            "",
+            "<b>Сейчас в тексте</b>",
+            "",
         ]
         if players:
             for idx, player in enumerate(players, start=1):
                 lines.append(self.compact_player_line(idx, player))
         else:
-            lines.append("▫️ Пока никто не забрал слово.")
+            lines.append("▫️ Страница еще чистая. Первое слово ждет автора.")
         lines.append("")
         lines.append("⌁ /hint · /stopgame · /game_top")
         return "\n".join(lines)
 
     def render_finish(self, round_data: WordGameRound, players: list[PlayerResult]) -> str:
         found, total, percent, bar = self.round_stats(round_data)
-        longest_words = sorted(round_data.used_words, key=lambda word: (-len(word), word))[:6]
+        beautiful_words = sorted(round_data.used_words, key=lambda word: (-len(word), word))[:6]
         lines = [
-            "🏁 <b>WORD//RUN завершен</b>",
-            f"<code>ROUND #{round_data.round_code}</code>",
+            "📕 <b>ЛЕКСИКОН закрыт</b>",
             "",
+            f"<code>Раунд #{round_data.round_code}</code>",
+            "",
+            "Слово-источник:",
             f"<code>{self.spaced_word(round_data.base_word)}</code>",
             "",
             f"<code>{bar}</code> <b>{percent}%</b>",
-            f"Найдено: <b>{found}</b>/<b>{total}</b> · длительность: <b>{self.format_duration(ROUND_SECONDS)}</b>",
+            f"Чат нашел <b>{found}</b> слов из <b>{total}</b>.",
             "",
-            "<b>Финальная таблица</b>",
+            "<b>Финальная страница</b>",
+            "",
         ]
         if players:
             for idx, player in enumerate(players, start=1):
                 lines.append(self.compact_player_line(idx, player))
         else:
-            lines.append("▫️ Раунд ушел в архив без очков.")
+            lines.append("▫️ Раунд закрылся пустой страницей.")
 
-        if longest_words:
+        if beautiful_words:
             lines.append("")
-            lines.append("<b>Самые длинные найденные</b>")
-            lines.append(" · ".join(self.app.safe_output_text(word) for word in longest_words))
+            lines.append("<b>Самые красивые находки раунда</b>")
+            lines.append(" · ".join(self.app.safe_output_text(word) for word in beautiful_words))
 
-        lines.extend(("", "↻ /minigame · 🏆 /game_top"))
+        lines.extend(("", "Новая страница Лексикона: /minigame", "Рейтинг авторов: /game_top"))
         return "\n".join(lines)
 
     def render_help(self) -> str:
         return (
-            "🟣 <b>FOSGEN MINIGAMES</b>\n\n"
-            "<b>WORD//RUN</b> — быстрый словесный забег на 5 минут.\n"
-            "Собираете слова из букв большого слова, кто первый нашел — забрал очки.\n\n"
-            "▶️ /minigame — старт\n"
-            "📊 /game — статус текущего раунда\n"
-            "💡 /hint — подсказка\n"
-            "🏁 /stopgame — завершить\n"
-            "🏆 /game_top — общий рейтинг"
+            "📖 <b>ЛЕКСИКОН</b>\n"
+            "словесный раунд от Fosgen\n\n"
+            "Собирайте слова из букв слова-источника.\n"
+            "Кто первым нашел слово — забирает его на свою страницу.\n\n"
+            "▶️ /minigame или /lexicon — открыть Лексикон\n"
+            "📄 /game — текущая страница\n"
+            "💡 /hint — намек на полях\n"
+            "📕 /stopgame — закрыть страницу\n"
+            "🏆 /game_top — рейтинг авторов"
         )
 
     async def start_word_game(self, message: Message) -> None:
@@ -405,7 +414,7 @@ class MiniGameService:
         except asyncio.CancelledError:
             raise
         except Exception:
-            LOGGER.exception("Could not finish word game chat_id=%s", round_data.chat_id)
+            LOGGER.exception("Could not finish Lexicon game chat_id=%s", round_data.chat_id)
 
     async def finish_word_game(self, chat_id: int, forced: bool) -> None:
         async with self.lock:
@@ -430,7 +439,7 @@ class MiniGameService:
         if message.from_user is None or message.from_user.is_bot:
             return
         if message.chat.id not in self.active_word_games:
-            await message.reply("🟣 Сейчас нет активного WORD//RUN. Старт: /minigame")
+            await message.reply("📖 Сейчас нет открытой страницы Лексикона. Старт: /minigame")
             return
         await self.finish_word_game(message.chat.id, forced=True)
 
@@ -442,7 +451,7 @@ class MiniGameService:
             await message.reply(self.render_help())
             return
         if round_data.message_thread_id is not None and message.message_thread_id != round_data.message_thread_id:
-            await message.reply("🟣 WORD//RUN идет в другой теме этого чата.")
+            await message.reply("📖 Лексикон открыт в другой теме этого чата.")
             return
         await message.reply(self.render_status(round_data))
 
@@ -451,28 +460,32 @@ class MiniGameService:
             return
         round_data = self.active_word_games.get(message.chat.id)
         if round_data is None or round_data.ends_at <= time.monotonic():
-            await message.reply("🟣 Сейчас нет активного WORD//RUN. Старт: /minigame")
+            await message.reply("📖 Сейчас нет открытой страницы Лексикона. Старт: /minigame")
             return
         if round_data.message_thread_id is not None and message.message_thread_id != round_data.message_thread_id:
-            await message.reply("🟣 WORD//RUN идет в другой теме этого чата.")
+            await message.reply("📖 Лексикон открыт в другой теме этого чата.")
             return
 
         async with round_data.lock:
             if round_data.hint_count >= HINT_LIMIT:
-                await message.reply("💡 Лимит подсказок на раунд уже исчерпан.")
+                await message.reply("💡 На этой странице больше нет свободных намеков.")
                 return
             remaining = sorted(round_data.allowed_words - set(round_data.used_words), key=lambda word: (-self.word_points(word), word))
             if not remaining:
-                await message.reply("💡 Подсказки не нужны: все известные слова уже нашли.")
+                await message.reply("💡 Намек не нужен: все известные слова уже найдены.")
                 return
             hint_word = random.choice(remaining[: min(20, len(remaining))])
             round_data.hint_count += 1
             hint_number = round_data.hint_count
 
         await message.reply(
-            "💡 <b>WORD//RUN · hint</b>\n"
-            f"Слово на <b>{len(hint_word)}</b> букв: <code>{self.mask_hint(hint_word)}</code>\n"
-            f"Потенциал: <b>+{self.word_points(hint_word)}🌟</b> · подсказка {hint_number}/{HINT_LIMIT}"
+            "💡 <b>Пометка на полях</b>\n\n"
+            f"Одно из ненайденных слов начинается на <b>{self.app.safe_output_text(hint_word[0])}</b>\n"
+            f"и заканчивается на <b>{self.app.safe_output_text(hint_word[-1])}</b>.\n\n"
+            f"В нем <b>{len(hint_word)}</b> букв.\n"
+            f"За него дадут <b>+{self.word_points(hint_word)}🌟</b>.\n\n"
+            f"Намек <b>{hint_number}</b>/<b>{HINT_LIMIT}</b>\n"
+            f"<code>{self.mask_hint(hint_word)}</code>"
         )
 
     async def handle_word_guess(self, message: Message) -> None:
@@ -520,9 +533,14 @@ class MiniGameService:
             found, total, percent, _ = self.round_stats(round_data)
 
         if points >= 7:
+            label = "💎 <b>Редкая находка</b>" if points >= 10 else "✨ <b>Сильная находка</b>"
             await message.reply(
-                f"⚡ <b>+{points}🌟</b> · {self.app.safe_output_text(word)}\n"
-                f"У тебя: <b>{total_points}🌟</b> · прогресс раунда: <b>{found}/{total}</b> ({percent}%)"
+                f"{label}\n\n"
+                f"{self.app.safe_output_text(player.name)} забирает слово:\n"
+                f"<code>{self.app.safe_output_text(word)}</code>\n\n"
+                f"+{points}🌟\n"
+                f"Всего у автора: <b>{total_points}🌟</b>\n"
+                f"Страница заполнена на <b>{percent}%</b> — {found}/{total}"
             )
 
     async def show_leaderboard(self, message: Message) -> None:
@@ -530,16 +548,16 @@ class MiniGameService:
             return
         leaders = await self.storage.leaderboard(message.chat.id, limit=7)
         if not leaders:
-            await message.reply("🏆 Рейтинг WORD//RUN пока пуст. Старт: /minigame")
+            await message.reply("🏆 Рейтинг Лексикона пока пуст. Открыть первую страницу: /minigame")
             return
-        lines = ["🏆 <b>FOSGEN WORD//RUN · рейтинг</b>", ""]
+        lines = ["🏆 <b>ЛЕКСИКОН · общий рейтинг</b>", ""]
         for idx, (name, total_points, wins, rounds) in enumerate(leaders, start=1):
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, "▫️")
             lines.append(
-                f"{medal} <b>{self.app.safe_output_text(name)}</b> — {total_points}🌟 · "
-                f"побед {wins} · игр {rounds}"
+                f"{medal} <b>{self.app.safe_output_text(name)}</b> — {total_points}🌟\n"
+                f"   побед: {wins} · страниц сыграно: {rounds}"
             )
-        await message.reply("\n".join(lines))
+        await message.reply("\n\n".join(lines))
 
 
 class MiniGameGuessMiddleware(BaseMiddleware):
@@ -555,7 +573,7 @@ class MiniGameGuessMiddleware(BaseMiddleware):
         try:
             await self.service.handle_word_guess(event)
         except Exception:
-            LOGGER.exception("Could not handle minigame guess chat_id=%s", event.chat.id)
+            LOGGER.exception("Could not handle Lexicon guess chat_id=%s", event.chat.id)
         return await handler(event, data)
 
 
@@ -568,33 +586,33 @@ def register_minigame_handlers(app: Any, service: MiniGameService) -> None:
     dispatcher = app.dp
     dispatcher.message.outer_middleware(MiniGameGuessMiddleware(service))
 
-    @dispatcher.message(Command(commands=["minigame", "wordgame", "slovodel"]))
+    @dispatcher.message(Command(commands=["minigame", "lexicon", "leksikon", "wordgame", "slovodel"]))
     async def minigame_start(message: Message) -> None:
         await service.start_word_game(message)
 
     _promote_last_message_handler(app)
 
-    @dispatcher.message(Command(commands=["game", "game_status", "games"]))
+    @dispatcher.message(Command(commands=["game", "page", "lexicon_page", "games"]))
     async def minigame_status(message: Message) -> None:
         await service.show_status(message)
 
     _promote_last_message_handler(app)
 
-    @dispatcher.message(Command(commands=["hint", "game_hint", "word_hint"]))
+    @dispatcher.message(Command(commands=["hint", "game_hint", "word_hint", "namyek"]))
     async def minigame_hint(message: Message) -> None:
         await service.give_hint(message)
 
     _promote_last_message_handler(app)
 
-    @dispatcher.message(Command(commands=["stopgame", "finishgame"]))
+    @dispatcher.message(Command(commands=["stopgame", "finishgame", "close_lexicon"]))
     async def minigame_stop(message: Message) -> None:
         await service.stop_word_game(message)
 
     _promote_last_message_handler(app)
 
-    @dispatcher.message(Command(commands=["game_top", "minigame_top", "slovodel_top"]))
+    @dispatcher.message(Command(commands=["game_top", "minigame_top", "lexicon_top", "slovodel_top"]))
     async def minigame_top(message: Message) -> None:
         await service.show_leaderboard(message)
 
     _promote_last_message_handler(app)
-    print("MINIGAMES_READY games=word_run mode=middleware dictionary=expanded ux=modern", flush=True)
+    print("MINIGAMES_READY games=lexicon mode=middleware dictionary=expanded ux=literary", flush=True)
