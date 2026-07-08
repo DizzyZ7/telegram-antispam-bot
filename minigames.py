@@ -27,8 +27,13 @@ ROUND_SECONDS = 5 * 60
 MIN_WORD_LENGTH = 4
 MIN_SOLUTIONS_PER_ROUND = 28
 HINT_LIMIT = 3
+HINT_UNLOCK_SECONDS = 60
+HINT_COOLDOWN_SECONDS = 75
+MULTI_VOTE_PLAYER_THRESHOLD = 3
+MULTI_VOTE_HINT_REQUESTS = 2
 EXTRA_WORDS_PATH = Path(os.getenv("SLOVODEL_WORDS_PATH", "/app/data/slovodel_words.txt"))
 ROUND_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+GameKey = tuple[int, int | None]
 
 
 @dataclass(slots=True)
@@ -52,6 +57,8 @@ class WordGameRound:
     players: dict[int, PlayerResult] = field(default_factory=dict)
     used_words: dict[str, int] = field(default_factory=dict)
     hint_count: int = 0
+    hint_requesters: set[int] = field(default_factory=set)
+    last_hint_at: float = 0.0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     finish_task: asyncio.Task[None] | None = None
 
@@ -144,7 +151,7 @@ class MiniGameService:
     def __init__(self, app: Any, storage: MiniGameStorage) -> None:
         self.app = app
         self.storage = storage
-        self.active_word_games: dict[int, WordGameRound] = {}
+        self.active_word_games: dict[GameKey, WordGameRound] = {}
         self.lock = asyncio.Lock()
         self.dictionary_words = self.load_dictionary_words()
         self.round_candidates = self.build_round_candidates()
@@ -153,6 +160,14 @@ class MiniGameService:
             f"words={len(self.dictionary_words)} bases={len(BASE_WORDS)} playable={len(self.round_candidates)}",
             flush=True,
         )
+
+    @staticmethod
+    def round_key(chat_id: int, message_thread_id: int | None) -> GameKey:
+        return chat_id, message_thread_id
+
+    @classmethod
+    def round_key_from_message(cls, message: Message) -> GameKey:
+        return cls.round_key(message.chat.id, message.message_thread_id)
 
     @classmethod
     def normalize_word(cls, value: str) -> str:
@@ -222,6 +237,11 @@ class MiniGameService:
             return " ".join([word[0], *("_" for _ in range(len(word) - 2)), word[-1]])
         middle = ["_" for _ in range(len(word) - 4)]
         return " ".join([word[0], word[1], *middle, word[-2], word[-1]])
+
+    def required_hint_votes(self, round_data: WordGameRound) -> int:
+        if len(round_data.players) >= MULTI_VOTE_PLAYER_THRESHOLD:
+            return MULTI_VOTE_HINT_REQUESTS
+        return 1
 
     def build_round_candidates(self) -> list[tuple[str, set[str]]]:
         candidates: list[tuple[str, set[str]]] = []
@@ -302,6 +322,7 @@ class MiniGameService:
             "6 букв — 4🌟\n"
             "7 букв — 7🌟\n"
             "8+ букв — 10🌟 и выше\n\n"
+            "Намеки открываются не сразу и не по одному голосу в активном раунде.\n\n"
             "⌁ Страница раунда: /game\n"
             "⌁ Намек: /hint\n"
             "⌁ Закрыть досрочно: /stopgame"
@@ -311,6 +332,7 @@ class MiniGameService:
         left = int(round_data.ends_at - time.monotonic())
         found, total, percent, bar = self.round_stats(round_data)
         players = self.top_players(round_data, limit=7)
+        hint_votes_required = self.required_hint_votes(round_data)
         lines = [
             "📖 <b>ЛЕКСИКОН · текущая страница</b>",
             "",
@@ -320,6 +342,7 @@ class MiniGameService:
             f"<code>{bar}</code> <b>{percent}%</b>",
             f"Найдено слов: <b>{found}</b> из <b>{total}</b>",
             f"Намеков использовано: <b>{round_data.hint_count}</b>/<b>{HINT_LIMIT}</b>",
+            f"Голосов за следующий намек: <b>{len(round_data.hint_requesters)}</b>/<b>{hint_votes_required}</b>",
             "",
             "<b>Сейчас в тексте</b>",
             "",
@@ -383,8 +406,9 @@ class MiniGameService:
         if message.from_user is None or message.from_user.is_bot:
             return
 
+        game_key = self.round_key_from_message(message)
         async with self.lock:
-            active = self.active_word_games.get(message.chat.id)
+            active = self.active_word_games.get(game_key)
             if active and active.ends_at > time.monotonic():
                 await message.reply(self.render_status(active))
                 return
@@ -401,7 +425,7 @@ class MiniGameService:
                 ends_at=now + ROUND_SECONDS,
                 message_thread_id=message.message_thread_id,
             )
-            self.active_word_games[message.chat.id] = round_data
+            self.active_word_games[game_key] = round_data
             round_data.finish_task = asyncio.create_task(self.finish_later(round_data))
 
         await message.answer(self.render_start(round_data))
@@ -410,15 +434,16 @@ class MiniGameService:
         delay = max(0.0, round_data.ends_at - time.monotonic())
         await asyncio.sleep(delay)
         try:
-            await self.finish_word_game(round_data.chat_id, forced=False)
+            await self.finish_word_game(round_data.chat_id, round_data.message_thread_id, forced=False)
         except asyncio.CancelledError:
             raise
         except Exception:
             LOGGER.exception("Could not finish Lexicon game chat_id=%s", round_data.chat_id)
 
-    async def finish_word_game(self, chat_id: int, forced: bool) -> None:
+    async def finish_word_game(self, chat_id: int, message_thread_id: int | None, forced: bool) -> None:
+        game_key = self.round_key(chat_id, message_thread_id)
         async with self.lock:
-            round_data = self.active_word_games.pop(chat_id, None)
+            round_data = self.active_word_games.pop(game_key, None)
         if round_data is None:
             return
         if forced and round_data.finish_task is not None:
@@ -438,44 +463,80 @@ class MiniGameService:
             return
         if message.from_user is None or message.from_user.is_bot:
             return
-        if message.chat.id not in self.active_word_games:
-            await message.reply("📖 Сейчас нет открытой страницы Лексикона. Старт: /minigame")
+        game_key = self.round_key_from_message(message)
+        if game_key not in self.active_word_games:
+            await message.reply("📖 В этой теме нет открытой страницы Лексикона. Старт: /minigame")
             return
-        await self.finish_word_game(message.chat.id, forced=True)
+        await self.finish_word_game(message.chat.id, message.message_thread_id, forced=True)
 
     async def show_status(self, message: Message) -> None:
         if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
             return
-        round_data = self.active_word_games.get(message.chat.id)
+        round_data = self.active_word_games.get(self.round_key_from_message(message))
         if round_data is None or round_data.ends_at <= time.monotonic():
             await message.reply(self.render_help())
-            return
-        if round_data.message_thread_id is not None and message.message_thread_id != round_data.message_thread_id:
-            await message.reply("📖 Лексикон открыт в другой теме этого чата.")
             return
         await message.reply(self.render_status(round_data))
 
     async def give_hint(self, message: Message) -> None:
         if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
             return
-        round_data = self.active_word_games.get(message.chat.id)
-        if round_data is None or round_data.ends_at <= time.monotonic():
-            await message.reply("📖 Сейчас нет открытой страницы Лексикона. Старт: /minigame")
-            return
-        if round_data.message_thread_id is not None and message.message_thread_id != round_data.message_thread_id:
-            await message.reply("📖 Лексикон открыт в другой теме этого чата.")
+        if message.from_user is None or message.from_user.is_bot:
             return
 
+        round_data = self.active_word_games.get(self.round_key_from_message(message))
+        if round_data is None or round_data.ends_at <= time.monotonic():
+            await message.reply("📖 В этой теме нет открытой страницы Лексикона. Старт: /minigame")
+            return
+
+        now = time.monotonic()
         async with round_data.lock:
+            elapsed = int(now - round_data.started_at)
+            if elapsed < HINT_UNLOCK_SECONDS:
+                await message.reply(
+                    "💡 Пометки на полях появятся чуть позже.\n"
+                    f"Первый намек откроется через <b>{self.format_duration(HINT_UNLOCK_SECONDS - elapsed)}</b>."
+                )
+                return
+
             if round_data.hint_count >= HINT_LIMIT:
                 await message.reply("💡 На этой странице больше нет свободных намеков.")
                 return
+
+            if round_data.last_hint_at and now - round_data.last_hint_at < HINT_COOLDOWN_SECONDS:
+                wait_left = int(HINT_COOLDOWN_SECONDS - (now - round_data.last_hint_at))
+                await message.reply(
+                    "💡 Чернила предыдущей пометки еще не высохли.\n"
+                    f"Следующий намек можно открыть через <b>{self.format_duration(wait_left)}</b>."
+                )
+                return
+
+            if message.from_user.id in round_data.hint_requesters:
+                votes_required = self.required_hint_votes(round_data)
+                await message.reply(
+                    "💡 Твой голос за намек уже записан.\n"
+                    f"Сейчас: <b>{len(round_data.hint_requesters)}</b>/<b>{votes_required}</b>."
+                )
+                return
+
+            round_data.hint_requesters.add(message.from_user.id)
+            votes_required = self.required_hint_votes(round_data)
+            if len(round_data.hint_requesters) < votes_required:
+                await message.reply(
+                    "💡 Голос за намек записан.\n"
+                    f"Нужно еще: <b>{votes_required - len(round_data.hint_requesters)}</b>.\n"
+                    f"Сейчас: <b>{len(round_data.hint_requesters)}</b>/<b>{votes_required}</b>."
+                )
+                return
+
             remaining = sorted(round_data.allowed_words - set(round_data.used_words), key=lambda word: (-self.word_points(word), word))
             if not remaining:
                 await message.reply("💡 Намек не нужен: все известные слова уже найдены.")
                 return
             hint_word = random.choice(remaining[: min(20, len(remaining))])
             round_data.hint_count += 1
+            round_data.last_hint_at = now
+            round_data.hint_requesters.clear()
             hint_number = round_data.hint_count
 
         await message.reply(
@@ -496,10 +557,8 @@ class MiniGameService:
         if not message.text or message.text.startswith("/"):
             return
 
-        round_data = self.active_word_games.get(message.chat.id)
+        round_data = self.active_word_games.get(self.round_key_from_message(message))
         if round_data is None or round_data.ends_at <= time.monotonic():
-            return
-        if round_data.message_thread_id is not None and message.message_thread_id != round_data.message_thread_id:
             return
 
         raw_word = message.text.strip()
@@ -615,4 +674,8 @@ def register_minigame_handlers(app: Any, service: MiniGameService) -> None:
         await service.show_leaderboard(message)
 
     _promote_last_message_handler(app)
-    print("MINIGAMES_READY games=lexicon mode=middleware dictionary=expanded ux=literary", flush=True)
+    print(
+        "MINIGAMES_READY games=lexicon mode=middleware dictionary=expanded "
+        "ux=literary scope=topic hints=throttled",
+        flush=True,
+    )
