@@ -1,8 +1,13 @@
-"""Live UX fixes for the Lexicon mini-game.
+"""Live UX and dictionary engine for the Lexicon mini-game.
 
-The Lexicon accepts correctly written Russian dictionary words in their base form.
-It uses the curated in-repository dictionary first and then falls back to pymorphy3
-(OpenCorpora-based morphology) for normal-form noun validation.
+The Lexicon accepts correctly written Russian words in base form. It uses:
+- the curated in-repository dictionary;
+- additional live words from chat testing;
+- pymorphy3 / OpenCorpora morphology for strict noun-lemma validation;
+- wordfreq's Russian frequency list for a much larger answer and source-word pool.
+
+Important game rule: inflected forms are rejected. For example, "станция" is valid,
+but "станцией", "станцию", and "станции" are not valid for this game.
 """
 
 from __future__ import annotations
@@ -10,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import Counter
 from functools import lru_cache
 
 from aiogram.types import Message
@@ -24,6 +30,7 @@ from minigames import (
     PlayerResult,
     WordGameRound,
 )
+from wordgame_dictionary import BASE_WORDS
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,9 +39,21 @@ try:
 except Exception:  # pragma: no cover - optional at import time until requirements are installed
     pymorphy3 = None
 
+try:
+    from wordfreq import top_n_list
+except Exception:  # pragma: no cover - optional at import time until requirements are installed
+    top_n_list = None
+
 MORPH = pymorphy3.MorphAnalyzer() if pymorphy3 is not None else None
 MIN_MORPH_SCORE = 0.45
 ACCEPTED_POS = frozenset({"NOUN"})
+WORD_FREQ_DICTIONARY_LIMIT = 45_000
+WORD_FREQ_SOURCE_LIMIT = 7_500
+SOURCE_CANDIDATE_LIMIT = 1_500
+MIN_SOURCE_LENGTH = 10
+MAX_SOURCE_LENGTH = 18
+MIN_DYNAMIC_SOLUTIONS_PER_ROUND = 38
+MAX_PLAYABLE_ROUNDS = 900
 
 LIVE_EXTRA_WORDS = frozenset(
     {
@@ -49,24 +68,37 @@ LIVE_EXTRA_WORDS = frozenset(
 )
 
 
-class PatchedMiniGameService(MiniGameService):
-    """Lexicon service with visible word acknowledgements and pinned source page."""
+def _letters_signature(word: str) -> tuple[int, ...]:
+    counts = Counter(word)
+    return tuple(counts.get(chr(code), 0) for code in range(ord("а"), ord("я") + 1))
 
-    @classmethod
-    def load_dictionary_words(cls) -> set[str]:
-        words = set(super().load_dictionary_words())
-        words.update(LIVE_EXTRA_WORDS)
-        return words
+
+def _signature_fits(word_signature: tuple[int, ...], source_signature: tuple[int, ...]) -> bool:
+    return all(needed <= available for needed, available in zip(word_signature, source_signature, strict=False))
+
+
+class PatchedMiniGameService(MiniGameService):
+    """Lexicon service with large Russian dictionary and visible acknowledgements."""
+
+    def __init__(self, app, storage) -> None:
+        super().__init__(app, storage)
+        print(
+            "LEXICON_SOURCE_POOL_READY "
+            f"answers={len(self.dictionary_words)} playable_sources={len(self.round_candidates)} "
+            f"morphology={'on' if MORPH is not None else 'off'} "
+            f"wordfreq={'on' if top_n_list is not None else 'off'}",
+            flush=True,
+        )
 
     @staticmethod
-    @lru_cache(maxsize=100_000)
+    @lru_cache(maxsize=150_000)
     def is_valid_dictionary_lemma(word: str) -> bool:
         """Return True for valid Russian noun lemmas, not arbitrary inflected forms.
 
         Examples:
         - станция -> True
         - станцией -> False, because normal form is станция
-        - станции -> False, because it is an inflected/plural form for this game
+        - станции -> False, because it is an inflected/plural form in this game
         """
         if MORPH is None:
             return False
@@ -80,11 +112,107 @@ class PatchedMiniGameService(MiniGameService):
                 continue
             if normal_form != word:
                 continue
-            # For nouns, require nominative form when the dictionary knows the case.
-            # Plural-only nouns such as "сани" stay valid because their normal_form is themselves.
+            # Nominal lemma. Plural-only nouns such as "сани" stay valid because their normal_form is themselves.
             if "nomn" in tag or normal_form == word:
                 return True
         return False
+
+    @classmethod
+    def _wordfreq_words(cls, limit: int) -> list[str]:
+        if top_n_list is None:
+            return []
+        try:
+            return [cls.normalize_word(word) for word in top_n_list("ru", limit)]
+        except Exception:
+            LOGGER.exception("Could not load Russian wordfreq list")
+            return []
+
+    @classmethod
+    def load_dictionary_words(cls) -> set[str]:
+        words = {cls.normalize_word(word) for word in super().load_dictionary_words()}
+        words.update(LIVE_EXTRA_WORDS)
+        words.update(cls._wordfreq_words(WORD_FREQ_DICTIONARY_LIMIT))
+        filtered: set[str] = set()
+        for word in words:
+            if len(word) < MIN_WORD_LENGTH or not WORD_RE.match(word):
+                continue
+            if MORPH is not None and not cls.is_valid_dictionary_lemma(word):
+                continue
+            filtered.add(word)
+        return filtered
+
+    @classmethod
+    def load_source_words(cls) -> list[str]:
+        source_words: list[str] = []
+        seen: set[str] = set()
+        raw_candidates = [*BASE_WORDS, *cls._wordfreq_words(WORD_FREQ_SOURCE_LIMIT)]
+        for raw_word in raw_candidates:
+            word = cls.normalize_word(raw_word)
+            if word in seen:
+                continue
+            if not (MIN_SOURCE_LENGTH <= len(word) <= MAX_SOURCE_LENGTH):
+                continue
+            if not WORD_RE.match(word):
+                continue
+            if MORPH is not None and word not in {cls.normalize_word(item) for item in BASE_WORDS}:
+                if not cls.is_valid_dictionary_lemma(word):
+                    continue
+            seen.add(word)
+            source_words.append(word)
+            if len(source_words) >= SOURCE_CANDIDATE_LIMIT:
+                break
+        return source_words
+
+    def build_round_candidates(self) -> list[tuple[str, set[str]]]:
+        answer_words = sorted(self.dictionary_words, key=lambda item: (len(item), item))
+        answer_signatures = {word: _letters_signature(word) for word in answer_words}
+        candidates: list[tuple[str, set[str]]] = []
+        best_fallback: tuple[str, set[str]] | None = None
+
+        for base_word in self.load_source_words():
+            base_signature = _letters_signature(base_word)
+            allowed = {
+                word
+                for word in answer_words
+                if word != base_word
+                and len(word) <= len(base_word)
+                and _signature_fits(answer_signatures[word], base_signature)
+            }
+            if best_fallback is None or len(allowed) > len(best_fallback[1]):
+                best_fallback = (base_word, allowed)
+            if len(allowed) >= MIN_DYNAMIC_SOLUTIONS_PER_ROUND:
+                candidates.append((base_word, allowed))
+
+        if not candidates:
+            return [best_fallback] if best_fallback is not None else []
+
+        # Keep a broad but not huge playable set for quick random choice.
+        candidates.sort(key=lambda item: (len(item[1]), len(item[0])), reverse=True)
+        return candidates[:MAX_PLAYABLE_ROUNDS]
+
+    def choose_base_word(self) -> tuple[str, set[str]]:
+        if not self.round_candidates:
+            return super().choose_base_word()
+
+        # 20% legendary/rich pages, 80% varied pages.
+        if len(self.round_candidates) > 30 and self.app.random.random() < 0.2 if hasattr(self.app, "random") else False:
+            pool = self.round_candidates[:30]
+        else:
+            pool = self.round_candidates[: min(len(self.round_candidates), 350)]
+        import random
+
+        base_word, allowed = random.choice(pool)
+        return base_word, set(allowed)
+
+    @staticmethod
+    def page_level(total_words: int) -> str:
+        if total_words >= 150:
+            return "легендарная страница"
+        if total_words >= 100:
+            return "богатая страница"
+        if total_words >= 65:
+            return "широкая страница"
+        return "камерная страница"
 
     def word_is_accepted_for_round(self, word: str, round_data: WordGameRound) -> bool:
         if word in round_data.allowed_words:
@@ -99,13 +227,13 @@ class PatchedMiniGameService(MiniGameService):
 
     def render_start(self, round_data: WordGameRound) -> str:
         total = len(round_data.allowed_words)
-        morph_line = "\nЛексикон также проверяет большой русский словарь начальных форм."
         return (
             f"<code>{self.spaced_word(round_data.base_word)}</code>\n"
             "📖 <b>ЛЕКСИКОН открыт</b>\n\n"
-            f"<code>Раунд #{round_data.round_code}</code>\n"
+            f"<code>Раунд #{round_data.round_code}</code> · <b>{self.page_level(total)}</b>\n"
             "Слово-источник выше — именно его держим в закрепе.\n\n"
-            f"В стартовом словаре страницы уже есть <b>{total}</b> слов.{morph_line}\n"
+            f"В стартовом словаре страницы уже есть <b>{total}</b> слов.\n"
+            "Лексикон также проверяет большой русский словарь начальных форм.\n"
             f"Минимум — <b>{round_data.min_length}</b> буквы.\n"
             f"Время до закрытия страницы — <b>{self.format_duration(ROUND_SECONDS)}</b>.\n\n"
             "Пишите слова прямо в чат.\n"
@@ -142,7 +270,7 @@ class PatchedMiniGameService(MiniGameService):
             f"<code>{self.spaced_word(round_data.base_word)}</code>",
             "📖 <b>ЛЕКСИКОН · текущая страница</b>",
             "",
-            f"<code>Раунд #{round_data.round_code}</code>",
+            f"<code>Раунд #{round_data.round_code}</code> · <b>{self.page_level(total)}</b>",
             f"Осталось: <b>{self.format_duration(left)}</b>",
             "",
             f"<code>{bar}</code> <b>{percent}%</b>",
