@@ -8,12 +8,13 @@ import random
 import re
 import time
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
-from aiogram import F
+from aiogram import BaseMiddleware
 from aiogram.filters import Command
 from aiogram.types import Message
 
@@ -26,14 +27,14 @@ WORD_BANK: dict[str, set[str]] = {
     "водоочистка": {
         "вода", "водка", "воск", "восток", "водосток", "вставка", "доставка", "ставка", "сводка",
         "сотка", "сито", "диск", "кот", "код", "сок", "ток", "висок", "исток", "скат", "свод",
-        "отвод", "откос", "доска", "свод", "совок", "водосток", "точка", "отсев", "виток",
+        "отвод", "откос", "доска", "совок", "точка", "отсев", "виток",
     },
     "литература": {
         "литр", "тира", "рулет", "артерия", "титр", "театр", "тату", "траур", "рута", "трал",
-        "телер", "тулит", "лирика", "лирик", "литера", "ария", "аура", "утро", "тело", "лето",
+        "лирика", "лирик", "литера", "ария", "аура", "утро", "тело", "лето",
     },
     "электростанция": {
-        "станция", "электрон", "актрисе", "сектор", "стекло", "строка", "соринка", "картон", "корсет",
+        "станция", "электрон", "сектор", "стекло", "строка", "соринка", "картон", "корсет",
         "тостер", "танец", "тесак", "стена", "сцена", "цена", "трос", "трон", "крон", "конец",
         "рацион", "тонер", "окрас", "искатель", "секатор", "стол", "соль", "кино", "лист", "слон",
     },
@@ -45,7 +46,7 @@ WORD_BANK: dict[str, set[str]] = {
     "микроорганизм": {
         "организм", "орган", "мороз", "знамя", "игрок", "мираж", "морг", "гром", "роман",
         "норма", "микрон", "корм", "кран", "мрак", "рана", "роза", "зима", "мир", "маг",
-        "моряк", "марш", "марка", "игра", "гора", "нога", "срок", "срам", "знак", "коза",
+        "моряк", "марш", "марка", "игра", "гора", "нога", "срок", "знак", "коза",
     },
     "космонавтика": {
         "космос", "космонавт", "автомат", "станок", "нитка", "такси", "наука", "маска", "осина",
@@ -66,7 +67,7 @@ WORD_BANK: dict[str, set[str]] = {
         "степь", "опера", "автор", "трава", "право", "опыт", "нерв", "игра", "гора",
     },
     "инфраструктура": {
-        "структура", "фрукт", "труба", "турист", "страна", "ткань", "трусы", "тариф", "кафтан",
+        "структура", "фрукт", "труба", "турист", "страна", "ткань", "тариф", "кафтан",
         "рутина", "устав", "факт", "фарт", "стук", "кран", "курс", "рант", "танк", "рука",
         "арфа", "фауна", "искра", "утка", "нить", "тиран", "сани", "рана", "аура",
     },
@@ -215,10 +216,14 @@ class MiniGameService:
 
     def choose_base_word(self) -> tuple[str, set[str]]:
         base_word = random.choice(list(WORD_BANK))
-        allowed = {self.normalize_word(item) for item in WORD_BANK[base_word]}
         normalized_base = self.normalize_word(base_word)
+        allowed = {self.normalize_word(item) for item in WORD_BANK[base_word]}
         allowed.discard(normalized_base)
-        allowed = {item for item in allowed if self.can_build(item, normalized_base)}
+        allowed = {
+            item
+            for item in allowed
+            if len(item) >= DEFAULT_MIN_LENGTH and self.can_build(item, normalized_base)
+        }
         return normalized_base, allowed
 
     def player_name(self, message: Message) -> str:
@@ -270,7 +275,7 @@ class MiniGameService:
             f"Собирайте слова от <b>{DEFAULT_MIN_LENGTH}</b> букв из букв большого слова.\n"
             "Пишите слова прямо в чат. Один найденный вариант засчитывается первому игроку.\n"
             "Идет 5 минут, все играют параллельно.\n\n"
-            "Команды: /minigame — новый раунд, /game_top — рейтинг."
+            "Команды: /stopgame — завершить, /game_top — рейтинг."
         )
 
     async def finish_later(self, round_data: WordGameRound) -> None:
@@ -355,10 +360,7 @@ class MiniGameService:
             points = self.word_points(word)
             player = round_data.players.get(message.from_user.id)
             if player is None:
-                player = PlayerResult(
-                    user_id=message.from_user.id,
-                    name=self.player_name(message),
-                )
+                player = PlayerResult(user_id=message.from_user.id, name=self.player_name(message))
                 round_data.players[message.from_user.id] = player
             player.points += points
             player.words[word] = points
@@ -380,25 +382,47 @@ class MiniGameService:
         await message.reply("\n".join(lines))
 
 
+class MiniGameGuessMiddleware(BaseMiddleware):
+    def __init__(self, service: MiniGameService) -> None:
+        self.service = service
+
+    async def __call__(
+        self,
+        handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: dict[str, Any],
+    ) -> Any:
+        try:
+            await self.service.handle_word_guess(event)
+        except Exception:
+            LOGGER.exception("Could not handle minigame guess chat_id=%s", event.chat.id)
+        return await handler(event, data)
+
+
+def _promote_last_message_handler(app: Any) -> None:
+    handler = app.dp.message.handlers.pop()
+    app.dp.message.handlers.insert(0, handler)
+
+
 def register_minigame_handlers(app: Any, service: MiniGameService) -> None:
     dispatcher = app.dp
+    dispatcher.message.outer_middleware(MiniGameGuessMiddleware(service))
 
     @dispatcher.message(Command(commands=["minigame", "wordgame", "slovodel"]))
     async def minigame_start(message: Message) -> None:
         await service.start_word_game(message)
 
+    _promote_last_message_handler(app)
+
     @dispatcher.message(Command(commands=["stopgame", "finishgame"]))
     async def minigame_stop(message: Message) -> None:
         await service.stop_word_game(message)
+
+    _promote_last_message_handler(app)
 
     @dispatcher.message(Command(commands=["game_top", "minigame_top", "slovodel_top"]))
     async def minigame_top(message: Message) -> None:
         await service.show_leaderboard(message)
 
-    @dispatcher.message(F.text)
-    async def minigame_guess(message: Message) -> None:
-        await service.handle_word_guess(message)
-
-    guess_handler = dispatcher.message.handlers.pop()
-    dispatcher.message.handlers.append(guess_handler)
-    print("MINIGAMES_READY games=slovodel", flush=True)
+    _promote_last_message_handler(app)
+    print("MINIGAMES_READY games=slovodel mode=middleware", flush=True)
