@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import re
 import time
@@ -18,60 +19,14 @@ from aiogram import BaseMiddleware
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from wordgame_dictionary import BASE_WORDS, BUILTIN_WORDS
+
 LOGGER = logging.getLogger(__name__)
 WORD_RE = re.compile(r"^[а-яё-]+$", re.IGNORECASE)
 DEFAULT_ROUND_SECONDS = 5 * 60
 DEFAULT_MIN_LENGTH = 4
-
-WORD_BANK: dict[str, set[str]] = {
-    "водоочистка": {
-        "вода", "водка", "воск", "восток", "водосток", "вставка", "доставка", "ставка", "сводка",
-        "сотка", "сито", "диск", "кот", "код", "сок", "ток", "висок", "исток", "скат", "свод",
-        "отвод", "откос", "доска", "совок", "точка", "отсев", "виток",
-    },
-    "литература": {
-        "литр", "тира", "рулет", "артерия", "титр", "театр", "тату", "траур", "рута", "трал",
-        "лирика", "лирик", "литера", "ария", "аура", "утро", "тело", "лето",
-    },
-    "электростанция": {
-        "станция", "электрон", "сектор", "стекло", "строка", "соринка", "картон", "корсет",
-        "тостер", "танец", "тесак", "стена", "сцена", "цена", "трос", "трон", "крон", "конец",
-        "рацион", "тонер", "окрас", "искатель", "секатор", "стол", "соль", "кино", "лист", "слон",
-    },
-    "компьютеризация": {
-        "компьютер", "терция", "комета", "тема", "метро", "мотор", "моряк", "рюмка", "юрист",
-        "карта", "корт", "торт", "токарь", "материк", "юзер", "термин", "монета", "цензор",
-        "рация", "цитата", "кот", "ком", "рот", "мир", "тир", "яма", "заря", "зима",
-    },
-    "микроорганизм": {
-        "организм", "орган", "мороз", "знамя", "игрок", "мираж", "морг", "гром", "роман",
-        "норма", "микрон", "корм", "кран", "мрак", "рана", "роза", "зима", "мир", "маг",
-        "моряк", "марш", "марка", "игра", "гора", "нога", "срок", "знак", "коза",
-    },
-    "космонавтика": {
-        "космос", "космонавт", "автомат", "станок", "нитка", "такси", "наука", "маска", "осина",
-        "квант", "икона", "канат", "нотка", "скот", "ток", "кот", "сон", "нос", "мост", "мотив",
-        "акт", "тон", "атом", "кино", "скат", "сани", "вата", "воск", "окно", "сова",
-    },
-    "параллелограмм": {
-        "программа", "мораль", "рампа", "пара", "гора", "роман", "морг", "грамм", "рама", "рога",
-        "лама", "мама", "море", "поле", "орел", "лего", "перо", "порог", "пламя", "мера",
-    },
-    "самоорганизация": {
-        "организация", "орган", "гараж", "зима", "мир", "рация", "знамя", "сазан", "мороз", "норма",
-        "знак", "игра", "гора", "нога", "роза", "магия", "сани", "зона", "марина", "омар", "мозаика",
-    },
-    "гиперпространство": {
-        "пространство", "герой", "трасса", "страна", "растение", "спор", "трон", "торс", "грант",
-        "сито", "рост", "порт", "нос", "рот", "сон", "гость", "сорт", "перо", "гипс", "пирс",
-        "степь", "опера", "автор", "трава", "право", "опыт", "нерв", "игра", "гора",
-    },
-    "инфраструктура": {
-        "структура", "фрукт", "труба", "турист", "страна", "ткань", "тариф", "кафтан",
-        "рутина", "устав", "факт", "фарт", "стук", "кран", "курс", "рант", "танк", "рука",
-        "арфа", "фауна", "искра", "утка", "нить", "тиран", "сани", "рана", "аура",
-    },
-}
+MIN_SOLUTIONS_PER_ROUND = 28
+EXTRA_WORDS_PATH = Path(os.getenv("SLOVODEL_WORDS_PATH", "/app/data/slovodel_words.txt"))
 
 
 @dataclass(slots=True)
@@ -186,10 +141,34 @@ class MiniGameService:
         self.storage = storage
         self.active_word_games: dict[int, WordGameRound] = {}
         self.lock = asyncio.Lock()
+        self.dictionary_words = self.load_dictionary_words()
+        self.round_candidates = self.build_round_candidates()
+        print(
+            "SLOVODEL_DICTIONARY_READY "
+            f"words={len(self.dictionary_words)} bases={len(BASE_WORDS)} playable={len(self.round_candidates)}",
+            flush=True,
+        )
 
-    @staticmethod
-    def normalize_word(value: str) -> str:
+    @classmethod
+    def normalize_word(cls, value: str) -> str:
         return value.strip().lower().replace("ё", "е").replace("-", "")
+
+    @classmethod
+    def load_dictionary_words(cls) -> set[str]:
+        words = {cls.normalize_word(word) for word in BUILTIN_WORDS}
+        if EXTRA_WORDS_PATH.is_file():
+            try:
+                for line in EXTRA_WORDS_PATH.read_text(encoding="utf-8").splitlines():
+                    word = cls.normalize_word(line)
+                    if word and WORD_RE.match(word):
+                        words.add(word)
+            except Exception:
+                LOGGER.exception("Could not load extra Slovodel words from %s", EXTRA_WORDS_PATH)
+        return {
+            word
+            for word in words
+            if len(word) >= DEFAULT_MIN_LENGTH and WORD_RE.match(word)
+        }
 
     @staticmethod
     def spaced_word(value: str) -> str:
@@ -214,17 +193,40 @@ class MiniGameService:
             return 7
         return 10 + (length - 8) * 2
 
+    def build_round_candidates(self) -> list[tuple[str, set[str]]]:
+        candidates: list[tuple[str, set[str]]] = []
+        best_fallback: tuple[str, set[str]] | None = None
+        for raw_base_word in BASE_WORDS:
+            base_word = self.normalize_word(raw_base_word)
+            allowed = {
+                word
+                for word in self.dictionary_words
+                if word != base_word and self.can_build(word, base_word)
+            }
+            if best_fallback is None or len(allowed) > len(best_fallback[1]):
+                best_fallback = (base_word, allowed)
+            if len(allowed) >= MIN_SOLUTIONS_PER_ROUND:
+                candidates.append((base_word, allowed))
+
+        if candidates:
+            return candidates
+        return [best_fallback] if best_fallback is not None else []
+
     def choose_base_word(self) -> tuple[str, set[str]]:
-        base_word = random.choice(list(WORD_BANK))
-        normalized_base = self.normalize_word(base_word)
-        allowed = {self.normalize_word(item) for item in WORD_BANK[base_word]}
-        allowed.discard(normalized_base)
-        allowed = {
-            item
-            for item in allowed
-            if len(item) >= DEFAULT_MIN_LENGTH and self.can_build(item, normalized_base)
-        }
-        return normalized_base, allowed
+        if not self.round_candidates:
+            base_word = "литература"
+            allowed = {
+                word
+                for word in self.dictionary_words
+                if word != base_word and self.can_build(word, base_word)
+            }
+            return base_word, allowed
+
+        # Slightly favor richer rounds without making the same word appear too often.
+        candidates = sorted(self.round_candidates, key=lambda item: len(item[1]), reverse=True)
+        pool = candidates[: max(6, min(len(candidates), 18))]
+        base_word, allowed = random.choice(pool)
+        return base_word, set(allowed)
 
     def player_name(self, message: Message) -> str:
         user = message.from_user
@@ -273,6 +275,7 @@ class MiniGameService:
             "🏁 🖍 <b>Словодел начался!</b>\n\n"
             f"{self.spaced_word(base_word)}\n\n"
             f"Собирайте слова от <b>{DEFAULT_MIN_LENGTH}</b> букв из букв большого слова.\n"
+            f"В этом раунде бот знает <b>{len(allowed)}</b> возможных вариантов.\n"
             "Пишите слова прямо в чат. Один найденный вариант засчитывается первому игроку.\n"
             "Идет 5 минут, все играют параллельно.\n\n"
             "Команды: /stopgame — завершить, /game_top — рейтинг."
@@ -296,6 +299,8 @@ class MiniGameService:
 
         async with round_data.lock:
             players = sorted(round_data.players.values(), key=lambda player: (-player.points, player.name.lower()))
+            found_count = len(round_data.used_words)
+            possible_count = len(round_data.allowed_words)
         await self.storage.save_round(chat_id, players)
 
         lines = [
@@ -305,6 +310,7 @@ class MiniGameService:
             "",
             *self.result_lines(players),
             "",
+            f"Найдено слов: <b>{found_count}</b> из <b>{possible_count}</b>",
             f"🕰 5м  🔡 {round_data.min_length} бкв  👥 Параллельно",
             "Играть еще: /minigame",
         ]
@@ -425,4 +431,4 @@ def register_minigame_handlers(app: Any, service: MiniGameService) -> None:
         await service.show_leaderboard(message)
 
     _promote_last_message_handler(app)
-    print("MINIGAMES_READY games=slovodel mode=middleware", flush=True)
+    print("MINIGAMES_READY games=slovodel mode=middleware dictionary=expanded", flush=True)
