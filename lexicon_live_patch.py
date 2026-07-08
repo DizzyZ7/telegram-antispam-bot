@@ -31,53 +31,12 @@ LOGGER = logging.getLogger(__name__)
 LIVE_EXTRA_WORDS = frozenset(
     {
         # common words players naturally try in rounds like "конструкторская"
-        "контур",
-        "трактор",
-        "турок",
-        "носок",
-        "урок",
-        "крот",
-        "утка",
-        "корт",
-        "трос",
-        "торс",
-        "стук",
-        "сукно",
-        "ткань",
-        "танк",
-        "коса",
-        "кора",
-        "коса",
-        "сорт",
-        "сотка",
-        "сотня",
-        "скорняк",
-        "скорняк",
-        "настрой",
-        "настой",
-        "струна",
-        "строка",
-        "страна",
-        "страус",
-        "корона",
-        "корка",
-        "норка",
-        "нора",
-        "носка",
-        "скот",
-        "скат",
-        "срок",
-        "рост",
-        "трон",
-        "кран",
-        "крот",
-        "крон",
-        "кросс",
-        "коста",
-        "актер",
-        "терка",
-        "сектор",
-        "секатор",
+        "контур", "трактор", "турок", "носок", "урок", "крот", "утка", "корт",
+        "трос", "торс", "стук", "сукно", "ткань", "танк", "коса", "кора", "сорт",
+        "сотка", "сотня", "скорняк", "настрой", "настой", "струна", "строка",
+        "страна", "страус", "корона", "корка", "норка", "нора", "носка", "скот",
+        "скат", "срок", "рост", "трон", "кран", "крон", "кросс", "коста",
+        "актер", "терка", "сектор", "секатор",
     }
 )
 
@@ -90,6 +49,30 @@ class PatchedMiniGameService(MiniGameService):
         words = set(super().load_dictionary_words())
         words.update(LIVE_EXTRA_WORDS)
         return words
+
+    def render_start(self, round_data: WordGameRound) -> str:
+        total = len(round_data.allowed_words)
+        return (
+            f"<code>{self.spaced_word(round_data.base_word)}</code>\n"
+            "📖 <b>ЛЕКСИКОН открыт</b>\n\n"
+            f"<code>Раунд #{round_data.round_code}</code>\n"
+            "Слово-источник выше — именно его держим в закрепе.\n\n"
+            f"Из этих букв можно собрать <b>{total}</b> слов.\n"
+            f"Минимум — <b>{round_data.min_length}</b> буквы.\n"
+            f"Время до закрытия страницы — <b>{self.format_duration(ROUND_SECONDS)}</b>.\n\n"
+            "Пишите слова прямо в чат.\n"
+            "Первый, кто нашел слово, забирает его себе.\n\n"
+            "Чем длиннее слово, тем больше звезд:\n"
+            "4 буквы — 1🌟\n"
+            "5 букв — 2🌟\n"
+            "6 букв — 4🌟\n"
+            "7 букв — 7🌟\n"
+            "8+ букв — 10🌟 и выше\n\n"
+            "Намеки открываются не сразу и не по одному голосу в активном раунде.\n\n"
+            "⌁ Страница раунда: /game\n"
+            "⌁ Намек: /hint\n"
+            "⌁ Закрыть досрочно: /stopgame"
+        )
 
     def found_words_line(self, round_data: WordGameRound, limit: int = 18) -> str | None:
         if not round_data.found_words:
@@ -107,6 +90,7 @@ class PatchedMiniGameService(MiniGameService):
         players = self.top_players(round_data, limit=7)
         hint_votes_required = self.required_hint_votes(round_data)
         lines = [
+            f"<code>{self.spaced_word(round_data.base_word)}</code>",
             "📖 <b>ЛЕКСИКОН · текущая страница</b>",
             "",
             f"<code>Раунд #{round_data.round_code}</code>",
@@ -148,6 +132,13 @@ class PatchedMiniGameService(MiniGameService):
                 message.message_id,
                 exc_info=True,
             )
+            try:
+                await message.reply(
+                    "📌 Не смог закрепить страницу Лексикона.\n"
+                    "Проверь, что Fosgen — администратор и у него есть право закреплять сообщения."
+                )
+            except Exception:
+                LOGGER.info("Could not send Lexicon pin failure notice", exc_info=True)
 
     async def start_word_game(self, message: Message) -> None:
         if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
