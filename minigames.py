@@ -33,9 +33,67 @@ HINT_UNLOCK_SECONDS = 60
 HINT_COOLDOWN_SECONDS = 75
 MULTI_VOTE_PLAYER_THRESHOLD = 3
 MULTI_VOTE_HINT_REQUESTS = 2
+WORD_ATTEMPT_COOLDOWN_SECONDS = 1.8
+WORD_ATTEMPT_NOTICE_COOLDOWN_SECONDS = 18
+ARCHIVE_LIMIT = 7
 EXTRA_WORDS_PATH = Path(os.getenv("SLOVODEL_WORDS_PATH", "/app/data/slovodel_words.txt"))
 ROUND_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 GameKey = tuple[int, int | None]
+
+ATMOSPHERIC_WORDS = frozenset(
+    {
+        "аллегория",
+        "амулет",
+        "артефакт",
+        "архетип",
+        "бездна",
+        "бестиарий",
+        "верлибр",
+        "видение",
+        "витраж",
+        "вдохновение",
+        "воображение",
+        "гобелен",
+        "готика",
+        "дракон",
+        "заговор",
+        "заклинание",
+        "знамение",
+        "иллюзия",
+        "катарсис",
+        "клятва",
+        "лабиринт",
+        "легенда",
+        "манускрипт",
+        "метафора",
+        "мираж",
+        "миростроение",
+        "монолог",
+        "морок",
+        "оберег",
+        "омут",
+        "отсылка",
+        "подтекст",
+        "портал",
+        "призрак",
+        "пролог",
+        "пророчество",
+        "ритуал",
+        "рукопись",
+        "руна",
+        "светотень",
+        "синопсис",
+        "сказание",
+        "сонет",
+        "тайна",
+        "тень",
+        "фабула",
+        "фантом",
+        "фреска",
+        "эпиграф",
+        "эпилог",
+    }
+)
 
 
 @dataclass(slots=True)
@@ -44,6 +102,32 @@ class PlayerResult:
     name: str
     points: int = 0
     words: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class RoundArchiveEntry:
+    round_code: str
+    base_word: str
+    found_count: int
+    total_words: int
+    winner_name: str
+    winner_points: int
+    day_key: str
+
+
+@dataclass(slots=True)
+class PlayerProfile:
+    name: str
+    total_points: int
+    wins: int
+    rounds: int
+    best_points: int
+    today_points: int
+    today_wins: int
+    today_rounds: int
+    week_points: int
+    week_wins: int
+    week_rounds: int
 
 
 @dataclass(slots=True)
@@ -62,6 +146,8 @@ class WordGameRound:
     hint_count: int = 0
     hint_requesters: set[int] = field(default_factory=set)
     last_hint_at: float = 0.0
+    last_attempt_at: dict[int, float] = field(default_factory=dict)
+    last_attempt_notice_at: dict[int, float] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     finish_task: asyncio.Task[None] | None = None
 
@@ -108,6 +194,43 @@ class MiniGameStorage:
             )
             """
         )
+        await self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wordgame_weekly_scores (
+                week_key TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                rounds INTEGER NOT NULL DEFAULT 0,
+                wins INTEGER NOT NULL DEFAULT 0,
+                total_points INTEGER NOT NULL DEFAULT 0,
+                best_points INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(week_key, chat_id, user_id)
+            )
+            """
+        )
+        await self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wordgame_round_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                day_key TEXT NOT NULL,
+                week_key TEXT NOT NULL,
+                round_code TEXT NOT NULL,
+                base_word TEXT NOT NULL,
+                found_count INTEGER NOT NULL,
+                total_words INTEGER NOT NULL,
+                winner_name TEXT NOT NULL,
+                winner_points INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        await self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wordgame_round_archive_chat_created "
+            "ON wordgame_round_archive(chat_id, created_at DESC)"
+        )
         await self.connection.commit()
 
     async def close(self) -> None:
@@ -116,16 +239,32 @@ class MiniGameStorage:
         await self.connection.close()
         self.connection = None
 
-    async def save_round(self, chat_id: int, players: list[PlayerResult], day_key: str) -> None:
-        if not players:
-            return
+    async def _upsert_score(
+        self,
+        *,
+        table_name: str,
+        key_name: str | None,
+        key_value: str | None,
+        chat_id: int,
+        player: PlayerResult,
+        is_winner: bool,
+        now_ts: int,
+    ) -> None:
         assert self.connection is not None
-        best_score = max(player.points for player in players)
-        now_ts = int(time.time())
-        async with self.lock:
-            for player in players:
-                is_winner = player.points == best_score and best_score > 0
-                values = (
+        if key_name is None:
+            await self.connection.execute(
+                """
+                INSERT INTO wordgame_scores(chat_id, user_id, name, rounds, wins, total_points, best_points, updated_at)
+                VALUES(?, ?, ?, 1, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                    name = excluded.name,
+                    rounds = rounds + 1,
+                    wins = wins + excluded.wins,
+                    total_points = total_points + excluded.total_points,
+                    best_points = MAX(best_points, excluded.best_points),
+                    updated_at = excluded.updated_at
+                """,
+                (
                     chat_id,
                     player.user_id,
                     player.name,
@@ -133,35 +272,103 @@ class MiniGameStorage:
                     player.points,
                     player.points,
                     now_ts,
+                ),
+            )
+            return
+
+        await self.connection.execute(
+            f"""
+            INSERT INTO {table_name}({key_name}, chat_id, user_id, name, rounds, wins, total_points, best_points, updated_at)
+            VALUES(?, ?, ?, ?, 1, ?, ?, ?, ?)
+            ON CONFLICT({key_name}, chat_id, user_id) DO UPDATE SET
+                name = excluded.name,
+                rounds = rounds + 1,
+                wins = wins + excluded.wins,
+                total_points = total_points + excluded.total_points,
+                best_points = MAX(best_points, excluded.best_points),
+                updated_at = excluded.updated_at
+            """,
+            (
+                key_value,
+                chat_id,
+                player.user_id,
+                player.name,
+                1 if is_winner else 0,
+                player.points,
+                player.points,
+                now_ts,
+            ),
+        )
+
+    async def save_round(
+        self,
+        *,
+        chat_id: int,
+        players: list[PlayerResult],
+        day_key: str,
+        week_key: str,
+        round_code: str,
+        base_word: str,
+        found_count: int,
+        total_words: int,
+    ) -> None:
+        if not players:
+            return
+        assert self.connection is not None
+        best_score = max(player.points for player in players)
+        winner = max(players, key=lambda player: (player.points, len(player.words), player.name))
+        now_ts = int(time.time())
+        async with self.lock:
+            for player in players:
+                is_winner = player.points == best_score and best_score > 0
+                await self._upsert_score(
+                    table_name="wordgame_scores",
+                    key_name=None,
+                    key_value=None,
+                    chat_id=chat_id,
+                    player=player,
+                    is_winner=is_winner,
+                    now_ts=now_ts,
                 )
-                await self.connection.execute(
-                    """
-                    INSERT INTO wordgame_scores(chat_id, user_id, name, rounds, wins, total_points, best_points, updated_at)
-                    VALUES(?, ?, ?, 1, ?, ?, ?, ?)
-                    ON CONFLICT(chat_id, user_id) DO UPDATE SET
-                        name = excluded.name,
-                        rounds = rounds + 1,
-                        wins = wins + excluded.wins,
-                        total_points = total_points + excluded.total_points,
-                        best_points = MAX(best_points, excluded.best_points),
-                        updated_at = excluded.updated_at
-                    """,
-                    values,
+                await self._upsert_score(
+                    table_name="wordgame_daily_scores",
+                    key_name="day_key",
+                    key_value=day_key,
+                    chat_id=chat_id,
+                    player=player,
+                    is_winner=is_winner,
+                    now_ts=now_ts,
                 )
-                await self.connection.execute(
-                    """
-                    INSERT INTO wordgame_daily_scores(day_key, chat_id, user_id, name, rounds, wins, total_points, best_points, updated_at)
-                    VALUES(?, ?, ?, ?, 1, ?, ?, ?, ?)
-                    ON CONFLICT(day_key, chat_id, user_id) DO UPDATE SET
-                        name = excluded.name,
-                        rounds = rounds + 1,
-                        wins = wins + excluded.wins,
-                        total_points = total_points + excluded.total_points,
-                        best_points = MAX(best_points, excluded.best_points),
-                        updated_at = excluded.updated_at
-                    """,
-                    (day_key, *values),
+                await self._upsert_score(
+                    table_name="wordgame_weekly_scores",
+                    key_name="week_key",
+                    key_value=week_key,
+                    chat_id=chat_id,
+                    player=player,
+                    is_winner=is_winner,
+                    now_ts=now_ts,
                 )
+
+            await self.connection.execute(
+                """
+                INSERT INTO wordgame_round_archive(
+                    chat_id, day_key, week_key, round_code, base_word,
+                    found_count, total_words, winner_name, winner_points, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    chat_id,
+                    day_key,
+                    week_key,
+                    round_code,
+                    base_word,
+                    found_count,
+                    total_words,
+                    winner.name,
+                    winner.points,
+                    now_ts,
+                ),
+            )
             await self.connection.commit()
 
     async def leaderboard(self, chat_id: int, limit: int = 7) -> list[tuple[str, int, int, int]]:
@@ -181,20 +388,109 @@ class MiniGameStorage:
         return [(str(row[0]), int(row[1]), int(row[2]), int(row[3])) for row in rows]
 
     async def day_leaderboard(self, chat_id: int, day_key: str, limit: int = 7) -> list[tuple[str, int, int, int]]:
+        return await self._period_leaderboard("wordgame_daily_scores", "day_key", chat_id, day_key, limit)
+
+    async def week_leaderboard(self, chat_id: int, week_key: str, limit: int = 7) -> list[tuple[str, int, int, int]]:
+        return await self._period_leaderboard("wordgame_weekly_scores", "week_key", chat_id, week_key, limit)
+
+    async def _period_leaderboard(
+        self,
+        table_name: str,
+        key_name: str,
+        chat_id: int,
+        key_value: str,
+        limit: int,
+    ) -> list[tuple[str, int, int, int]]:
+        assert self.connection is not None
+        async with self.lock:
+            async with self.connection.execute(
+                f"""
+                SELECT name, total_points, wins, rounds
+                FROM {table_name}
+                WHERE chat_id = ? AND {key_name} = ?
+                ORDER BY total_points DESC, wins DESC, best_points DESC
+                LIMIT ?
+                """,
+                (chat_id, key_value, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [(str(row[0]), int(row[1]), int(row[2]), int(row[3])) for row in rows]
+
+    async def profile(self, chat_id: int, user_id: int, day_key: str, week_key: str) -> PlayerProfile | None:
         assert self.connection is not None
         async with self.lock:
             async with self.connection.execute(
                 """
-                SELECT name, total_points, wins, rounds
+                SELECT name, total_points, wins, rounds, best_points
+                FROM wordgame_scores
+                WHERE chat_id = ? AND user_id = ?
+                """,
+                (chat_id, user_id),
+            ) as cursor:
+                total = await cursor.fetchone()
+            if total is None:
+                return None
+
+            async with self.connection.execute(
+                """
+                SELECT total_points, wins, rounds
                 FROM wordgame_daily_scores
-                WHERE chat_id = ? AND day_key = ?
-                ORDER BY total_points DESC, wins DESC, best_points DESC
+                WHERE chat_id = ? AND user_id = ? AND day_key = ?
+                """,
+                (chat_id, user_id, day_key),
+            ) as cursor:
+                day = await cursor.fetchone()
+
+            async with self.connection.execute(
+                """
+                SELECT total_points, wins, rounds
+                FROM wordgame_weekly_scores
+                WHERE chat_id = ? AND user_id = ? AND week_key = ?
+                """,
+                (chat_id, user_id, week_key),
+            ) as cursor:
+                week = await cursor.fetchone()
+
+        return PlayerProfile(
+            name=str(total[0]),
+            total_points=int(total[1]),
+            wins=int(total[2]),
+            rounds=int(total[3]),
+            best_points=int(total[4]),
+            today_points=int(day[0]) if day else 0,
+            today_wins=int(day[1]) if day else 0,
+            today_rounds=int(day[2]) if day else 0,
+            week_points=int(week[0]) if week else 0,
+            week_wins=int(week[1]) if week else 0,
+            week_rounds=int(week[2]) if week else 0,
+        )
+
+    async def archive(self, chat_id: int, limit: int = ARCHIVE_LIMIT) -> list[RoundArchiveEntry]:
+        assert self.connection is not None
+        async with self.lock:
+            async with self.connection.execute(
+                """
+                SELECT round_code, base_word, found_count, total_words, winner_name, winner_points, day_key
+                FROM wordgame_round_archive
+                WHERE chat_id = ?
+                ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (chat_id, day_key, limit),
+                (chat_id, limit),
             ) as cursor:
                 rows = await cursor.fetchall()
-        return [(str(row[0]), int(row[1]), int(row[2]), int(row[3])) for row in rows]
+        return [
+            RoundArchiveEntry(
+                round_code=str(row[0]),
+                base_word=str(row[1]),
+                found_count=int(row[2]),
+                total_words=int(row[3]),
+                winner_name=str(row[4]),
+                winner_points=int(row[5]),
+                day_key=str(row[6]),
+            )
+            for row in rows
+        ]
 
 
 class MiniGameService:
@@ -295,6 +591,16 @@ class MiniGameService:
     def today_label(self) -> str:
         return datetime.now(self.tz).strftime("%d.%m.%Y")
 
+    def week_key(self) -> str:
+        now = datetime.now(self.tz)
+        iso = now.isocalendar()
+        return f"{iso.year}-W{iso.week:02d}"
+
+    def week_label(self) -> str:
+        now = datetime.now(self.tz)
+        iso = now.isocalendar()
+        return f"{iso.year}, неделя {iso.week:02d}"
+
     def required_hint_votes(self, round_data: WordGameRound) -> int:
         if len(round_data.players) >= MULTI_VOTE_PLAYER_THRESHOLD:
             return MULTI_VOTE_HINT_REQUESTS
@@ -366,6 +672,15 @@ class MiniGameService:
         bar = self.progress_bar(found, total)
         return found, total, percent, bar
 
+    def miss_words_line(self, round_data: WordGameRound, limit: int = 10) -> str | None:
+        remaining = sorted(
+            round_data.allowed_words - set(round_data.used_words),
+            key=lambda word: (-self.word_points(word), -len(word), word),
+        )[:limit]
+        if not remaining:
+            return None
+        return " · ".join(self.app.safe_output_text(word) for word in remaining)
+
     def achievement_lines(self, round_data: WordGameRound) -> list[str]:
         if not round_data.found_words:
             return []
@@ -391,6 +706,15 @@ class MiniGameService:
             f"<code>{self.app.safe_output_text(most_expensive_word)}</code> "
             f"+{self.word_points(most_expensive_word)}🌟"
         )
+
+        atmospheric = [word for word in round_data.found_words if word in ATMOSPHERIC_WORDS]
+        if atmospheric:
+            atmospheric_word = max(atmospheric, key=lambda word: (self.word_points(word), len(word), word))
+            lines.append(
+                "🕯 Самая атмосферная находка — "
+                f"<code>{self.app.safe_output_text(atmospheric_word)}</code>, "
+                f"{self.app.safe_output_text(self.player_name_by_word(round_data, atmospheric_word))}"
+            )
 
         most_productive = max(
             round_data.players.values(),
@@ -421,7 +745,8 @@ class MiniGameService:
             "6 букв — 4🌟\n"
             "7 букв — 7🌟\n"
             "8+ букв — 10🌟 и выше\n\n"
-            "Намеки открываются не сразу и не по одному голосу в активном раунде.\n\n"
+            "Намеки открываются не сразу и не по одному голосу в активном раунде.\n"
+            "Лексикон не любит спешку: слишком частые попытки будут пропущены.\n\n"
             "⌁ Страница раунда: /game\n"
             "⌁ Намек: /hint\n"
             "⌁ Закрыть досрочно: /stopgame"
@@ -484,7 +809,23 @@ class MiniGameService:
             lines.append("<b>Самые красивые находки раунда</b>")
             lines.append(" · ".join(self.app.safe_output_text(word) for word in beautiful_words))
 
-        lines.extend(("", "Новая страница Лексикона: /minigame", "Рейтинг сегодня: /game_day_top", "Рейтинг авторов: /game_top"))
+        missed_line = self.miss_words_line(round_data)
+        if missed_line:
+            lines.append("")
+            lines.append("<b>Ненайденные строки страницы</b>")
+            lines.append(missed_line)
+
+        lines.extend(
+            (
+                "",
+                "Новая страница Лексикона: /minigame",
+                "Профиль: /my_lexicon",
+                "Архив: /lexicon_archive",
+                "Рейтинг сегодня: /game_day_top",
+                "Рейтинг недели: /game_week_top",
+                "Рейтинг авторов: /game_top",
+            )
+        )
         return "\n".join(lines)
 
     def render_help(self) -> str:
@@ -497,7 +838,10 @@ class MiniGameService:
             "📄 /game — текущая страница\n"
             "💡 /hint — намек на полях\n"
             "📕 /stopgame — закрыть страницу\n"
+            "👤 /my_lexicon — твой профиль\n"
+            "📚 /lexicon_archive — архив страниц\n"
             "🏆 /game_day_top — рейтинг сегодня\n"
+            "🏆 /game_week_top — рейтинг недели\n"
             "🏆 /game_top — общий рейтинг авторов"
         )
 
@@ -552,7 +896,18 @@ class MiniGameService:
 
         async with round_data.lock:
             players = sorted(round_data.players.values(), key=lambda player: (-player.points, player.name.lower()))
-        await self.storage.save_round(chat_id, players, self.today_key())
+            found_count = len(round_data.used_words)
+            total_words = len(round_data.allowed_words)
+        await self.storage.save_round(
+            chat_id=chat_id,
+            players=players,
+            day_key=self.today_key(),
+            week_key=self.week_key(),
+            round_code=round_data.round_code,
+            base_word=round_data.base_word,
+            found_count=found_count,
+            total_words=total_words,
+        )
         await self.app.bot.send_message(
             chat_id,
             self.render_finish(round_data, players),
@@ -668,6 +1023,25 @@ class MiniGameService:
         if not WORD_RE.match(raw_word):
             return
 
+        now = time.monotonic()
+        user_id = message.from_user.id
+        async with round_data.lock:
+            previous_attempt_at = round_data.last_attempt_at.get(user_id, 0.0)
+            if now - previous_attempt_at < WORD_ATTEMPT_COOLDOWN_SECONDS:
+                previous_notice_at = round_data.last_attempt_notice_at.get(user_id, 0.0)
+                if now - previous_notice_at >= WORD_ATTEMPT_NOTICE_COOLDOWN_SECONDS:
+                    round_data.last_attempt_notice_at[user_id] = now
+                    should_warn = True
+                else:
+                    should_warn = False
+                if should_warn:
+                    await message.reply(
+                        "📖 Лексикон слышит не каждую торопливую строку.\n"
+                        "Подожди пару секунд перед следующей попыткой."
+                    )
+                return
+            round_data.last_attempt_at[user_id] = now
+
         word = self.normalize_word(raw_word)
         if len(word) < round_data.min_length:
             return
@@ -693,7 +1067,14 @@ class MiniGameService:
             total_points = player.points
             found, total, percent, _ = self.round_stats(round_data)
 
-        if points >= 7:
+        if word in ATMOSPHERIC_WORDS:
+            await message.reply(
+                "🕯 <b>Атмосферная находка</b>\n\n"
+                f"<code>{self.app.safe_output_text(word)}</code>\n\n"
+                f"+{points}🌟 · слово с послевкусием.\n"
+                f"Всего у автора: <b>{total_points}🌟</b>"
+            )
+        elif points >= 7:
             label = "💎 <b>Редкая находка</b>" if points >= 10 else "✨ <b>Сильная находка</b>"
             await message.reply(
                 f"{label}\n\n"
@@ -733,6 +1114,60 @@ class MiniGameService:
             lines.append(
                 f"{medal} <b>{self.app.safe_output_text(name)}</b> — {total_points}🌟\n"
                 f"   побед: {wins} · страниц сегодня: {rounds}"
+            )
+        await message.reply("\n\n".join(lines))
+
+    async def show_week_leaderboard(self, message: Message) -> None:
+        if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
+            return
+        leaders = await self.storage.week_leaderboard(message.chat.id, self.week_key(), limit=7)
+        if not leaders:
+            await message.reply("🏆 На этой неделе в Лексиконе еще нет сыгранных страниц. Старт: /minigame")
+            return
+        lines = [f"🏆 <b>ЛЕКСИКОН · неделя</b> · {self.week_label()}", ""]
+        for idx, (name, total_points, wins, rounds) in enumerate(leaders, start=1):
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, "▫️")
+            lines.append(
+                f"{medal} <b>{self.app.safe_output_text(name)}</b> — {total_points}🌟\n"
+                f"   побед: {wins} · страниц за неделю: {rounds}"
+            )
+        await message.reply("\n\n".join(lines))
+
+    async def show_profile(self, message: Message) -> None:
+        if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
+            return
+        if message.from_user is None or message.from_user.is_bot:
+            return
+        profile = await self.storage.profile(message.chat.id, message.from_user.id, self.today_key(), self.week_key())
+        if profile is None:
+            await message.reply("📖 У тебя пока нет страницы в Лексиконе. Открыть первую: /minigame")
+            return
+        lines = [
+            "👤 <b>Твоя страница Лексикона</b>",
+            "",
+            f"Автор: <b>{self.app.safe_output_text(profile.name)}</b>",
+            f"Всего: <b>{profile.total_points}🌟</b>",
+            f"Побед: <b>{profile.wins}</b> · страниц сыграно: <b>{profile.rounds}</b>",
+            f"Лучший раунд: <b>{profile.best_points}🌟</b>",
+            "",
+            f"Сегодня: <b>{profile.today_points}🌟</b> · побед {profile.today_wins} · страниц {profile.today_rounds}",
+            f"Неделя: <b>{profile.week_points}🌟</b> · побед {profile.week_wins} · страниц {profile.week_rounds}",
+        ]
+        await message.reply("\n".join(lines))
+
+    async def show_archive(self, message: Message) -> None:
+        if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
+            return
+        entries = await self.storage.archive(message.chat.id, limit=ARCHIVE_LIMIT)
+        if not entries:
+            await message.reply("📚 Архив Лексикона пока пуст. Закройте первую страницу — и она появится здесь.")
+            return
+        lines = ["📚 <b>Архив Лексикона</b>", ""]
+        for entry in entries:
+            percent = round(entry.found_count * 100 / entry.total_words) if entry.total_words else 0
+            lines.append(
+                f"<code>#{entry.round_code}</code> · {self.app.safe_output_text(entry.base_word)} · {percent}%\n"
+                f"Победитель: <b>{self.app.safe_output_text(entry.winner_name)}</b> · {entry.winner_points}🌟 · {entry.day_key}"
             )
         await message.reply("\n\n".join(lines))
 
@@ -787,9 +1222,27 @@ def register_minigame_handlers(app: Any, service: MiniGameService) -> None:
 
     _promote_last_message_handler(app)
 
+    @dispatcher.message(Command(commands=["my_lexicon", "lexicon_me", "my_game"]))
+    async def minigame_profile(message: Message) -> None:
+        await service.show_profile(message)
+
+    _promote_last_message_handler(app)
+
+    @dispatcher.message(Command(commands=["lexicon_archive", "game_archive", "archive_lexicon"]))
+    async def minigame_archive(message: Message) -> None:
+        await service.show_archive(message)
+
+    _promote_last_message_handler(app)
+
     @dispatcher.message(Command(commands=["game_day_top", "lexicon_day_top", "day_top"]))
     async def minigame_day_top(message: Message) -> None:
         await service.show_day_leaderboard(message)
+
+    _promote_last_message_handler(app)
+
+    @dispatcher.message(Command(commands=["game_week_top", "lexicon_week_top", "week_top"]))
+    async def minigame_week_top(message: Message) -> None:
+        await service.show_week_leaderboard(message)
 
     _promote_last_message_handler(app)
 
@@ -800,6 +1253,7 @@ def register_minigame_handlers(app: Any, service: MiniGameService) -> None:
     _promote_last_message_handler(app)
     print(
         "MINIGAMES_READY games=lexicon mode=middleware dictionary=expanded "
-        "ux=literary scope=topic hints=throttled achievements=on day_top=on",
+        "ux=literary scope=topic hints=throttled achievements=on day_top=on "
+        "week_top=on profile=on archive=on anti_spam=on atmospheric=on",
         flush=True,
     )
