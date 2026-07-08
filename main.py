@@ -22,16 +22,16 @@ CYRILLIC_PATTERN = re.compile(r"[А-Яа-яЁё]")
 
 RUNTIME_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
     "exact": {
-        "obscene": ("\u0431\u0434\u044c",),
+        "obscene": ("бдь",),
         "english_obscene": ("xj",),
     },
     "prefix": {
-        "obscene": ("\u0445\u0439", "\u043f\u0437\u0434"),
+        "obscene": ("хй", "пзд"),
         "latin_translit": ("pzd",),
     },
 }
 
-UNSAFE_MIXED_PREFIXES = frozenset({"\u043d\u0443", "\u043e\u0431\u043e\u0441", "\u043f\u0430\u0434\u043b"})
+UNSAFE_MIXED_PREFIXES = frozenset({"ну", "обос", "падл"})
 
 
 def sync_moderation_lexicon() -> None:
@@ -169,7 +169,8 @@ install_ignored_topic_filter()
 
 import legacy_main as app
 from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
-from minigames import MiniGameService, MiniGameStorage, register_minigame_handlers
+from lexicon_live_patch import PatchedMiniGameService
+from minigames import MiniGameStorage, register_minigame_handlers
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
 
 
@@ -179,7 +180,7 @@ async def main() -> None:
     await accurate_storage.initialize()
     await minigame_storage.initialize()
     accurate_stats = AccurateStatsService(app, accurate_storage, app.SUMMARY_TIMEZONE)
-    minigames = MiniGameService(app, minigame_storage)
+    minigames = PatchedMiniGameService(app, minigame_storage)
 
     try:
         scope = register_writers_chat_handlers(app)
