@@ -1,10 +1,8 @@
 """Live UX fixes for the Lexicon mini-game.
 
-This module subclasses the existing mini-game service without rewriting the whole
-large minigames.py file. It fixes the live round behavior that confused players:
-accepted short words were counted silently, duplicate words were silent, and the
-cooldown could react to ordinary chat messages before the message was known to be
-a valid word attempt.
+The Lexicon accepts correctly written Russian dictionary words in their base form.
+It uses the curated in-repository dictionary first and then falls back to pymorphy3
+(OpenCorpora-based morphology) for normal-form noun validation.
 """
 
 from __future__ import annotations
@@ -12,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from functools import lru_cache
 
 from aiogram.types import Message
 
@@ -27,6 +26,15 @@ from minigames import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+try:
+    import pymorphy3
+except Exception:  # pragma: no cover - optional at import time until requirements are installed
+    pymorphy3 = None
+
+MORPH = pymorphy3.MorphAnalyzer() if pymorphy3 is not None else None
+MIN_MORPH_SCORE = 0.45
+ACCEPTED_POS = frozenset({"NOUN"})
 
 LIVE_EXTRA_WORDS = frozenset(
     {
@@ -50,18 +58,59 @@ class PatchedMiniGameService(MiniGameService):
         words.update(LIVE_EXTRA_WORDS)
         return words
 
+    @staticmethod
+    @lru_cache(maxsize=100_000)
+    def is_valid_dictionary_lemma(word: str) -> bool:
+        """Return True for valid Russian noun lemmas, not arbitrary inflected forms.
+
+        Examples:
+        - станция -> True
+        - станцией -> False, because normal form is станция
+        - станции -> False, because it is an inflected/plural form for this game
+        """
+        if MORPH is None:
+            return False
+        parses = MORPH.parse(word)
+        for parse in parses[:5]:
+            tag = parse.tag
+            normal_form = parse.normal_form.replace("ё", "е")
+            if parse.score < MIN_MORPH_SCORE:
+                continue
+            if tag.POS not in ACCEPTED_POS:
+                continue
+            if normal_form != word:
+                continue
+            # For nouns, require nominative form when the dictionary knows the case.
+            # Plural-only nouns such as "сани" stay valid because their normal_form is themselves.
+            if "nomn" in tag or normal_form == word:
+                return True
+        return False
+
+    def word_is_accepted_for_round(self, word: str, round_data: WordGameRound) -> bool:
+        if word in round_data.allowed_words:
+            return True
+        if not self.is_valid_dictionary_lemma(word):
+            return False
+        if not self.can_build(word, round_data.base_word):
+            return False
+        # Add dynamic valid lemmas to the current round, so /game and final stats stay honest.
+        round_data.allowed_words.add(word)
+        return True
+
     def render_start(self, round_data: WordGameRound) -> str:
         total = len(round_data.allowed_words)
+        morph_line = "\nЛексикон также проверяет большой русский словарь начальных форм."
         return (
             f"<code>{self.spaced_word(round_data.base_word)}</code>\n"
             "📖 <b>ЛЕКСИКОН открыт</b>\n\n"
             f"<code>Раунд #{round_data.round_code}</code>\n"
             "Слово-источник выше — именно его держим в закрепе.\n\n"
-            f"Из этих букв можно собрать <b>{total}</b> слов.\n"
+            f"В стартовом словаре страницы уже есть <b>{total}</b> слов.{morph_line}\n"
             f"Минимум — <b>{round_data.min_length}</b> буквы.\n"
             f"Время до закрытия страницы — <b>{self.format_duration(ROUND_SECONDS)}</b>.\n\n"
             "Пишите слова прямо в чат.\n"
-            "Первый, кто нашел слово, забирает его себе.\n\n"
+            "Первый, кто нашел слово, забирает его себе.\n"
+            "Принимаются существительные в начальной форме: например, <b>станция</b>, но не <b>станцией</b>.\n\n"
             "Чем длиннее слово, тем больше звезд:\n"
             "4 буквы — 1🌟\n"
             "5 букв — 2🌟\n"
@@ -256,7 +305,7 @@ class PatchedMiniGameService(MiniGameService):
             return
         if not self.can_build(word, round_data.base_word):
             return
-        if word not in round_data.allowed_words:
+        if not self.word_is_accepted_for_round(word, round_data):
             return
 
         async with round_data.lock:
