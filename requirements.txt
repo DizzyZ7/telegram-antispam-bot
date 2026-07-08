@@ -1,3 +1,4 @@
 aiogram>=3.24
 aiosqlite>=0.20
 pymorphy3>=2.0
+wordfreq>=3.1.1
