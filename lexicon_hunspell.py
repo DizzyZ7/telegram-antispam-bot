@@ -7,12 +7,17 @@ uses the spell checker as an additional broad dictionary source.
 If the dictionary is missing, the bot tries to download LibreOffice's Russian
 Hunspell files once into DATA_DIR/hunspell. DATA_DIR is persistent on BotHost,
 so the files survive redeploys when the volume is preserved.
+
+If spylls cannot parse the downloaded dictionary, this module falls back to a
+plain word set parsed from ru_RU.dic. That is less morphologically powerful, but
+safe and enough for many base-word checks.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import urllib.request
 from functools import lru_cache
 from pathlib import Path
@@ -23,6 +28,7 @@ HUNSPELL_DATA_DIR = DATA_DIR / "hunspell"
 DOWNLOAD_TIMEOUT_SECONDS = 20
 RU_AFF_URL = "https://raw.githubusercontent.com/LibreOffice/dictionaries/master/ru_RU/ru_RU.aff"
 RU_DIC_URL = "https://raw.githubusercontent.com/LibreOffice/dictionaries/master/ru_RU/ru_RU.dic"
+WORD_RE = re.compile(r"^[а-яе]{4,32}$")
 
 try:
     from spylls.hunspell import Dictionary
@@ -64,7 +70,6 @@ def _ensure_downloaded_dictionary() -> None:
         print(f"LEXICON_HUNSPELL_DOWNLOADED path={base_path}", flush=True)
     except Exception as exc:
         LOGGER.warning("Could not download Russian Hunspell dictionary: %s", exc, exc_info=True)
-        # Keep partial/corrupted downloads from being used on the next startup.
         for path in (base_path.with_suffix(".aff"), base_path.with_suffix(".dic")):
             try:
                 if path.is_file() and path.stat().st_size < 1024:
@@ -73,12 +78,46 @@ def _ensure_downloaded_dictionary() -> None:
                 LOGGER.info("Could not clean partial Hunspell file %s", path, exc_info=True)
 
 
+def _normalize_word(raw_word: str) -> str:
+    return raw_word.strip().split("/", 1)[0].lower().replace("ё", "е")
+
+
+def _load_plain_dic_words(dic_path: Path) -> set[str]:
+    words: set[str] = set()
+    try:
+        lines = dic_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        LOGGER.exception("Could not read plain Hunspell dictionary %s", dic_path)
+        return words
+
+    for idx, line in enumerate(lines):
+        if idx == 0 and line.strip().isdigit():
+            continue
+        word = _normalize_word(line)
+        if WORD_RE.fullmatch(word):
+            words.add(word)
+    return words
+
+
+def _load_plain_word_set() -> set[str]:
+    for base_path in HUNSPELL_CANDIDATES:
+        dic_path = base_path.with_suffix(".dic")
+        if not dic_path.is_file():
+            continue
+        words = _load_plain_dic_words(dic_path)
+        if words:
+            print(f"LEXICON_HUNSPELL_WORDSET_READY enabled=true path={dic_path} words={len(words)}", flush=True)
+            return words
+    print("LEXICON_HUNSPELL_WORDSET_READY enabled=false reason=dic_not_found", flush=True)
+    return set()
+
+
 def _load_hunspell_dictionary():
+    _ensure_downloaded_dictionary()
+
     if Dictionary is None:
         print("LEXICON_HUNSPELL_READY enabled=false reason=spylls_missing", flush=True)
         return None
-
-    _ensure_downloaded_dictionary()
 
     for base_path in HUNSPELL_CANDIDATES:
         if not _has_dictionary_files(base_path):
@@ -87,22 +126,24 @@ def _load_hunspell_dictionary():
             dictionary = Dictionary.from_files(str(base_path))
             print(f"LEXICON_HUNSPELL_READY enabled=true path={base_path}", flush=True)
             return dictionary
-        except Exception:
-            LOGGER.exception("Could not load Hunspell dictionary from %s", base_path)
+        except Exception as exc:
+            LOGGER.warning("Could not load Hunspell dictionary from %s: %s", base_path, exc, exc_info=True)
 
-    print("LEXICON_HUNSPELL_READY enabled=false reason=ru_RU_files_not_found", flush=True)
+    print("LEXICON_HUNSPELL_READY enabled=false reason=spylls_load_failed", flush=True)
     return None
 
 
 HUNSPELL_DICTIONARY = _load_hunspell_dictionary()
+HUNSPELL_WORD_SET = _load_plain_word_set() if HUNSPELL_DICTIONARY is None else set()
 
 
 @lru_cache(maxsize=150_000)
 def hunspell_knows(word: str) -> bool:
-    if HUNSPELL_DICTIONARY is None:
-        return False
+    normalized = word.lower().replace("ё", "е")
     try:
-        return bool(HUNSPELL_DICTIONARY.lookup(word))
+        if HUNSPELL_DICTIONARY is not None:
+            return bool(HUNSPELL_DICTIONARY.lookup(normalized))
+        return normalized in HUNSPELL_WORD_SET
     except Exception:
         LOGGER.exception("Hunspell lookup failed for word=%s", word)
-        return False
+        return normalized in HUNSPELL_WORD_SET
