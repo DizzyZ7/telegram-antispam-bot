@@ -18,6 +18,7 @@ import os
 import re
 import time
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,6 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from lexicon_dictionary_patch import DictionaryBackedLexiconService
-from lexicon_hunspell import hunspell_knows
 from minigames import WORD_RE
 
 LOGGER = logging.getLogger(__name__)
@@ -39,7 +39,6 @@ INVALID_WORD_MESSAGE = "Слово должно быть русским слов
 UNCERTAIN_NOUN_MESSAGE = "Слово не похоже на существительное в начальной форме."
 CURATED_COMMON_WORDS = frozenset(
     {
-        # words that real players immediately expect in Lexicon rounds
         "репа", "дрель", "трель", "след", "слет", "деталь", "педаль", "лепта", "перс",
         "сель", "лесть", "среда", "даль", "предатель", "седло", "адрес", "степь",
         "предел", "плеть", "тред", "десерт", "редька", "десна", "леска", "дело",
@@ -62,10 +61,30 @@ def _stored_word(value: str) -> str:
     return _normalize_word(value).replace("-", "")
 
 
+@lru_cache(maxsize=150_000)
+def _hunspell_knows_safe(word: str) -> bool:
+    """Lazy optional Hunspell check.
+
+    Hunspell is a bonus layer only. Any import/download/parser problem must not
+    prevent the bot from starting or serving the chat.
+    """
+    try:
+        from lexicon_hunspell import hunspell_knows
+    except BaseException as exc:  # noqa: BLE001 - keep bot alive even on bad optional dependency
+        LOGGER.warning("Hunspell disabled after lazy import failure: %s", exc, exc_info=True)
+        return False
+
+    try:
+        return bool(hunspell_knows(word))
+    except BaseException as exc:  # noqa: BLE001 - optional dictionary must never crash gameplay
+        LOGGER.warning("Hunspell lookup disabled for word=%s: %s", word, exc, exc_info=True)
+        return False
+
+
 def _known_dictionary_word(service: DictionaryBackedLexiconService, word: str) -> bool:
     return (
         service.is_valid_dictionary_lemma(word)
-        or hunspell_knows(word)
+        or _hunspell_knows_safe(word)
         or word in CURATED_COMMON_WORDS
     )
 
@@ -125,7 +144,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         words.update(CURATED_COMMON_WORDS)
         words.update(cls.approved_words)
         LOGGER.info(
-            "Learning Lexicon dictionary loaded: total=%s curated=%s approved=%s hunspell=optional",
+            "Learning Lexicon dictionary loaded: total=%s curated=%s approved=%s hunspell=lazy_optional",
             len(words),
             len(CURATED_COMMON_WORDS),
             len(cls.approved_words),
@@ -141,7 +160,6 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         self.dictionary_words.add(word)
         self.save_approved_words()
 
-        # Make the word available immediately in already running pages when its letters fit.
         for _key, round_data in self.active_word_games.items():
             if self.can_build(word, round_data.base_word):
                 round_data.allowed_words.add(word)
@@ -299,4 +317,4 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
         await message.reply(f"📖 <code>{app.safe_output_text(word)}</code>: <b>{status}</b>")
 
     dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
-    print("LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on admin_override=on curated_common=on hunspell=on", flush=True)
+    print("LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on admin_override=on curated_common=on hunspell=lazy_optional", flush=True)
