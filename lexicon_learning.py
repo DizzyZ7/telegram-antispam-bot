@@ -31,13 +31,33 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 APPROVED_WORDS_PATH = DATA_DIR / "lexicon_approved_words.txt"
 REJECTED_WORDS_LOG_PATH = DATA_DIR / "lexicon_rejected_words.log"
 MAX_PENDING_LINES = 25
-LEXICON_WORD_RE = re.compile(r"^[а-яА-ЯеЕёЁ-]{4,32}$")
+LEXICON_RAW_WORD_RE = re.compile(r"^[а-яА-ЯеЕёЁ-]{4,32}$")
+LEXICON_STORED_WORD_RE = re.compile(r"^[а-яе]{4,32}$")
 INVALID_WORD_MESSAGE = "Слово должно быть русским словом длиной от 4 до 32 символов."
 UNCERTAIN_NOUN_MESSAGE = "Слово не похоже на существительное в начальной форме."
+CURATED_COMMON_WORDS = frozenset(
+    {
+        # words that real players immediately expect in Lexicon rounds
+        "репа", "дрель", "трель", "след", "слет", "деталь", "педаль", "лепта", "перс",
+        "сель", "лесть", "среда", "даль", "предатель", "седло", "адрес", "степь",
+        "предел", "плеть", "тред", "десерт", "редька", "десна", "леска", "дело",
+        "тело", "лето", "село", "стол", "рост", "трос", "сорт", "лист", "лиса",
+        "сила", "соль", "роль", "ноль", "поле", "море", "гора", "кора", "коса",
+        "нора", "нота", "тема", "мера", "рама", "рана", "рука", "река", "вера",
+        "нерв", "сено", "сени", "овес", "овин", "овен", "вино", "веко", "окно",
+        "окоп", "песок", "носок", "веник", "венок", "пион", "пирс", "риск",
+        "срок", "сквер", "спор", "спрос", "сноп", "снос", "крен", "кров",
+        "крон", "кран", "контур", "трактор", "турок", "сектор", "секатор",
+    }
+)
 
 
 def _normalize_word(value: str) -> str:
     return value.strip().lower().replace("ё", "е")
+
+
+def _stored_word(value: str) -> str:
+    return _normalize_word(value).replace("-", "")
 
 
 def validate_lexicon_word(service: DictionaryBackedLexiconService, raw_word: str, *, admin_override: bool = False) -> tuple[bool, str]:
@@ -46,20 +66,15 @@ def validate_lexicon_word(service: DictionaryBackedLexiconService, raw_word: str
     The admin override bypasses only uncertain morphology. It never bypasses
     length or character checks, so words like "кот" or "abc123" remain invalid.
     """
-    word = _normalize_word(raw_word)
-    if not LEXICON_WORD_RE.fullmatch(word):
+    raw_normalized = _normalize_word(raw_word)
+    if not LEXICON_RAW_WORD_RE.fullmatch(raw_normalized):
         return False, INVALID_WORD_MESSAGE
 
-    # Hyphens are allowed at the regex level for future compound words, but the
-    # current game engine stores words without hyphens because letter matching is
-    # based on the source letters only.
-    stored_word = word.replace("-", "")
-    if not LEXICON_WORD_RE.fullmatch(stored_word):
-        return False, INVALID_WORD_MESSAGE
-    if len(stored_word) < 4 or len(stored_word) > 32:
+    stored_word = _stored_word(raw_word)
+    if not LEXICON_STORED_WORD_RE.fullmatch(stored_word):
         return False, INVALID_WORD_MESSAGE
 
-    if service.is_valid_dictionary_lemma(stored_word):
+    if service.is_valid_dictionary_lemma(stored_word) or stored_word in CURATED_COMMON_WORDS:
         return True, stored_word
     if admin_override:
         return True, stored_word
@@ -96,10 +111,12 @@ class LearningLexiconService(DictionaryBackedLexiconService):
     def load_dictionary_words(cls) -> set[str]:
         cls.approved_words = cls.load_approved_words()
         words = super().load_dictionary_words()
+        words.update(CURATED_COMMON_WORDS)
         words.update(cls.approved_words)
         LOGGER.info(
-            "Learning Lexicon dictionary loaded: total=%s approved=%s",
+            "Learning Lexicon dictionary loaded: total=%s curated=%s approved=%s",
             len(words),
+            len(CURATED_COMMON_WORDS),
             len(cls.approved_words),
         )
         return words
@@ -112,10 +129,15 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         self.approved_words.add(word)
         self.dictionary_words.add(word)
         self.save_approved_words()
+
+        # Make the word available immediately in already running pages when its letters fit.
+        for _key, round_data in self.active_word_games.items():
+            if self.can_build(word, round_data.base_word):
+                round_data.allowed_words.add(word)
         return True, word
 
     def log_rejected_candidate(self, *, word: str, round_base: str, user_id: int, name: str, reason: str) -> None:
-        if not LEXICON_WORD_RE.fullmatch(word):
+        if not LEXICON_STORED_WORD_RE.fullmatch(word):
             return
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         safe_name = name.replace("\n", " ").replace("\t", " ")[:80]
@@ -133,7 +155,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
             return "source_word"
         if not self.can_build(word, round_data.base_word):
             return "letters_do_not_fit"
-        if word in self.approved_words:
+        if word in self.approved_words or word in CURATED_COMMON_WORDS:
             return None
         ok, _ = validate_lexicon_word(self, word, admin_override=False)
         if not ok:
@@ -158,7 +180,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         if not WORD_RE.match(raw_word):
             return
 
-        word = _normalize_word(raw_word).replace("-", "")
+        word = _stored_word(raw_word)
         reason = self.rejection_reason(word, round_data)
         if reason is not None:
             self.log_rejected_candidate(
@@ -170,7 +192,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
             )
             return
 
-        if word in self.approved_words and word not in round_data.allowed_words:
+        if (word in self.approved_words or word in CURATED_COMMON_WORDS) and word not in round_data.allowed_words:
             if not self.can_build(word, round_data.base_word):
                 return
             round_data.allowed_words.add(word)
@@ -190,7 +212,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
                 _, word, _base, _user_id, _name, reason = parts[:6]
                 if reason in {"too_short", "letters_do_not_fit", "source_word"}:
                     continue
-                if word in self.dictionary_words or word in self.approved_words:
+                if word in self.dictionary_words or word in self.approved_words or word in CURATED_COMMON_WORDS:
                     continue
                 counter[word] += 1
                 last_reason[word] = reason
@@ -259,11 +281,11 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
         if len(parts) < 2:
             await message.reply("Формат: <code>/lex_check слово</code>")
             return
-        word = _normalize_word(parts[1])
+        word = _stored_word(parts[1])
         strict_ok, _ = validate_lexicon_word(service, word, admin_override=False)
         admin_ok, _ = validate_lexicon_word(service, word, admin_override=True)
-        status = "строго да" if strict_ok or word.replace("-", "") in service.approved_words else "админ может добавить" if admin_ok else "нет"
+        status = "строго да" if strict_ok or word in service.approved_words or word in CURATED_COMMON_WORDS else "админ может добавить" if admin_ok else "нет"
         await message.reply(f"📖 <code>{app.safe_output_text(word)}</code>: <b>{status}</b>")
 
     dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
-    print("LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on admin_override=on", flush=True)
+    print("LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on admin_override=on curated_common=on", flush=True)
