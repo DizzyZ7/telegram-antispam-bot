@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -23,17 +24,46 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from lexicon_dictionary_patch import DictionaryBackedLexiconService
-from minigames import MIN_WORD_LENGTH, WORD_RE
+from minigames import WORD_RE
 
 LOGGER = logging.getLogger(__name__)
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 APPROVED_WORDS_PATH = DATA_DIR / "lexicon_approved_words.txt"
 REJECTED_WORDS_LOG_PATH = DATA_DIR / "lexicon_rejected_words.log"
 MAX_PENDING_LINES = 25
+LEXICON_WORD_RE = re.compile(r"^[а-яА-ЯеЕёЁ-]{4,32}$")
+INVALID_WORD_MESSAGE = "Слово должно быть русским словом длиной от 4 до 32 символов."
+UNCERTAIN_NOUN_MESSAGE = "Слово не похоже на существительное в начальной форме."
 
 
 def _normalize_word(value: str) -> str:
-    return value.strip().lower().replace("ё", "е").replace("-", "")
+    return value.strip().lower().replace("ё", "е")
+
+
+def validate_lexicon_word(service: DictionaryBackedLexiconService, raw_word: str, *, admin_override: bool = False) -> tuple[bool, str]:
+    """Validate a Lexicon word.
+
+    The admin override bypasses only uncertain morphology. It never bypasses
+    length or character checks, so words like "кот" or "abc123" remain invalid.
+    """
+    word = _normalize_word(raw_word)
+    if not LEXICON_WORD_RE.fullmatch(word):
+        return False, INVALID_WORD_MESSAGE
+
+    # Hyphens are allowed at the regex level for future compound words, but the
+    # current game engine stores words without hyphens because letter matching is
+    # based on the source letters only.
+    stored_word = word.replace("-", "")
+    if not LEXICON_WORD_RE.fullmatch(stored_word):
+        return False, INVALID_WORD_MESSAGE
+    if len(stored_word) < 4 or len(stored_word) > 32:
+        return False, INVALID_WORD_MESSAGE
+
+    if service.is_valid_dictionary_lemma(stored_word):
+        return True, stored_word
+    if admin_override:
+        return True, stored_word
+    return False, UNCERTAIN_NOUN_MESSAGE
 
 
 class LearningLexiconService(DictionaryBackedLexiconService):
@@ -49,9 +79,9 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         words: set[str] = set()
         try:
             for line in APPROVED_WORDS_PATH.read_text(encoding="utf-8").splitlines():
-                word = _normalize_word(line)
-                if len(word) >= MIN_WORD_LENGTH and WORD_RE.match(word):
-                    words.add(word)
+                ok, result = validate_lexicon_word(cls, line, admin_override=True)  # type: ignore[arg-type]
+                if ok:
+                    words.add(result)
         except Exception:
             LOGGER.exception("Could not load approved Lexicon words from %s", APPROVED_WORDS_PATH)
         return words
@@ -74,23 +104,18 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         )
         return words
 
-    def add_approved_word(self, raw_word: str) -> tuple[bool, str]:
-        word = _normalize_word(raw_word)
-        if len(word) < MIN_WORD_LENGTH or not WORD_RE.match(word):
-            return False, "Слово должно быть русским и не короче 4 букв."
-        if not self.is_valid_dictionary_lemma(word):
-            return False, "Слово не похоже на существительное в начальной форме."
+    def add_approved_word(self, raw_word: str, *, admin_override: bool = True) -> tuple[bool, str]:
+        ok, result = validate_lexicon_word(self, raw_word, admin_override=admin_override)
+        if not ok:
+            return False, result
+        word = result
         self.approved_words.add(word)
         self.dictionary_words.add(word)
         self.save_approved_words()
-        for _, allowed in self.round_candidates:
-            # Do not mutate every source blindly with expensive checks for huge pools.
-            # Dynamic round acceptance will add it when appropriate.
-            pass
         return True, word
 
     def log_rejected_candidate(self, *, word: str, round_base: str, user_id: int, name: str, reason: str) -> None:
-        if len(word) < MIN_WORD_LENGTH or not WORD_RE.match(word):
+        if not LEXICON_WORD_RE.fullmatch(word):
             return
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         safe_name = name.replace("\n", " ").replace("\t", " ")[:80]
@@ -110,7 +135,8 @@ class LearningLexiconService(DictionaryBackedLexiconService):
             return "letters_do_not_fit"
         if word in self.approved_words:
             return None
-        if not self.is_valid_dictionary_lemma(word):
+        ok, _ = validate_lexicon_word(self, word, admin_override=False)
+        if not ok:
             return "not_base_noun"
         return None
 
@@ -132,7 +158,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         if not WORD_RE.match(raw_word):
             return
 
-        word = _normalize_word(raw_word)
+        word = _normalize_word(raw_word).replace("-", "")
         reason = self.rejection_reason(word, round_data)
         if reason is not None:
             self.log_rejected_candidate(
@@ -199,7 +225,7 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
         if len(parts) < 2:
             await message.reply("Формат: <code>/lex_add слово</code>")
             return
-        ok, result = service.add_approved_word(parts[1])
+        ok, result = service.add_approved_word(parts[1], admin_override=True)
         if not ok:
             await message.reply(f"📖 Не добавил: {app.safe_output_text(result)}")
             return
@@ -234,8 +260,10 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
             await message.reply("Формат: <code>/lex_check слово</code>")
             return
         word = _normalize_word(parts[1])
-        status = "да" if service.is_valid_dictionary_lemma(word) or word in service.approved_words else "нет"
-        await message.reply(f"📖 <code>{app.safe_output_text(word)}</code> в начальной форме существительного: <b>{status}</b>")
+        strict_ok, _ = validate_lexicon_word(service, word, admin_override=False)
+        admin_ok, _ = validate_lexicon_word(service, word, admin_override=True)
+        status = "строго да" if strict_ok or word.replace("-", "") in service.approved_words else "админ может добавить" if admin_ok else "нет"
+        await message.reply(f"📖 <code>{app.safe_output_text(word)}</code>: <b>{status}</b>")
 
     dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
-    print("LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on", flush=True)
+    print("LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on admin_override=on", flush=True)
