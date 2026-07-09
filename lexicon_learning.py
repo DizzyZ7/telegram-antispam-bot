@@ -22,6 +22,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from aiogram import F
 from aiogram.filters import Command
 from aiogram.types import Message
 
@@ -35,6 +36,10 @@ REJECTED_WORDS_LOG_PATH = DATA_DIR / "lexicon_rejected_words.log"
 MAX_PENDING_LINES = 25
 LEXICON_RAW_WORD_RE = re.compile(r"^[а-яА-ЯеЕёЁ-]{4,32}$")
 LEXICON_STORED_WORD_RE = re.compile(r"^[а-яе]{4,32}$")
+LEXICON_TEXT_COMMAND_RE = re.compile(
+    r"^/(lex_add|lexicon_add|lex_pending|lexicon_pending|lex_check|lexicon_check)(?:@[A-Za-z0-9_]{1,32})?(?:\s+(.+))?$",
+    re.IGNORECASE,
+)
 INVALID_WORD_MESSAGE = "Слово должно быть русским словом длиной от 4 до 32 символов."
 UNCERTAIN_NOUN_MESSAGE = "Слово не похоже на существительное в начальной форме."
 CURATED_COMMON_WORDS = frozenset(
@@ -262,25 +267,85 @@ async def _is_chat_admin(app: Any, message: Message) -> bool:
         return False
 
 
+def _parse_text_command(message: Message) -> tuple[str, str] | None:
+    match = LEXICON_TEXT_COMMAND_RE.match((message.text or "").strip())
+    if not match:
+        return None
+    return match.group(1).lower(), (match.group(2) or "").strip()
+
+
+async def _reply_check(app: Any, service: LearningLexiconService, message: Message, raw_word: str) -> None:
+    if not raw_word:
+        await message.reply("Формат: <code>/lex_check слово</code>")
+        return
+    word = _stored_word(raw_word)
+    strict_ok, _ = validate_lexicon_word(service, word, admin_override=False)
+    admin_ok, _ = validate_lexicon_word(service, word, admin_override=True)
+    status = "строго да" if strict_ok or word in service.approved_words else "админ может добавить" if admin_ok else "нет"
+    await message.reply(f"📖 <code>{app.safe_output_text(word)}</code>: <b>{status}</b>")
+
+
+async def _reply_add(app: Any, service: LearningLexiconService, message: Message, raw_word: str) -> None:
+    if not await _is_chat_admin(app, message):
+        await message.reply("📖 Добавлять слова в Лексикон могут только администраторы чата.")
+        return
+    if not raw_word:
+        await message.reply("Формат: <code>/lex_add слово</code>")
+        return
+    ok, result = service.add_approved_word(raw_word, admin_override=True)
+    if not ok:
+        await message.reply(f"📖 Не добавил: {app.safe_output_text(result)}")
+        return
+    await message.reply(f"📖 Слово добавлено в словарь Лексикона: <code>{app.safe_output_text(result)}</code>")
+
+
+async def _reply_pending(app: Any, service: LearningLexiconService, message: Message) -> None:
+    if not await _is_chat_admin(app, message):
+        await message.reply("📖 Очередь слов видят только администраторы чата.")
+        return
+    pending = service.pending_words()
+    if not pending:
+        await message.reply("📖 Очередь спорных слов пока пуста.")
+        return
+    lines = ["📖 <b>Спорные слова Лексикона</b>", "", "Добавить: <code>/lex_add слово</code>", ""]
+    for word, count, reason in pending:
+        lines.append(f"— <code>{app.safe_output_text(word)}</code> · {count} раз · {reason}")
+    await message.reply("\n".join(lines))
+
+
 def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService) -> None:
     dispatcher = app.dp
+
+    @dispatcher.message(F.text.regexp(LEXICON_TEXT_COMMAND_RE))
+    async def lexicon_text_command_fallback(message: Message) -> None:
+        if not app.is_group_chat(message) or not app.is_allowed_chat(message.chat.id):
+            return
+        parsed = _parse_text_command(message)
+        if parsed is None:
+            return
+        command, argument = parsed
+        print(
+            f"LEXICON_COMMAND_HANDLED fallback=true command={command} chat_id={message.chat.id} thread_id={message.message_thread_id}",
+            flush=True,
+        )
+        if command in {"lex_check", "lexicon_check"}:
+            await _reply_check(app, service, message, argument)
+            return
+        if command in {"lex_add", "lexicon_add"}:
+            await _reply_add(app, service, message, argument)
+            return
+        if command in {"lex_pending", "lexicon_pending"}:
+            await _reply_pending(app, service, message)
+            return
+
+    dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
 
     @dispatcher.message(Command(commands=["lex_add", "lexicon_add"]))
     async def lexicon_add_word(message: Message) -> None:
         if not app.is_group_chat(message) or not app.is_allowed_chat(message.chat.id):
             return
-        if not await _is_chat_admin(app, message):
-            await message.reply("📖 Добавлять слова в Лексикон могут только администраторы чата.")
-            return
         parts = (message.text or "").split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply("Формат: <code>/lex_add слово</code>")
-            return
-        ok, result = service.add_approved_word(parts[1], admin_override=True)
-        if not ok:
-            await message.reply(f"📖 Не добавил: {app.safe_output_text(result)}")
-            return
-        await message.reply(f"📖 Слово добавлено в словарь Лексикона: <code>{app.safe_output_text(result)}</code>")
+        await _reply_add(app, service, message, parts[1] if len(parts) > 1 else "")
 
     dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
 
@@ -288,17 +353,7 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
     async def lexicon_pending_words(message: Message) -> None:
         if not app.is_group_chat(message) or not app.is_allowed_chat(message.chat.id):
             return
-        if not await _is_chat_admin(app, message):
-            await message.reply("📖 Очередь слов видят только администраторы чата.")
-            return
-        pending = service.pending_words()
-        if not pending:
-            await message.reply("📖 Очередь спорных слов пока пуста.")
-            return
-        lines = ["📖 <b>Спорные слова Лексикона</b>", "", "Добавить: <code>/lex_add слово</code>", ""]
-        for word, count, reason in pending:
-            lines.append(f"— <code>{app.safe_output_text(word)}</code> · {count} раз · {reason}")
-        await message.reply("\n".join(lines))
+        await _reply_pending(app, service, message)
 
     dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
 
@@ -307,14 +362,7 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
         if not app.is_group_chat(message) or not app.is_allowed_chat(message.chat.id):
             return
         parts = (message.text or "").split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply("Формат: <code>/lex_check слово</code>")
-            return
-        word = _stored_word(parts[1])
-        strict_ok, _ = validate_lexicon_word(service, word, admin_override=False)
-        admin_ok, _ = validate_lexicon_word(service, word, admin_override=True)
-        status = "строго да" if strict_ok or word in service.approved_words else "админ может добавить" if admin_ok else "нет"
-        await message.reply(f"📖 <code>{app.safe_output_text(word)}</code>: <b>{status}</b>")
+        await _reply_check(app, service, message, parts[1] if len(parts) > 1 else "")
 
     dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
-    print("LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on admin_override=on curated_common=on hunspell=lazy_optional", flush=True)
+    print("LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on admin_override=on curated_common=on hunspell=lazy_optional command_fallback=on", flush=True)
