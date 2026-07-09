@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
+import sys
+import traceback
 from dataclasses import replace
 from pathlib import Path
 
@@ -204,4 +207,10 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except BaseException as exc:  # noqa: BLE001 - BotHost must show the real reason before restart
+        print("FATAL_MAIN_CRASH", repr(exc), file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        logging.exception("Fatal main crash")
+        raise
