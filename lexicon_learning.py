@@ -1,14 +1,14 @@
-"""Community learning layer for the Lexicon mini-game.
+"""Stable community learning layer for the Lexicon mini-game.
 
-Why this exists:
-- the built-in morphology/frequency dictionary gives broad coverage;
-- optional Hunspell spelling dictionary catches many ordinary Russian words;
-- real players will still find valid words that a library misses;
-- admins need a fast way to add approved words without editing code.
+Production rule:
+- no network downloads;
+- no optional heavy dictionary imports;
+- no duplicate command handlers;
+- admin commands are handled by one high-priority text router.
 
 Persistent files live in DATA_DIR:
-- lexicon_approved_words.txt  — one approved base-form noun per line;
-- lexicon_rejected_words.log  — observed rejected candidates for review.
+- lexicon_approved_words.txt  — approved words, one per line;
+- lexicon_rejected_words.log  — rejected candidates for admin review.
 """
 
 from __future__ import annotations
@@ -18,12 +18,10 @@ import os
 import re
 import time
 from collections import Counter
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from aiogram import F
-from aiogram.filters import Command
 from aiogram.types import Message
 
 from lexicon_dictionary_patch import DictionaryBackedLexiconService
@@ -34,14 +32,17 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 APPROVED_WORDS_PATH = DATA_DIR / "lexicon_approved_words.txt"
 REJECTED_WORDS_LOG_PATH = DATA_DIR / "lexicon_rejected_words.log"
 MAX_PENDING_LINES = 25
+
 LEXICON_RAW_WORD_RE = re.compile(r"^[а-яА-ЯеЕёЁ-]{4,32}$")
 LEXICON_STORED_WORD_RE = re.compile(r"^[а-яе]{4,32}$")
 LEXICON_TEXT_COMMAND_RE = re.compile(
     r"^/(lex_add|lexicon_add|lex_pending|lexicon_pending|lex_check|lexicon_check)(?:@[A-Za-z0-9_]{1,32})?(?:\s+(.+))?$",
     re.IGNORECASE,
 )
+
 INVALID_WORD_MESSAGE = "Слово должно быть русским словом длиной от 4 до 32 символов."
 UNCERTAIN_NOUN_MESSAGE = "Слово не похоже на существительное в начальной форме."
+
 CURATED_COMMON_WORDS = frozenset(
     {
         "репа", "дрель", "трель", "след", "слет", "деталь", "педаль", "лепта", "перс",
@@ -54,6 +55,7 @@ CURATED_COMMON_WORDS = frozenset(
         "окоп", "песок", "носок", "веник", "венок", "пион", "пирс", "риск",
         "срок", "сквер", "спор", "спрос", "сноп", "снос", "крен", "кров",
         "крон", "кран", "контур", "трактор", "турок", "сектор", "секатор",
+        "удон", "рамен", "лапша", "суп", "мисо", "соус", "рис", "суши",
     }
 )
 
@@ -66,41 +68,16 @@ def _stored_word(value: str) -> str:
     return _normalize_word(value).replace("-", "")
 
 
-@lru_cache(maxsize=150_000)
-def _hunspell_knows_safe(word: str) -> bool:
-    """Lazy optional Hunspell check.
-
-    Hunspell is a bonus layer only. Any import/download/parser problem must not
-    prevent the bot from starting or serving the chat.
-    """
-    try:
-        from lexicon_hunspell import hunspell_knows
-    except BaseException as exc:  # noqa: BLE001 - keep bot alive even on bad optional dependency
-        LOGGER.warning("Hunspell disabled after lazy import failure: %s", exc, exc_info=True)
-        return False
-
-    try:
-        return bool(hunspell_knows(word))
-    except BaseException as exc:  # noqa: BLE001 - optional dictionary must never crash gameplay
-        LOGGER.warning("Hunspell lookup disabled for word=%s: %s", word, exc, exc_info=True)
-        return False
-
-
 def _known_dictionary_word(service: DictionaryBackedLexiconService, word: str) -> bool:
-    return (
-        service.is_valid_dictionary_lemma(word)
-        or _hunspell_knows_safe(word)
-        or word in CURATED_COMMON_WORDS
-    )
+    return service.is_valid_dictionary_lemma(word) or word in CURATED_COMMON_WORDS
 
 
-def validate_lexicon_word(service: DictionaryBackedLexiconService, raw_word: str, *, admin_override: bool = False) -> tuple[bool, str]:
-    """Validate a Lexicon word.
-
-    The admin override bypasses only uncertain morphology/dictionary knowledge.
-    It never bypasses length or character checks, so words like "кот" or
-    "abc123" remain invalid.
-    """
+def validate_lexicon_word(
+    service: DictionaryBackedLexiconService,
+    raw_word: str,
+    *,
+    admin_override: bool = False,
+) -> tuple[bool, str]:
     raw_normalized = _normalize_word(raw_word)
     if not LEXICON_RAW_WORD_RE.fullmatch(raw_normalized):
         return False, INVALID_WORD_MESSAGE
@@ -117,7 +94,7 @@ def validate_lexicon_word(service: DictionaryBackedLexiconService, raw_word: str
 
 
 class LearningLexiconService(DictionaryBackedLexiconService):
-    """Lexicon with admin-approved words and rejected-word review log."""
+    """Lexicon service with safe admin-approved words."""
 
     approved_words: set[str] = set()
 
@@ -126,6 +103,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         if not APPROVED_WORDS_PATH.is_file():
             return set()
+
         words: set[str] = set()
         try:
             for line in APPROVED_WORDS_PATH.read_text(encoding="utf-8").splitlines():
@@ -149,7 +127,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         words.update(CURATED_COMMON_WORDS)
         words.update(cls.approved_words)
         LOGGER.info(
-            "Learning Lexicon dictionary loaded: total=%s curated=%s approved=%s hunspell=lazy_optional",
+            "Learning Lexicon dictionary loaded: total=%s curated=%s approved=%s",
             len(words),
             len(CURATED_COMMON_WORDS),
             len(cls.approved_words),
@@ -160,11 +138,13 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         ok, result = validate_lexicon_word(self, raw_word, admin_override=admin_override)
         if not ok:
             return False, result
+
         word = result
         self.approved_words.add(word)
         self.dictionary_words.add(word)
         self.save_approved_words()
 
+        # Make the word available immediately in active rounds when letters fit.
         for _key, round_data in self.active_word_games.items():
             if self.can_build(word, round_data.base_word):
                 round_data.allowed_words.add(word)
@@ -227,15 +207,15 @@ class LearningLexiconService(DictionaryBackedLexiconService):
             return
 
         if (word in self.approved_words or _known_dictionary_word(self, word)) and word not in round_data.allowed_words:
-            if not self.can_build(word, round_data.base_word):
-                return
-            round_data.allowed_words.add(word)
+            if self.can_build(word, round_data.base_word):
+                round_data.allowed_words.add(word)
 
         await super().handle_word_guess(message)
 
     def pending_words(self, limit: int = MAX_PENDING_LINES) -> list[tuple[str, int, str]]:
         if not REJECTED_WORDS_LOG_PATH.is_file():
             return []
+
         counter: Counter[str] = Counter()
         last_reason: dict[str, str] = {}
         try:
@@ -317,52 +297,29 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
     dispatcher = app.dp
 
     @dispatcher.message(F.text.regexp(LEXICON_TEXT_COMMAND_RE))
-    async def lexicon_text_command_fallback(message: Message) -> None:
+    async def lexicon_text_command(message: Message) -> None:
         if not app.is_group_chat(message) or not app.is_allowed_chat(message.chat.id):
             return
         parsed = _parse_text_command(message)
         if parsed is None:
             return
+
         command, argument = parsed
         print(
-            f"LEXICON_COMMAND_HANDLED fallback=true command={command} chat_id={message.chat.id} thread_id={message.message_thread_id}",
+            f"LEXICON_COMMAND_HANDLED command={command} chat_id={message.chat.id} thread_id={message.message_thread_id}",
             flush=True,
         )
+
         if command in {"lex_check", "lexicon_check"}:
             await _reply_check(app, service, message, argument)
-            return
-        if command in {"lex_add", "lexicon_add"}:
+        elif command in {"lex_add", "lexicon_add"}:
             await _reply_add(app, service, message, argument)
-            return
-        if command in {"lex_pending", "lexicon_pending"}:
+        elif command in {"lex_pending", "lexicon_pending"}:
             await _reply_pending(app, service, message)
-            return
 
     dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
-
-    @dispatcher.message(Command(commands=["lex_add", "lexicon_add"]))
-    async def lexicon_add_word(message: Message) -> None:
-        if not app.is_group_chat(message) or not app.is_allowed_chat(message.chat.id):
-            return
-        parts = (message.text or "").split(maxsplit=1)
-        await _reply_add(app, service, message, parts[1] if len(parts) > 1 else "")
-
-    dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
-
-    @dispatcher.message(Command(commands=["lex_pending", "lexicon_pending"]))
-    async def lexicon_pending_words(message: Message) -> None:
-        if not app.is_group_chat(message) or not app.is_allowed_chat(message.chat.id):
-            return
-        await _reply_pending(app, service, message)
-
-    dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
-
-    @dispatcher.message(Command(commands=["lex_check", "lexicon_check"]))
-    async def lexicon_check_word(message: Message) -> None:
-        if not app.is_group_chat(message) or not app.is_allowed_chat(message.chat.id):
-            return
-        parts = (message.text or "").split(maxsplit=1)
-        await _reply_check(app, service, message, parts[1] if len(parts) > 1 else "")
-
-    dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
-    print("LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on admin_override=on curated_common=on hunspell=lazy_optional command_fallback=on", flush=True)
+    print(
+        "LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on "
+        "admin_override=on curated_common=on command_router=stable",
+        flush=True,
+    )
