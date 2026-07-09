@@ -2,6 +2,7 @@
 
 Why this exists:
 - the built-in morphology/frequency dictionary gives broad coverage;
+- optional Hunspell spelling dictionary catches many ordinary Russian words;
 - real players will still find valid words that a library misses;
 - admins need a fast way to add approved words without editing code.
 
@@ -24,6 +25,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from lexicon_dictionary_patch import DictionaryBackedLexiconService
+from lexicon_hunspell import hunspell_knows
 from minigames import WORD_RE
 
 LOGGER = logging.getLogger(__name__)
@@ -60,11 +62,20 @@ def _stored_word(value: str) -> str:
     return _normalize_word(value).replace("-", "")
 
 
+def _known_dictionary_word(service: DictionaryBackedLexiconService, word: str) -> bool:
+    return (
+        service.is_valid_dictionary_lemma(word)
+        or hunspell_knows(word)
+        or word in CURATED_COMMON_WORDS
+    )
+
+
 def validate_lexicon_word(service: DictionaryBackedLexiconService, raw_word: str, *, admin_override: bool = False) -> tuple[bool, str]:
     """Validate a Lexicon word.
 
-    The admin override bypasses only uncertain morphology. It never bypasses
-    length or character checks, so words like "кот" or "abc123" remain invalid.
+    The admin override bypasses only uncertain morphology/dictionary knowledge.
+    It never bypasses length or character checks, so words like "кот" or
+    "abc123" remain invalid.
     """
     raw_normalized = _normalize_word(raw_word)
     if not LEXICON_RAW_WORD_RE.fullmatch(raw_normalized):
@@ -74,7 +85,7 @@ def validate_lexicon_word(service: DictionaryBackedLexiconService, raw_word: str
     if not LEXICON_STORED_WORD_RE.fullmatch(stored_word):
         return False, INVALID_WORD_MESSAGE
 
-    if service.is_valid_dictionary_lemma(stored_word) or stored_word in CURATED_COMMON_WORDS:
+    if _known_dictionary_word(service, stored_word):
         return True, stored_word
     if admin_override:
         return True, stored_word
@@ -114,7 +125,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         words.update(CURATED_COMMON_WORDS)
         words.update(cls.approved_words)
         LOGGER.info(
-            "Learning Lexicon dictionary loaded: total=%s curated=%s approved=%s",
+            "Learning Lexicon dictionary loaded: total=%s curated=%s approved=%s hunspell=optional",
             len(words),
             len(CURATED_COMMON_WORDS),
             len(cls.approved_words),
@@ -155,7 +166,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
             return "source_word"
         if not self.can_build(word, round_data.base_word):
             return "letters_do_not_fit"
-        if word in self.approved_words or word in CURATED_COMMON_WORDS:
+        if word in self.approved_words or _known_dictionary_word(self, word):
             return None
         ok, _ = validate_lexicon_word(self, word, admin_override=False)
         if not ok:
@@ -192,7 +203,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
             )
             return
 
-        if (word in self.approved_words or word in CURATED_COMMON_WORDS) and word not in round_data.allowed_words:
+        if (word in self.approved_words or _known_dictionary_word(self, word)) and word not in round_data.allowed_words:
             if not self.can_build(word, round_data.base_word):
                 return
             round_data.allowed_words.add(word)
@@ -212,7 +223,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
                 _, word, _base, _user_id, _name, reason = parts[:6]
                 if reason in {"too_short", "letters_do_not_fit", "source_word"}:
                     continue
-                if word in self.dictionary_words or word in self.approved_words or word in CURATED_COMMON_WORDS:
+                if word in self.dictionary_words or word in self.approved_words or _known_dictionary_word(self, word):
                     continue
                 counter[word] += 1
                 last_reason[word] = reason
@@ -284,8 +295,8 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
         word = _stored_word(parts[1])
         strict_ok, _ = validate_lexicon_word(service, word, admin_override=False)
         admin_ok, _ = validate_lexicon_word(service, word, admin_override=True)
-        status = "строго да" if strict_ok or word in service.approved_words or word in CURATED_COMMON_WORDS else "админ может добавить" if admin_ok else "нет"
+        status = "строго да" if strict_ok or word in service.approved_words else "админ может добавить" if admin_ok else "нет"
         await message.reply(f"📖 <code>{app.safe_output_text(word)}</code>: <b>{status}</b>")
 
     dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
-    print("LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on admin_override=on curated_common=on", flush=True)
+    print("LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on admin_override=on curated_common=on hunspell=on", flush=True)
