@@ -169,7 +169,7 @@ install_ignored_topic_filter()
 
 import legacy_main as app
 from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
-from lexicon_dictionary_patch import DictionaryBackedLexiconService
+from lexicon_learning import LearningLexiconService, register_lexicon_learning_handlers
 from minigames import MiniGameStorage, register_minigame_handlers
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
 
@@ -180,12 +180,13 @@ async def main() -> None:
     await accurate_storage.initialize()
     await minigame_storage.initialize()
     accurate_stats = AccurateStatsService(app, accurate_storage, app.SUMMARY_TIMEZONE)
-    minigames = DictionaryBackedLexiconService(app, minigame_storage)
+    minigames = LearningLexiconService(app, minigame_storage)
 
     try:
         scope = register_writers_chat_handlers(app)
         register_accurate_stats_handlers(app, accurate_stats)
         register_minigame_handlers(app, minigames)
+        register_lexicon_learning_handlers(app, minigames)
         await scope.resolve(app.bot)
 
         if scope.chat_id is not None and scope.chat_id not in app.ALLOWED_CHATS:
