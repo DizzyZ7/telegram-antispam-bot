@@ -219,7 +219,8 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
 
 
 print(
-    "LEXICON_RACCOON_READY word=енот start=on found_line=on finish=on absent_companion=on sticker= configurable",
+    "LEXICON_RACCOON_READY word=енот start=on found_line=on finish=on "
+    "absent_companion=on sticker=configurable",
     flush=True,
 )
 
