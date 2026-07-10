@@ -24,6 +24,7 @@ from typing import Any
 from aiogram import F
 from aiogram.types import Message
 
+from lexicon_curated_words import CURATED_ANSWER_WORDS
 from lexicon_dictionary_patch import DictionaryBackedLexiconService
 from minigames import WORD_RE
 
@@ -57,7 +58,7 @@ CURATED_COMMON_WORDS = frozenset(
         "крон", "кран", "контур", "трактор", "турок", "сектор", "секатор",
         "удон", "рамен", "лапша", "суп", "мисо", "соус", "рис", "суши",
     }
-)
+) | CURATED_ANSWER_WORDS
 
 
 def _normalize_word(value: str) -> str:
@@ -127,9 +128,10 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         words.update(CURATED_COMMON_WORDS)
         words.update(cls.approved_words)
         LOGGER.info(
-            "Learning Lexicon dictionary loaded: total=%s curated=%s approved=%s",
+            "Learning Lexicon dictionary loaded: total=%s curated=%s static_pack=%s approved=%s",
             len(words),
             len(CURATED_COMMON_WORDS),
+            len(CURATED_ANSWER_WORDS),
             len(cls.approved_words),
         )
         return words
@@ -320,6 +322,6 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
     dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
     print(
         "LEXICON_LEARNING_READY approved_words=on rejected_queue=on admin_commands=on "
-        "admin_override=on curated_common=on command_router=stable",
+        "admin_override=on curated_common=on static_pack=on command_router=stable",
         flush=True,
     )
