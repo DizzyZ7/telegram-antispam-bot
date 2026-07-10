@@ -175,6 +175,7 @@ from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_
 from lexicon_game_scope import (
     LEXICON_ONLY_CHAT_IDS,
     LexiconGameAppScope,
+    enforce_lexicon_only_isolation,
     register_lexicon_only_guard,
 )
 from lexicon_learning_persistent import LearningLexiconService, register_lexicon_learning_handlers
@@ -183,11 +184,9 @@ from writers_moderation import MODERATION_LEXICON, register_writers_chat_handler
 
 
 async def main() -> None:
-    # Lexicon-only chats must never inherit legacy functionality, even when an
-    # operator accidentally includes them in the ALLOWED_CHATS environment value.
-    app.ALLOWED_CHATS[:] = [
-        chat_id for chat_id in app.ALLOWED_CHATS if chat_id not in LEXICON_ONLY_CHAT_IDS
-    ]
+    # Remove only Lexicon-only chats from the global legacy allowlist. Existing
+    # chats, including the writers chat with topics, remain untouched.
+    enforce_lexicon_only_isolation(app, LEXICON_ONLY_CHAT_IDS)
 
     accurate_storage = AccurateStatsStorage(RUNTIME_DATA_DIR / "accurate_stats.db")
     minigame_storage = MiniGameStorage(RUNTIME_DATA_DIR / "minigames.db")
