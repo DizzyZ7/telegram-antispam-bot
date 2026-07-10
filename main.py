@@ -172,7 +172,11 @@ install_ignored_topic_filter()
 
 import legacy_main as app
 from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
-from lexicon_game_scope import LEXICON_ONLY_CHAT_IDS, LexiconGameAppScope
+from lexicon_game_scope import (
+    LEXICON_ONLY_CHAT_IDS,
+    LexiconGameAppScope,
+    register_lexicon_only_guard,
+)
 from lexicon_learning_persistent import LearningLexiconService, register_lexicon_learning_handlers
 from minigames import MiniGameStorage, register_minigame_handlers
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
@@ -193,6 +197,11 @@ async def main() -> None:
     try:
         scope = register_writers_chat_handlers(app)
         register_accurate_stats_handlers(app, accurate_stats)
+
+        # Guard is promoted ahead of legacy handlers first. Lexicon handlers are
+        # registered afterward and promoted above the guard, so only the game can
+        # execute in LEXICON_ONLY_CHAT_IDS.
+        register_lexicon_only_guard(app, LEXICON_ONLY_CHAT_IDS)
         register_minigame_handlers(app, minigames)
         register_lexicon_learning_handlers(app, minigames)
         await scope.resolve(app.bot)
