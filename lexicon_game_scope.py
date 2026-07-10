@@ -18,6 +18,23 @@ LOGGER = logging.getLogger(__name__)
 LEXICON_ONLY_CHAT_IDS: frozenset[int] = frozenset({-1002659916114})
 
 
+def enforce_lexicon_only_isolation(base_app: Any, chat_ids: Iterable[int]) -> frozenset[int]:
+    """Remove Lexicon-only chats from the global legacy allowlist.
+
+    This keeps isolation intact even when an old BotHost ALLOWED_CHATS environment
+    variable accidentally contains one of these chat IDs.
+    """
+    normalized_ids = frozenset(int(chat_id) for chat_id in chat_ids)
+    allowed_chats = getattr(base_app, "ALLOWED_CHATS", None)
+    if isinstance(allowed_chats, list):
+        base_app.ALLOWED_CHATS[:] = [
+            chat_id
+            for chat_id in allowed_chats
+            if int(chat_id) not in normalized_ids
+        ]
+    return normalized_ids
+
+
 class LexiconGameAppScope:
     """Delegate the full app API while extending only Lexicon chat access."""
 
@@ -54,14 +71,12 @@ class LexiconOnlyChatFilter(BaseFilter):
 
 
 def register_lexicon_only_guard(app: Any, chat_ids: Iterable[int]) -> None:
-    """Stop Lexicon-only chat messages before legacy handlers see them.
+    """Consume Lexicon-only messages before legacy handlers receive them.
 
-    Registration order matters: this guard is promoted first, then the Lexicon
-    command handlers are promoted above it. As a result, Lexicon commands execute,
-    ordinary guesses are processed by the Lexicon outer middleware, and the guard
-    consumes everything afterward without invoking unrelated bot functionality.
+    Register this guard before register_minigame_handlers(). The game command
+    handlers are then promoted above it, while ordinary guesses are processed by
+    the Lexicon outer middleware before the guard consumes the message.
     """
-
     normalized_ids = frozenset(int(chat_id) for chat_id in chat_ids)
     if not normalized_ids:
         return
@@ -76,8 +91,6 @@ def register_lexicon_only_guard(app: Any, chat_ids: Iterable[int]) -> None:
             message.message_id,
         )
 
-    # Put the guard ahead of all legacy handlers. register_minigame_handlers() is
-    # called afterward and promotes only the Lexicon command handlers above it.
     dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
     print(
         "LEXICON_ONLY_GUARD_READY "
@@ -91,5 +104,6 @@ __all__ = [
     "LEXICON_ONLY_CHAT_IDS",
     "LexiconGameAppScope",
     "LexiconOnlyChatFilter",
+    "enforce_lexicon_only_isolation",
     "register_lexicon_only_guard",
 ]
