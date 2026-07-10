@@ -5,7 +5,9 @@ candidate by length and by the number of buildable answers, so weak sources do
 not enter live rounds.
 """
 
-LONG_SOURCE_WORDS: tuple[str, ...] = (
+from lexicon_source_words_extra import LONG_SOURCE_WORDS_EXTRA
+
+LONG_SOURCE_WORDS_BASE: tuple[str, ...] = (
     # Everyday, professions, places and objects
     "автомастерская",
     "автомобилист",
@@ -138,4 +140,9 @@ LONG_SOURCE_WORDS: tuple[str, ...] = (
     "таинственность",
     "телепортация",
     "чудотворение",
+)
+
+_LONG_SOURCE_WORDS_BASE_SET = frozenset(LONG_SOURCE_WORDS_BASE)
+LONG_SOURCE_WORDS: tuple[str, ...] = LONG_SOURCE_WORDS_BASE + tuple(
+    word for word in LONG_SOURCE_WORDS_EXTRA if word not in _LONG_SOURCE_WORDS_BASE_SET
 )
