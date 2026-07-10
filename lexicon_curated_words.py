@@ -1,11 +1,13 @@
 """Stable curated answer words for the Lexicon game.
 
-This module contains data only. It has no imports, network access, database work,
-or startup side effects. Every entry is a Russian noun in a dictionary-style
-base form and has at least four letters.
+Both packs are data-only modules: no network access, database work, file I/O, or
+startup side effects. Entries are Russian nouns in dictionary-style base form
+and have at least four letters.
 """
 
-CURATED_ANSWER_WORDS: frozenset[str] = frozenset(
+from lexicon_curated_words_extra import CURATED_ANSWER_WORDS_EXTRA
+
+CURATED_ANSWER_WORDS_BASE: frozenset[str] = frozenset(
     {
         # Home, tools and everyday objects
         "абажур", "балкон", "батарея", "бидон", "блюдце", "буфет", "валенок",
@@ -74,3 +76,5 @@ CURATED_ANSWER_WORDS: frozenset[str] = frozenset(
         "странствие", "тайник", "талисман", "хранитель", "чудовище", "экспедиция",
     }
 )
+
+CURATED_ANSWER_WORDS: frozenset[str] = CURATED_ANSWER_WORDS_BASE | CURATED_ANSWER_WORDS_EXTRA
