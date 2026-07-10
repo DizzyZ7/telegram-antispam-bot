@@ -172,7 +172,7 @@ install_ignored_topic_filter()
 
 import legacy_main as app
 from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
-from lexicon_learning import LearningLexiconService, register_lexicon_learning_handlers
+from lexicon_learning_persistent import LearningLexiconService, register_lexicon_learning_handlers
 from minigames import MiniGameStorage, register_minigame_handlers
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
 
