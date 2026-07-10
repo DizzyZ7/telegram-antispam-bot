@@ -1,11 +1,12 @@
 """Stable curated answer words for the Lexicon game.
 
-Both packs are data-only modules: no network access, database work, file I/O, or
+All packs are data-only modules: no network access, database work, file I/O, or
 startup side effects. Entries are Russian nouns in dictionary-style base form
 and have at least four letters.
 """
 
 from lexicon_curated_words_extra import CURATED_ANSWER_WORDS_EXTRA
+from lexicon_curated_words_extra2 import CURATED_ANSWER_WORDS_EXTRA2
 
 CURATED_ANSWER_WORDS_BASE: frozenset[str] = frozenset(
     {
@@ -77,4 +78,8 @@ CURATED_ANSWER_WORDS_BASE: frozenset[str] = frozenset(
     }
 )
 
-CURATED_ANSWER_WORDS: frozenset[str] = CURATED_ANSWER_WORDS_BASE | CURATED_ANSWER_WORDS_EXTRA
+CURATED_ANSWER_WORDS: frozenset[str] = (
+    CURATED_ANSWER_WORDS_BASE
+    | CURATED_ANSWER_WORDS_EXTRA
+    | CURATED_ANSWER_WORDS_EXTRA2
+)
