@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
-from lexicon_game_scope import LEXICON_ONLY_CHAT_IDS, LexiconGameAppScope
+from lexicon_game_scope import (
+    LEXICON_ONLY_CHAT_IDS,
+    LexiconGameAppScope,
+    LexiconOnlyChatFilter,
+)
 
 
 class FakeApp:
@@ -14,7 +19,7 @@ class FakeApp:
         return chat_id in self.allowed_chats
 
 
-class LexiconGameScopeTests(unittest.TestCase):
+class LexiconGameScopeTests(unittest.IsolatedAsyncioTestCase):
     def test_lexicon_only_chat_is_not_added_to_global_scope(self) -> None:
         app = FakeApp()
         chat_id = -1002659916114
@@ -41,6 +46,14 @@ class LexiconGameScopeTests(unittest.TestCase):
         scoped_app = LexiconGameAppScope(app, LEXICON_ONLY_CHAT_IDS)
 
         self.assertEqual(scoped_app.marker, "delegated")
+
+    async def test_guard_filter_matches_only_lexicon_chat(self) -> None:
+        filter_ = LexiconOnlyChatFilter(LEXICON_ONLY_CHAT_IDS)
+        lexicon_message = SimpleNamespace(chat=SimpleNamespace(id=-1002659916114))
+        ordinary_message = SimpleNamespace(chat=SimpleNamespace(id=-1001111111111))
+
+        self.assertTrue(await filter_(lexicon_message))
+        self.assertFalse(await filter_(ordinary_message))
 
 
 if __name__ == "__main__":
