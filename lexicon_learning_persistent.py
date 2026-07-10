@@ -1,7 +1,7 @@
 """Persistent and balanced wrapper for the stable Lexicon learning service.
 
-This module keeps admin-approved words crash-safe and applies a capped scoring
-model where breadth matters more than a few exceptionally long words.
+This module keeps admin-approved words crash-safe, applies a capped scoring
+model and normalizes topicless/general-topic round keys.
 """
 
 from __future__ import annotations
@@ -16,11 +16,13 @@ from lexicon_approved_storage import (
     save_approved_snapshot,
 )
 from lexicon_balanced_storage import save_balanced_round
+from lexicon_game_scope import LEXICON_ONLY_CHAT_IDS
 from lexicon_learning import (
     LearningLexiconService as BaseLearningLexiconService,
     register_lexicon_learning_handlers,
     validate_lexicon_word,
 )
+from lexicon_round_scope import normalized_round_key, round_key_from_message
 from lexicon_scoring import BALANCED_SCORING_TEXT, balanced_word_points, player_rank_key
 from minigames import ATMOSPHERIC_WORDS, PlayerResult, WordGameRound
 
@@ -37,7 +39,22 @@ LEGACY_SCORING_TEXT = (
 
 
 class LearningLexiconService(BaseLearningLexiconService):
-    """Learning Lexicon with durable words and balanced round scoring."""
+    """Learning Lexicon with durable words, balanced scoring and stable scopes."""
+
+    @classmethod
+    def round_key(cls, chat_id: int, message_thread_id: int | None) -> tuple[int, int | None]:
+        return normalized_round_key(
+            chat_id,
+            message_thread_id,
+            single_scope_chat_ids=LEXICON_ONLY_CHAT_IDS,
+        )
+
+    @classmethod
+    def round_key_from_message(cls, message: Any) -> tuple[int, int | None]:
+        return round_key_from_message(
+            message,
+            single_scope_chat_ids=LEXICON_ONLY_CHAT_IDS,
+        )
 
     @classmethod
     def load_approved_words(cls) -> set[str]:
@@ -210,6 +227,10 @@ class LearningLexiconService(BaseLearningLexiconService):
 
 print(
     "LEXICON_SCORING_READY model=capped_v2 points=1-5 tie_break=words_then_longest historical=preserved",
+    flush=True,
+)
+print(
+    "LEXICON_ROUND_SCOPE_READY topicless=single general_topic=normalized real_topics=isolated",
     flush=True,
 )
 
