@@ -183,6 +183,12 @@ from writers_moderation import MODERATION_LEXICON, register_writers_chat_handler
 
 
 async def main() -> None:
+    # Lexicon-only chats must never inherit legacy functionality, even when an
+    # operator accidentally includes them in the ALLOWED_CHATS environment value.
+    app.ALLOWED_CHATS[:] = [
+        chat_id for chat_id in app.ALLOWED_CHATS if chat_id not in LEXICON_ONLY_CHAT_IDS
+    ]
+
     accurate_storage = AccurateStatsStorage(RUNTIME_DATA_DIR / "accurate_stats.db")
     minigame_storage = MiniGameStorage(RUNTIME_DATA_DIR / "minigames.db")
     await accurate_storage.initialize()
@@ -212,7 +218,7 @@ async def main() -> None:
         print(
             "LEXICON_ONLY_SCOPE_READY "
             f"chat_ids={','.join(str(chat_id) for chat_id in sorted(LEXICON_ONLY_CHAT_IDS))} "
-            "topics=not_required other_features=off",
+            "topics=not_required other_features=off global_access=blocked",
             flush=True,
         )
         print(
