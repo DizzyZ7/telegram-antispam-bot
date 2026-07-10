@@ -6,8 +6,12 @@ model and normalizes topicless/general-topic round keys.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Any
+
+from aiogram.types import Message
 
 from lexicon_approved_storage import (
     APPROVED_WORDS_JOURNAL_PATH,
@@ -22,9 +26,19 @@ from lexicon_learning import (
     register_lexicon_learning_handlers,
     validate_lexicon_word,
 )
-from lexicon_round_scope import normalized_round_key, round_key_from_message
+from lexicon_round_scope import (
+    normalized_round_key,
+    round_key_from_message,
+    russian_word_count_form,
+)
 from lexicon_scoring import BALANCED_SCORING_TEXT, balanced_word_points, player_rank_key
-from minigames import ATMOSPHERIC_WORDS, PlayerResult, WordGameRound
+from minigames import (
+    ATMOSPHERIC_WORDS,
+    MIN_WORD_LENGTH,
+    ROUND_SECONDS,
+    PlayerResult,
+    WordGameRound,
+)
 
 LOGGER = logging.getLogger(__name__)
 STORAGE_ERROR_MESSAGE = "Не удалось надежно сохранить слово. Попробуй еще раз."
@@ -55,6 +69,47 @@ class LearningLexiconService(BaseLearningLexiconService):
             message,
             single_scope_chat_ids=LEXICON_ONLY_CHAT_IDS,
         )
+
+    async def start_word_game(self, message: Message) -> None:
+        """Start a round using the same canonical scope later commands will query."""
+        if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
+            return
+        if message.from_user is None or message.from_user.is_bot:
+            return
+
+        game_key = self.round_key_from_message(message)
+        normalized_thread_id = game_key[1]
+
+        async with self.lock:
+            active = self.active_word_games.get(game_key)
+            if active and active.ends_at > time.monotonic():
+                await message.reply(self.render_status(active))
+                return
+
+            base_word, allowed = await self._claim_next_source(game_key)
+            now = time.monotonic()
+            round_data = WordGameRound(
+                chat_id=message.chat.id,
+                round_code=self.round_code(),
+                base_word=base_word,
+                allowed_words=allowed,
+                min_length=MIN_WORD_LENGTH,
+                started_at=now,
+                ends_at=now + ROUND_SECONDS,
+                message_thread_id=normalized_thread_id,
+            )
+            self.active_word_games[game_key] = round_data
+            round_data.finish_task = asyncio.create_task(self.finish_later(round_data))
+
+        LOGGER.info(
+            "LEXICON_ROUND_STARTED chat_id=%s raw_thread_id=%s normalized_thread_id=%s forum=%s",
+            message.chat.id,
+            message.message_thread_id,
+            normalized_thread_id,
+            getattr(message.chat, "is_forum", None),
+        )
+        sent_message = await message.answer(self.render_start(round_data))
+        await self.pin_start_message(sent_message)
 
     @classmethod
     def load_approved_words(cls) -> set[str]:
@@ -127,6 +182,14 @@ class LearningLexiconService(BaseLearningLexiconService):
 
     def render_start(self, round_data: WordGameRound) -> str:
         rendered = super().render_start(round_data)
+        total = len(round_data.allowed_words)
+        legacy_count_line = f"В стартовом словаре страницы уже есть <b>{total}</b> слов."
+        correct_count_line = (
+            f"В стартовом словаре страницы уже есть <b>{total}</b> "
+            f"{russian_word_count_form(total)}."
+        )
+        rendered = rendered.replace(legacy_count_line, correct_count_line, 1)
+
         if LEGACY_SCORING_TEXT not in rendered:
             LOGGER.warning("Lexicon scoring description marker was not found in start message")
             return rendered
