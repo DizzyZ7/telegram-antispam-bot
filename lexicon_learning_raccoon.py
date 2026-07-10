@@ -1,18 +1,18 @@
-"""Raccoon companion, collection and sticker layer for the stable Lexicon service.
+"""Secret raccoon trophies, collections and stickers for the Lexicon game.
 
-The raccoon stays secret during the round. When found, the trophy is recorded once
-in SQLite, shown in page titles and included in score and collection leaderboards.
+The raccoon is never announced before it is found. A find is stored once in SQLite,
+shown inside «Титулы страницы» and included in score and collection leaderboards.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from lexicon_learning import register_lexicon_learning_handlers as register_base_lexicon_learning_handlers
+from lexicon_learning import register_lexicon_learning_handlers as register_base_handlers
 from lexicon_learning_persistent import LearningLexiconService as BaseLearningLexiconService
 from lexicon_raccoon import RACCOON_WORD, raccoon_can_hide, raccoon_finder_name
 from lexicon_raccoon_collection import (
@@ -25,6 +25,7 @@ from lexicon_raccoon_sticker import load_raccoon_sticker_file_id, save_raccoon_s
 from minigames import PlayerResult, WordGameRound
 
 LOGGER = logging.getLogger(__name__)
+ScorePeriod = Literal["all", "day", "week"]
 
 
 async def _is_chat_admin(service: Any, message: Message) -> bool:
@@ -34,12 +35,12 @@ async def _is_chat_admin(service: Any, message: Message) -> bool:
         member = await service.app.bot.get_chat_member(message.chat.id, message.from_user.id)
         return getattr(member, "status", None) in {"creator", "administrator"}
     except Exception:
-        LOGGER.info("Could not check admin status for raccoon sticker command", exc_info=True)
+        LOGGER.info("Could not check admin status for raccoon command", exc_info=True)
         return False
 
 
 class LearningLexiconService(BaseLearningLexiconService):
-    """Stable Lexicon service with secret raccoon trophies and collections."""
+    """Production Lexicon service with secret collectible raccoons."""
 
     def __init__(self, app: Any, storage: Any) -> None:
         super().__init__(app, storage)
@@ -54,32 +55,31 @@ class LearningLexiconService(BaseLearningLexiconService):
             flush=True,
         )
 
+    @staticmethod
+    def _round_token(round_data: WordGameRound) -> str:
+        """Internal collision-safe identity; the chat still sees the short code."""
+        return f"{round_data.round_code}:{round_data.started_at:.6f}"
+
     def _raccoon_title_line(self, round_data: WordGameRound) -> str:
         finder_name = raccoon_finder_name(round_data)
         if finder_name is not None:
-            total = self._raccoon_collection_totals.get(
-                (round_data.chat_id, round_data.round_code)
-            )
+            record_key = (round_data.chat_id, self._round_token(round_data))
+            total = self._raccoon_collection_totals.get(record_key)
             collection = f" · в коллекции: <b>{total}</b>" if total is not None else ""
             return (
                 "🦝 Енота нашел — "
                 f"<b>{self.app.safe_output_text(finder_name)}</b>{collection}"
             )
-
         if raccoon_can_hide(round_data.base_word):
             return "🦝 Енот страницы — остался незамеченным."
         return "🦝 Енот страницы — в буквах не обнаружен, но раунд поддержал."
 
     def achievement_lines(self, round_data: WordGameRound) -> list[str]:
-        """Place the raccoon inside «Титулы страницы», never after the final text."""
+        """Put the raccoon directly under the «Титулы страницы» heading."""
         lines = super().achievement_lines(round_data)
         if not lines:
             return lines
-
-        # Base format begins with an empty line and the title header. Put the
-        # raccoon directly below that header, before the other page titles.
-        insert_at = 2 if len(lines) >= 2 else len(lines)
-        lines.insert(insert_at, self._raccoon_title_line(round_data))
+        lines.insert(2 if len(lines) >= 2 else len(lines), self._raccoon_title_line(round_data))
         return lines
 
     def strong_found_reply(
@@ -102,7 +102,6 @@ class LearningLexiconService(BaseLearningLexiconService):
                 f"Слов у автора: <b>{len(player.words)}</b>\n"
                 f"Страница заполнена на <b>{percent}%</b> — {found}/{total}"
             )
-
         return super().strong_found_reply(
             player=player,
             word=word,
@@ -119,7 +118,8 @@ class LearningLexiconService(BaseLearningLexiconService):
         if player is None:
             return None
 
-        record_key = (round_data.chat_id, round_data.round_code)
+        round_token = self._round_token(round_data)
+        record_key = (round_data.chat_id, round_token)
         if record_key in self._raccoon_recorded_rounds:
             return self._raccoon_collection_totals.get(record_key)
 
@@ -127,7 +127,7 @@ class LearningLexiconService(BaseLearningLexiconService):
             total = await record_raccoon_find(
                 self.storage,
                 chat_id=round_data.chat_id,
-                round_code=round_data.round_code,
+                round_code=round_token,
                 user_id=player.user_id,
                 name=player.name,
                 day_key=self.today_key(),
@@ -155,17 +155,14 @@ class LearningLexiconService(BaseLearningLexiconService):
         return total
 
     async def _send_raccoon_sticker(self, round_data: WordGameRound) -> None:
-        file_id = self.raccoon_sticker_file_id
-        if not file_id:
+        if not self.raccoon_sticker_file_id:
             return
-
         params: dict[str, Any] = {
             "chat_id": round_data.chat_id,
-            "sticker": file_id,
+            "sticker": self.raccoon_sticker_file_id,
         }
         if round_data.message_thread_id is not None:
             params["message_thread_id"] = round_data.message_thread_id
-
         try:
             await self.app.bot.send_sticker(**params)
             LOGGER.info(
@@ -183,25 +180,23 @@ class LearningLexiconService(BaseLearningLexiconService):
             )
 
     async def handle_word_guess(self, message: Message) -> None:
-        """Delegate scoring, record the trophy and send its sticker once."""
+        """Delegate scoring, then persist and celebrate a newly found raccoon."""
         round_data = self.active_word_games.get(self.round_key_from_message(message))
         was_found = bool(round_data and RACCOON_WORD in round_data.used_words)
-
         await super().handle_word_guess(message)
 
         if round_data is None or was_found or RACCOON_WORD not in round_data.used_words:
             return
-
         owner_id = round_data.used_words.get(RACCOON_WORD)
         if message.from_user is None or owner_id != message.from_user.id:
             return
 
         await self._record_raccoon(round_data)
-
+        round_token = self._round_token(round_data)
         announcement_key = (
             round_data.chat_id,
             round_data.message_thread_id,
-            round_data.round_code,
+            round_token,
         )
         if announcement_key in self._raccoon_sticker_announced_rounds:
             return
@@ -214,7 +209,7 @@ class LearningLexiconService(BaseLearningLexiconService):
         message_thread_id: int | None,
         forced: bool,
     ) -> None:
-        """Retry trophy persistence before rendering final page titles."""
+        """Retry persistence before final titles and clean per-round memory after."""
         game_key = self.round_key(chat_id, message_thread_id)
         round_data = self.active_word_games.get(game_key)
         if round_data is not None and RACCOON_WORD in round_data.used_words:
@@ -224,83 +219,78 @@ class LearningLexiconService(BaseLearningLexiconService):
             await super().finish_word_game(chat_id, message_thread_id, forced)
         finally:
             if round_data is not None:
-                record_key = (round_data.chat_id, round_data.round_code)
+                round_token = self._round_token(round_data)
+                record_key = (round_data.chat_id, round_token)
                 announcement_key = (
                     round_data.chat_id,
                     round_data.message_thread_id,
-                    round_data.round_code,
+                    round_token,
                 )
                 self._raccoon_recorded_rounds.discard(record_key)
                 self._raccoon_sticker_announced_rounds.discard(announcement_key)
                 self._raccoon_collection_totals.pop(record_key, None)
 
-    async def show_leaderboard(self, message: Message) -> None:
+    async def _show_score_top(
+        self,
+        message: Message,
+        *,
+        period: ScorePeriod,
+        period_key: str | None,
+        heading: str,
+        empty_text: str,
+        raccoon_label: str,
+    ) -> None:
         if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
             return
         leaders = await score_leaderboard_with_raccoons(
             self.storage,
             chat_id=message.chat.id,
-            period="all",
+            period=period,
+            period_key=period_key,
             limit=7,
         )
         if not leaders:
-            await message.reply("🏆 Рейтинг Лексикона пока пуст. Открыть первую страницу: /minigame")
+            await message.reply(empty_text)
             return
 
-        lines = ["🏆 <b>ЛЕКСИКОН · общий рейтинг</b>", ""]
+        lines = [heading, ""]
         for idx, (name, total_points, wins, rounds, raccoons) in enumerate(leaders, start=1):
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, "▫️")
             lines.append(
                 f"{medal} <b>{self.app.safe_output_text(name)}</b> — {total_points}🌟\n"
-                f"   побед: {wins} · страниц: {rounds} · коллекция: {raccoons} 🦝"
+                f"   побед: {wins} · страниц: {rounds} · {raccoon_label}: {raccoons} 🦝"
             )
         await message.reply("\n\n".join(lines))
+
+    async def show_leaderboard(self, message: Message) -> None:
+        await self._show_score_top(
+            message,
+            period="all",
+            period_key=None,
+            heading="🏆 <b>ЛЕКСИКОН · общий рейтинг</b>",
+            empty_text="🏆 Рейтинг Лексикона пока пуст. Открыть первую страницу: /minigame",
+            raccoon_label="коллекция",
+        )
 
     async def show_day_leaderboard(self, message: Message) -> None:
-        if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
-            return
-        leaders = await score_leaderboard_with_raccoons(
-            self.storage,
-            chat_id=message.chat.id,
+        await self._show_score_top(
+            message,
             period="day",
             period_key=self.today_key(),
-            limit=7,
+            heading=f"🏆 <b>ЛЕКСИКОН · сегодня</b> · {self.today_label()}",
+            empty_text="🏆 Сегодня в Лексиконе еще нет сыгранных страниц. Открыть страницу: /minigame",
+            raccoon_label="найдено енотов",
         )
-        if not leaders:
-            await message.reply("🏆 Сегодня в Лексиконе еще нет сыгранных страниц. Открыть страницу: /minigame")
-            return
-
-        lines = [f"🏆 <b>ЛЕКСИКОН · сегодня</b> · {self.today_label()}", ""]
-        for idx, (name, total_points, wins, rounds, raccoons) in enumerate(leaders, start=1):
-            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, "▫️")
-            lines.append(
-                f"{medal} <b>{self.app.safe_output_text(name)}</b> — {total_points}🌟\n"
-                f"   побед: {wins} · страниц: {rounds} · найдено енотов: {raccoons} 🦝"
-            )
-        await message.reply("\n\n".join(lines))
 
     async def show_week_leaderboard(self, message: Message) -> None:
-        if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
-            return
-        leaders = await score_leaderboard_with_raccoons(
-            self.storage,
-            chat_id=message.chat.id,
+        await self._show_score_top(
+            message,
             period="week",
             period_key=self.week_key(),
-            limit=7,
+            heading=f"🏆 <b>ЛЕКСИКОН · неделя</b> · {self.week_label()}",
+            empty_text="🏆 На этой неделе в Лексиконе еще нет сыгранных страниц. Старт: /minigame",
+            raccoon_label="найдено енотов",
         )
-        if not leaders:
-            await message.reply("🏆 На этой неделе в Лексиконе еще нет сыгранных страниц. Старт: /minigame")
-            return
-
-        lines = [f"🏆 <b>ЛЕКСИКОН · неделя</b> · {self.week_label()}", ""]
-        for idx, (name, total_points, wins, rounds, raccoons) in enumerate(leaders, start=1):
-            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, "▫️")
-            lines.append(
-                f"{medal} <b>{self.app.safe_output_text(name)}</b> — {total_points}🌟\n"
-                f"   побед: {wins} · страниц: {rounds} · найдено енотов: {raccoons} 🦝"
-            )
-        await message.reply("\n\n".join(lines))
 
     async def show_profile(self, message: Message) -> None:
         if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
@@ -316,7 +306,7 @@ class LearningLexiconService(BaseLearningLexiconService):
             day_key,
             week_key,
         )
-        raccoons_total, raccoons_today, raccoons_week = await raccoon_collection_counts(
+        total_raccoons, today_raccoons, week_raccoons = await raccoon_collection_counts(
             self.storage,
             chat_id=message.chat.id,
             user_id=message.from_user.id,
@@ -325,39 +315,37 @@ class LearningLexiconService(BaseLearningLexiconService):
         )
 
         if profile is None:
-            if raccoons_total:
+            if total_raccoons:
                 await message.reply(
                     "👤 <b>Твоя страница Лексикона</b>\n\n"
-                    f"Коллекция енотов: <b>{raccoons_total} 🦝</b>\n"
+                    f"Коллекция енотов: <b>{total_raccoons} 🦝</b>\n"
                     "Очки текущего раунда появятся после закрытия страницы."
                 )
             else:
                 await message.reply("📖 У тебя пока нет страницы в Лексиконе. Открыть первую: /minigame")
             return
 
-        lines = [
-            "👤 <b>Твоя страница Лексикона</b>",
-            "",
-            f"Автор: <b>{self.app.safe_output_text(profile.name)}</b>",
-            f"Всего: <b>{profile.total_points}🌟</b>",
-            f"Побед: <b>{profile.wins}</b> · страниц сыграно: <b>{profile.rounds}</b>",
-            f"Лучший раунд: <b>{profile.best_points}🌟</b>",
-            f"Коллекция енотов: <b>{raccoons_total} 🦝</b>",
-            "",
-            f"Сегодня: <b>{profile.today_points}🌟</b> · побед {profile.today_wins} · страниц {profile.today_rounds} · енотов {raccoons_today}",
-            f"Неделя: <b>{profile.week_points}🌟</b> · побед {profile.week_wins} · страниц {profile.week_rounds} · енотов {raccoons_week}",
-        ]
-        await message.reply("\n".join(lines))
+        await message.reply(
+            "\n".join(
+                (
+                    "👤 <b>Твоя страница Лексикона</b>",
+                    "",
+                    f"Автор: <b>{self.app.safe_output_text(profile.name)}</b>",
+                    f"Всего: <b>{profile.total_points}🌟</b>",
+                    f"Побед: <b>{profile.wins}</b> · страниц сыграно: <b>{profile.rounds}</b>",
+                    f"Лучший раунд: <b>{profile.best_points}🌟</b>",
+                    f"Коллекция енотов: <b>{total_raccoons} 🦝</b>",
+                    "",
+                    f"Сегодня: <b>{profile.today_points}🌟</b> · побед {profile.today_wins} · страниц {profile.today_rounds} · енотов {today_raccoons}",
+                    f"Неделя: <b>{profile.week_points}🌟</b> · побед {profile.week_wins} · страниц {profile.week_rounds} · енотов {week_raccoons}",
+                )
+            )
+        )
 
     async def show_raccoon_leaderboard(self, message: Message) -> None:
         if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
             return
-
-        leaders = await raccoon_leaderboard(
-            self.storage,
-            chat_id=message.chat.id,
-            limit=10,
-        )
+        leaders = await raccoon_leaderboard(self.storage, chat_id=message.chat.id, limit=10)
         if not leaders:
             await message.reply(
                 "🦝 Коллекция енотов пока пуста. Первый енот еще маскируется под обычное слово."
@@ -382,8 +370,8 @@ def _promote_last_message_handler(dispatcher: Any) -> None:
 
 
 def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService) -> None:
-    """Register base Lexicon commands, raccoon collection and sticker settings."""
-    register_base_lexicon_learning_handlers(app, service)
+    """Register base Lexicon commands, collection top and sticker settings."""
+    register_base_handlers(app, service)
     dispatcher = app.dp
 
     @dispatcher.message(Command(commands=["raccoon_top", "enot_top"]))
@@ -421,7 +409,6 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
             "🦝 <b>Стикер енота сохранен.</b>\n"
             "Теперь Fosgen отправит его, когда кто-нибудь найдет слово <code>енот</code>."
         )
-
         params: dict[str, Any] = {"chat_id": message.chat.id, "sticker": file_id}
         normalized_thread_id = service.round_key_from_message(message)[1]
         if normalized_thread_id is not None:
@@ -452,7 +439,7 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
 
 print(
     "LEXICON_RACCOON_READY word=енот secret=on titles=on collection_db=on "
-    "score_tops=on raccoon_top=on sticker=configurable",
+    "score_tops=on raccoon_top=on round_identity=collision_safe sticker=configurable",
     flush=True,
 )
 
