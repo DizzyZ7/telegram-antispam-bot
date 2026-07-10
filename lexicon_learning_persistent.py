@@ -1,7 +1,7 @@
 """Persistent and balanced wrapper for the stable Lexicon learning service.
 
 This module keeps admin-approved words crash-safe, applies a capped scoring
-model and normalizes topicless/general-topic round keys.
+model, normalizes topicless/general-topic round keys and explains letter deficits.
 """
 
 from __future__ import annotations
@@ -26,6 +26,11 @@ from lexicon_learning import (
     register_lexicon_learning_handlers,
     validate_lexicon_word,
 )
+from lexicon_letter_feedback import (
+    format_missing_letters,
+    missing_letter_counts,
+    missing_letters_label,
+)
 from lexicon_round_scope import (
     normalized_round_key,
     round_key_from_message,
@@ -36,12 +41,14 @@ from minigames import (
     ATMOSPHERIC_WORDS,
     MIN_WORD_LENGTH,
     ROUND_SECONDS,
+    WORD_RE,
     PlayerResult,
     WordGameRound,
 )
 
 LOGGER = logging.getLogger(__name__)
 STORAGE_ERROR_MESSAGE = "Не удалось надежно сохранить слово. Попробуй еще раз."
+MISSING_LETTER_NOTICE_COOLDOWN_SECONDS = 4.0
 LEGACY_SCORING_TEXT = (
     "Чем длиннее слово, тем больше звезд:\n"
     "4 буквы — 1🌟\n"
@@ -110,6 +117,68 @@ class LearningLexiconService(BaseLearningLexiconService):
         )
         sent_message = await message.answer(self.render_start(round_data))
         await self.pin_start_message(sent_message)
+
+    async def handle_word_guess(self, message: Message) -> None:
+        """Explain missing source letters before delegating valid attempts."""
+        if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
+            return
+        if message.from_user is None or message.from_user.is_bot:
+            return
+        if not message.text or message.text.startswith("/"):
+            return
+
+        game_key = self.round_key_from_message(message)
+        round_data = self.active_word_games.get(game_key)
+        if round_data is None or round_data.ends_at <= time.monotonic():
+            return
+
+        raw_word = message.text.strip()
+        if " " in raw_word or "\n" in raw_word or not WORD_RE.fullmatch(raw_word):
+            return
+
+        word = self.normalize_word(raw_word)
+        if len(word) < round_data.min_length or word == round_data.base_word:
+            await super().handle_word_guess(message)
+            return
+
+        missing = missing_letter_counts(word, round_data.base_word)
+        if missing:
+            now = time.monotonic()
+            notice_key = (message.chat.id, game_key[1], message.from_user.id)
+            notice_map = getattr(self, "_missing_letter_notice_at", None)
+            if notice_map is None:
+                notice_map = {}
+                self._missing_letter_notice_at = notice_map
+
+            previous_notice = float(notice_map.get(notice_key, 0.0))
+            if now - previous_notice >= MISSING_LETTER_NOTICE_COOLDOWN_SECONDS:
+                notice_map[notice_key] = now
+                formatted = format_missing_letters(missing)
+                label = missing_letters_label(missing)
+                saved_line = (
+                    "\n\nСлово сохранено в словаре Лексикона и сможет сыграть в другом раунде."
+                    if word in self.approved_words
+                    else ""
+                )
+                await message.reply(
+                    "📖 <b>Слово не подходит к этой странице</b>\n\n"
+                    f"<code>{self.app.safe_output_text(word)}</code>\n"
+                    f"Не хватает {label}: <b>{self.app.safe_output_text(formatted)}</b>.\n"
+                    "Этих букв нет или их недостаточно в слове-источнике."
+                    f"{saved_line}"
+                )
+                LOGGER.info(
+                    "LEXICON_WORD_MISSING_LETTERS chat_id=%s thread_id=%s user_id=%s word=%s missing=%s approved=%s",
+                    message.chat.id,
+                    game_key[1],
+                    message.from_user.id,
+                    word,
+                    formatted,
+                    word in self.approved_words,
+                )
+            return
+
+        await super().handle_word_guess(message)
 
     @classmethod
     def load_approved_words(cls) -> set[str]:
@@ -294,6 +363,10 @@ print(
 )
 print(
     "LEXICON_ROUND_SCOPE_READY topicless=single general_topic=normalized real_topics=isolated",
+    flush=True,
+)
+print(
+    "LEXICON_LETTER_FEEDBACK_READY missing_letters=on approved_words=preserved cooldown=4s",
     flush=True,
 )
 
