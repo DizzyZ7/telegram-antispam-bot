@@ -5,6 +5,7 @@ import unittest
 
 from lexicon_curated_words import CURATED_ANSWER_WORDS, CURATED_ANSWER_WORDS_BASE
 from lexicon_curated_words_extra import CURATED_ANSWER_WORDS_EXTRA
+from lexicon_curated_words_extra2 import CURATED_ANSWER_WORDS_EXTRA2
 from lexicon_source_words import LONG_SOURCE_WORDS, LONG_SOURCE_WORDS_BASE
 from lexicon_source_words_extra import LONG_SOURCE_WORDS_EXTRA
 
@@ -34,15 +35,21 @@ class LexiconStaticWordTests(unittest.TestCase):
         self.assertGreater(len(CURATED_ANSWER_WORDS_BASE), 150)
         self.assert_clean_words(CURATED_ANSWER_WORDS_BASE)
 
-    def test_extra_curated_answers_are_clean(self) -> None:
+    def test_first_extra_curated_answers_are_clean(self) -> None:
         self.assertGreater(len(CURATED_ANSWER_WORDS_EXTRA), 250)
         self.assert_clean_words(CURATED_ANSWER_WORDS_EXTRA)
 
+    def test_second_extra_curated_answers_are_clean(self) -> None:
+        self.assertGreater(len(CURATED_ANSWER_WORDS_EXTRA2), 250)
+        self.assert_clean_words(CURATED_ANSWER_WORDS_EXTRA2)
+
     def test_combined_curated_answers_are_clean(self) -> None:
-        self.assertGreater(len(CURATED_ANSWER_WORDS), 400)
+        self.assertGreater(len(CURATED_ANSWER_WORDS), 500)
         self.assertEqual(
             CURATED_ANSWER_WORDS,
-            CURATED_ANSWER_WORDS_BASE | CURATED_ANSWER_WORDS_EXTRA,
+            CURATED_ANSWER_WORDS_BASE
+            | CURATED_ANSWER_WORDS_EXTRA
+            | CURATED_ANSWER_WORDS_EXTRA2,
         )
         self.assert_clean_words(CURATED_ANSWER_WORDS)
 
