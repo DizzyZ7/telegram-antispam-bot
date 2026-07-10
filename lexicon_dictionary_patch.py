@@ -1,8 +1,8 @@
 """Dictionary-strength patch for the Lexicon mini-game.
 
 This layer keeps the core rule strict: only nouns in their base form are accepted.
-But it removes the overly aggressive morphology score threshold that could reject
-valid known words when pymorphy3 had several parses for the same token.
+It also extends the source-word pool with curated long words. Every source still
+passes the engine's answer-count filter before it can appear in a live round.
 """
 
 from __future__ import annotations
@@ -13,9 +13,12 @@ from typing import Any
 from aiogram.types import ChatMemberAdministrator, Message
 
 from lexicon_live_patch import MORPH, WORD_RE, PatchedMiniGameService
+from lexicon_source_words import LONG_SOURCE_WORDS
 from minigames import MIN_WORD_LENGTH
 
 LOGGER = logging.getLogger(__name__)
+MIN_SOURCE_LENGTH = 10
+MAX_SOURCE_LENGTH = 24
 
 
 class DictionaryBackedLexiconService(PatchedMiniGameService):
@@ -52,6 +55,36 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
         LOGGER.info("Lexicon dictionary loaded with %s base-form noun entries", len(words))
         return words
 
+    @classmethod
+    def load_source_words(cls) -> list[str]:
+        """Return original plus curated long source words without duplicates.
+
+        Curated sources are trusted as source material, but they are not guaranteed
+        a live round: build_round_candidates still rejects words that produce too
+        few valid answers.
+        """
+        source_words = list(super().load_source_words())
+        seen = set(source_words)
+
+        for raw_word in LONG_SOURCE_WORDS:
+            word = cls.normalize_word(raw_word)
+            if word in seen:
+                continue
+            if not (MIN_SOURCE_LENGTH <= len(word) <= MAX_SOURCE_LENGTH):
+                continue
+            if not WORD_RE.match(word):
+                continue
+            seen.add(word)
+            source_words.append(word)
+
+        LOGGER.info(
+            "Lexicon source bank expanded: original=%s curated=%s total=%s",
+            len(source_words) - sum(1 for word in LONG_SOURCE_WORDS if cls.normalize_word(word) in seen),
+            len(LONG_SOURCE_WORDS),
+            len(source_words),
+        )
+        return source_words
+
     @staticmethod
     def _can_pin_from_member(member: Any) -> bool:
         if getattr(member, "status", None) == "creator":
@@ -61,12 +94,7 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
         return bool(getattr(member, "can_pin_messages", False))
 
     async def pin_start_message(self, message: Message) -> None:
-        """Pin the Lexicon source page, with a precise rights diagnostic.
-
-        Telegram may show a bot as an administrator while the separate
-        `can_pin_messages` permission is disabled. In that case pinning always
-        fails, so we tell the chat owner exactly what to enable.
-        """
+        """Pin the Lexicon source page, with a precise rights diagnostic."""
         try:
             me = await self.app.bot.get_me()
             member = await self.app.bot.get_chat_member(message.chat.id, me.id)
