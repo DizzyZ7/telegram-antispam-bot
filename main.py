@@ -172,6 +172,7 @@ install_ignored_topic_filter()
 
 import legacy_main as app
 from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
+from lexicon_game_scope import LEXICON_ONLY_CHAT_IDS, LexiconGameAppScope
 from lexicon_learning_persistent import LearningLexiconService, register_lexicon_learning_handlers
 from minigames import MiniGameStorage, register_minigame_handlers
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
@@ -183,7 +184,11 @@ async def main() -> None:
     await accurate_storage.initialize()
     await minigame_storage.initialize()
     accurate_stats = AccurateStatsService(app, accurate_storage, app.SUMMARY_TIMEZONE)
-    minigames = LearningLexiconService(app, minigame_storage)
+
+    # The proxy extends chat access only inside the Lexicon service. The base app
+    # remains unchanged, so all unrelated handlers stay disabled in these chats.
+    lexicon_app = LexiconGameAppScope(app, LEXICON_ONLY_CHAT_IDS)
+    minigames = LearningLexiconService(lexicon_app, minigame_storage)
 
     try:
         scope = register_writers_chat_handlers(app)
@@ -195,6 +200,12 @@ async def main() -> None:
         if scope.chat_id is not None and scope.chat_id not in app.ALLOWED_CHATS:
             app.ALLOWED_CHATS.append(scope.chat_id)
 
+        print(
+            "LEXICON_ONLY_SCOPE_READY "
+            f"chat_ids={','.join(str(chat_id) for chat_id in sorted(LEXICON_ONLY_CHAT_IDS))} "
+            "topics=not_required other_features=off",
+            flush=True,
+        )
         print(
             "WRITERS_MODERATION_READY "
             f"chat_id={scope.chat_id} rules={MODERATION_LEXICON.rule_count}",
