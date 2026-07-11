@@ -178,7 +178,7 @@ from lexicon_game_scope import (
     enforce_lexicon_only_isolation,
     register_lexicon_only_guard,
 )
-from lexicon_learning_raccoon import LearningLexiconService, register_lexicon_learning_handlers
+from lexicon_learning_unpin import LearningLexiconService, register_lexicon_learning_handlers
 from minigames import MiniGameStorage, register_minigame_handlers
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
 
