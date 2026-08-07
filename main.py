@@ -29,7 +29,9 @@ RUNTIME_RULE_OVERLAY: dict[str, dict[str, tuple[str, ...]]] = {
         "english_obscene": ("xj",),
     },
     "prefix": {
-        "obscene": ("хй", "пзд"),
+        # Keep this narrower than "хер" so normal words such as "Херсон" do not
+        # become false positives, while херовая/херовый/херово/херовенький are blocked.
+        "obscene": ("хй", "пзд", "херов"),
         "latin_translit": ("pzd",),
     },
 }
@@ -228,7 +230,7 @@ async def main() -> None:
         await app.main()
     finally:
         await minigame_storage.close()
-        await accurate_storage.close()
+        await accurate_stats.close()
 
 
 if __name__ == "__main__":
