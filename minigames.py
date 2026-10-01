@@ -562,6 +562,25 @@ class MiniGameService:
         extra_steps = normalized_total // ROUND_WORDS_PER_STEP
         return ROUND_SECONDS + extra_steps * ROUND_STEP_SECONDS
 
+    def extend_round_deadline_for_total_words(
+        self,
+        round_data: WordGameRound,
+        total_words: int,
+    ) -> int:
+        """Extend a live round when its dynamic dictionary crosses a time bucket.
+
+        The deadline is always derived from started_at, so a page that grows from
+        70 to 100 words becomes a 10-minute round in total, not "10 minutes more".
+        Deadlines are monotonic and are never shortened.
+        """
+        desired_ends_at = round_data.started_at + self.round_duration_seconds(total_words)
+        if desired_ends_at <= round_data.ends_at:
+            return 0
+
+        extension_seconds = max(0, int(round(desired_ends_at - round_data.ends_at)))
+        round_data.ends_at = desired_ends_at
+        return extension_seconds
+
     @staticmethod
     def can_build(word: str, base_word: str) -> bool:
         source = Counter(base_word)
@@ -890,9 +909,19 @@ class MiniGameService:
         await message.answer(self.render_start(round_data))
 
     async def finish_later(self, round_data: WordGameRound) -> None:
-        delay = max(0.0, round_data.ends_at - time.monotonic())
-        await asyncio.sleep(delay)
         try:
+            while True:
+                delay = max(0.0, round_data.ends_at - time.monotonic())
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
+                # Dynamic dictionary growth can move ends_at while this task is
+                # sleeping. Re-check the current deadline instead of finishing
+                # against the value that existed when the task was created.
+                if time.monotonic() < round_data.ends_at:
+                    continue
+                break
+
             await self.finish_word_game(round_data.chat_id, round_data.message_thread_id, forced=False)
         except asyncio.CancelledError:
             raise
