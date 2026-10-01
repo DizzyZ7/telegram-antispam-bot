@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 
 import asyncpg
 
 from ..config import GENERATION_SAMPLE_LIMIT, MEMORY_LIMIT
 from ..context import ActivitySnapshot
-from ..models import EntertainmentSettings, normalize_behavior_mode
+from ..models import (
+    EntertainmentActionRecord,
+    EntertainmentActionType,
+    EntertainmentSettings,
+    normalize_behavior_mode,
+)
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _normalize_optional_hour(value: object) -> int | None:
@@ -103,6 +112,25 @@ class PostgresEntertainmentStorage:
                     CREATE UNIQUE INDEX IF NOT EXISTS idx_entertainment_messages_legacy_source
                     ON entertainment_messages(legacy_source_id)
                     WHERE legacy_source_id IS NOT NULL
+                    """
+                )
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS ent_actions (
+                        id BIGSERIAL PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        topic_id BIGINT NOT NULL DEFAULT 0,
+                        action_type TEXT NOT NULL,
+                        trigger_message_id BIGINT,
+                        created_at BIGINT NOT NULL,
+                        metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+                    )
+                    """
+                )
+                await connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_ent_actions_scope_time
+                    ON ent_actions(chat_id, topic_id, created_at DESC, id DESC)
                     """
                 )
                 await connection.execute(
@@ -280,13 +308,7 @@ class PostgresEntertainmentStorage:
             WHERE chat_id = $1 AND topic_id = $2
               AND created_at >= $7 AND created_at <= $6
             """,
-            int(chat_id),
-            int(topic_id),
-            now_i - 60,
-            now_i - 300,
-            now_i - 600,
-            now_i,
-            now_i - 900,
+            int(chat_id), int(topic_id), now_i - 60, now_i - 300, now_i - 600, now_i, now_i - 900,
         )
         assert row is not None
         last_human_at = row["last_human_at"]
@@ -302,6 +324,91 @@ class PostgresEntertainmentStorage:
                 float(max(0, now_i - int(last_human_at))) if last_human_at is not None else None
             ),
         )
+
+    async def record_action(self, record: EntertainmentActionRecord) -> int:
+        value = await self._require_pool().fetchval(
+            """
+            INSERT INTO ent_actions(
+                chat_id, topic_id, action_type, trigger_message_id, created_at, metadata
+            ) VALUES($1, $2, $3, $4, $5, $6::jsonb)
+            RETURNING id
+            """,
+            int(record.chat_id),
+            int(record.topic_id),
+            record.action_type.value,
+            int(record.trigger_message_id) if record.trigger_message_id is not None else None,
+            int(record.created_at),
+            json.dumps(record.metadata, ensure_ascii=False, separators=(",", ":")),
+        )
+        if value is None:
+            raise RuntimeError("PostgreSQL did not return an action id")
+        return int(value)
+
+    async def recent_actions(
+        self,
+        chat_id: int,
+        topic_id: int,
+        *,
+        since: int,
+        limit: int = 20,
+    ) -> list[EntertainmentActionRecord]:
+        rows = await self._require_pool().fetch(
+            """
+            SELECT id, action_type, trigger_message_id, created_at, metadata
+            FROM ent_actions
+            WHERE chat_id = $1 AND topic_id = $2 AND created_at >= $3
+            ORDER BY created_at DESC, id DESC
+            LIMIT $4
+            """,
+            int(chat_id), int(topic_id), int(since), max(1, int(limit)),
+        )
+        actions: list[EntertainmentActionRecord] = []
+        for row in rows:
+            try:
+                action_type = EntertainmentActionType(str(row["action_type"]))
+            except ValueError:
+                LOGGER.warning(
+                    "Skipping unknown entertainment action type id=%s type=%r",
+                    row["id"],
+                    row["action_type"],
+                )
+                continue
+            raw_metadata = row["metadata"]
+            if isinstance(raw_metadata, dict):
+                metadata = raw_metadata
+            else:
+                try:
+                    metadata = json.loads(str(raw_metadata or "{}"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            actions.append(
+                EntertainmentActionRecord(
+                    id=int(row["id"]),
+                    chat_id=int(chat_id),
+                    topic_id=int(topic_id),
+                    action_type=action_type,
+                    trigger_message_id=(
+                        int(row["trigger_message_id"])
+                        if row["trigger_message_id"] is not None
+                        else None
+                    ),
+                    created_at=int(row["created_at"]),
+                    metadata=metadata,
+                )
+            )
+        return actions
+
+    async def human_messages_since(self, chat_id: int, topic_id: int, *, since: int) -> int:
+        value = await self._require_pool().fetchval(
+            """
+            SELECT COUNT(*) FROM entertainment_messages
+            WHERE chat_id = $1 AND topic_id = $2 AND created_at >= $3
+            """,
+            int(chat_id), int(topic_id), int(since),
+        )
+        return int(value or 0)
 
     async def is_migration_applied(self, migration_key: str) -> bool:
         value = await self._require_pool().fetchval(
