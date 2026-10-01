@@ -26,6 +26,8 @@ from wordgame_dictionary import BASE_WORDS, BUILTIN_WORDS
 LOGGER = logging.getLogger(__name__)
 WORD_RE = re.compile(r"^[а-яё-]+$", re.IGNORECASE)
 ROUND_SECONDS = 5 * 60
+ROUND_WORDS_PER_STEP = 100
+ROUND_STEP_SECONDS = 5 * 60
 MIN_WORD_LENGTH = 4
 MIN_SOLUTIONS_PER_ROUND = 28
 HINT_LIMIT = 3
@@ -551,6 +553,16 @@ class MiniGameService:
         return f"{seconds // 60}:{seconds % 60:02d}"
 
     @staticmethod
+    def round_duration_seconds(total_words: int) -> int:
+        """Scale round time with the size of the playable word set.
+
+        0-99 words -> 5 minutes, 100-199 -> 10, 200-299 -> 15, etc.
+        """
+        normalized_total = max(0, int(total_words))
+        extra_steps = normalized_total // ROUND_WORDS_PER_STEP
+        return ROUND_SECONDS + extra_steps * ROUND_STEP_SECONDS
+
+    @staticmethod
     def can_build(word: str, base_word: str) -> bool:
         source = Counter(base_word)
         target = Counter(word)
@@ -729,6 +741,7 @@ class MiniGameService:
 
     def render_start(self, round_data: WordGameRound) -> str:
         total = len(round_data.allowed_words)
+        round_seconds = max(0, int(round_data.ends_at - round_data.started_at))
         return (
             "📖 <b>ЛЕКСИКОН открыт</b>\n\n"
             f"<code>Раунд #{round_data.round_code}</code>\n"
@@ -736,7 +749,7 @@ class MiniGameService:
             f"<code>{self.spaced_word(round_data.base_word)}</code>\n\n"
             f"Из этих букв можно собрать <b>{total}</b> слов.\n"
             f"Минимум — <b>{round_data.min_length}</b> буквы.\n"
-            f"Время до закрытия страницы — <b>{self.format_duration(ROUND_SECONDS)}</b>.\n\n"
+            f"Время до закрытия страницы — <b>{self.format_duration(round_seconds)}</b>.\n\n"
             "Пишите слова прямо в чат.\n"
             "Первый, кто нашел слово, забирает его себе.\n\n"
             "Чем длиннее слово, тем больше звезд:\n"
@@ -860,6 +873,7 @@ class MiniGameService:
 
             base_word, allowed = self.choose_base_word()
             now = time.monotonic()
+            round_seconds = self.round_duration_seconds(len(allowed))
             round_data = WordGameRound(
                 chat_id=message.chat.id,
                 round_code=self.round_code(),
@@ -867,7 +881,7 @@ class MiniGameService:
                 allowed_words=allowed,
                 min_length=MIN_WORD_LENGTH,
                 started_at=now,
-                ends_at=now + ROUND_SECONDS,
+                ends_at=now + round_seconds,
                 message_thread_id=message.message_thread_id,
             )
             self.active_word_games[game_key] = round_data
