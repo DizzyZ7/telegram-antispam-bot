@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from pathlib import Path
 
@@ -9,7 +11,14 @@ import aiosqlite
 
 from ..config import GENERATION_SAMPLE_LIMIT, MEMORY_LIMIT
 from ..context import ActivitySnapshot
-from ..models import EntertainmentSettings, normalize_behavior_mode
+from ..models import (
+    EntertainmentActionRecord,
+    EntertainmentActionType,
+    EntertainmentSettings,
+    normalize_behavior_mode,
+)
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _normalize_optional_hour(value: object) -> int | None:
@@ -50,6 +59,7 @@ class SQLiteEntertainmentStorage:
         )
         await self._ensure_settings_schema()
         await self._ensure_messages_schema()
+        await self._ensure_actions_schema()
         await self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS ent_schema_migrations (
@@ -128,6 +138,26 @@ class SQLiteEntertainmentStorage:
         await connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_entertainment_messages_legacy_source "
             "ON entertainment_messages(legacy_source_id) WHERE legacy_source_id IS NOT NULL"
+        )
+
+    async def _ensure_actions_schema(self) -> None:
+        connection = self._require_connection()
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ent_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                topic_id INTEGER NOT NULL DEFAULT 0,
+                action_type TEXT NOT NULL,
+                trigger_message_id INTEGER,
+                created_at INTEGER NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        await connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ent_actions_scope_time "
+            "ON ent_actions(chat_id, topic_id, created_at DESC, id DESC)"
         )
 
     async def close(self) -> None:
@@ -340,6 +370,87 @@ class SQLiteEntertainmentStorage:
                 float(max(0, now_i - int(last_human_at))) if last_human_at is not None else None
             ),
         )
+
+    async def record_action(self, record: EntertainmentActionRecord) -> int:
+        connection = self._require_connection()
+        cursor = await connection.execute(
+            """
+            INSERT INTO ent_actions(
+                chat_id, topic_id, action_type, trigger_message_id, created_at, metadata_json
+            ) VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(record.chat_id),
+                int(record.topic_id),
+                record.action_type.value,
+                int(record.trigger_message_id) if record.trigger_message_id is not None else None,
+                int(record.created_at),
+                json.dumps(record.metadata, ensure_ascii=False, separators=(",", ":")),
+            ),
+        )
+        await connection.commit()
+        if cursor.lastrowid is None:
+            raise RuntimeError("SQLite did not return an action id")
+        return int(cursor.lastrowid)
+
+    async def recent_actions(
+        self,
+        chat_id: int,
+        topic_id: int,
+        *,
+        since: int,
+        limit: int = 20,
+    ) -> list[EntertainmentActionRecord]:
+        connection = self._require_connection()
+        async with connection.execute(
+            """
+            SELECT id, action_type, trigger_message_id, created_at, metadata_json
+            FROM ent_actions
+            WHERE chat_id = ? AND topic_id = ? AND created_at >= ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (int(chat_id), int(topic_id), int(since), max(1, int(limit))),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        actions: list[EntertainmentActionRecord] = []
+        for row in rows:
+            try:
+                action_type = EntertainmentActionType(str(row[1]))
+            except ValueError:
+                LOGGER.warning("Skipping unknown entertainment action type id=%s type=%r", row[0], row[1])
+                continue
+            try:
+                metadata = json.loads(str(row[4] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            actions.append(
+                EntertainmentActionRecord(
+                    id=int(row[0]),
+                    chat_id=int(chat_id),
+                    topic_id=int(topic_id),
+                    action_type=action_type,
+                    trigger_message_id=(int(row[2]) if row[2] is not None else None),
+                    created_at=int(row[3]),
+                    metadata=metadata,
+                )
+            )
+        return actions
+
+    async def human_messages_since(self, chat_id: int, topic_id: int, *, since: int) -> int:
+        connection = self._require_connection()
+        async with connection.execute(
+            """
+            SELECT COUNT(*) FROM entertainment_messages
+            WHERE chat_id = ? AND topic_id = ? AND created_at >= ?
+            """,
+            (int(chat_id), int(topic_id), int(since)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
 
     async def is_migration_applied(self, migration_key: str) -> bool:
         connection = self._require_connection()
