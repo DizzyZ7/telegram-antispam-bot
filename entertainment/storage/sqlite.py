@@ -8,7 +8,17 @@ from pathlib import Path
 import aiosqlite
 
 from ..config import GENERATION_SAMPLE_LIMIT, MEMORY_LIMIT
-from ..models import EntertainmentSettings
+from ..models import BehaviorMode, EntertainmentSettings, normalize_behavior_mode
+
+
+def _normalize_optional_hour(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        hour = int(value)
+    except (TypeError, ValueError):
+        return None
+    return hour if 0 <= hour <= 23 else None
 
 
 class SQLiteEntertainmentStorage:
@@ -28,10 +38,16 @@ class SQLiteEntertainmentStorage:
                 enabled INTEGER NOT NULL DEFAULT 1,
                 laziness INTEGER NOT NULL DEFAULT 92,
                 cooldown_seconds INTEGER NOT NULL DEFAULT 45,
+                behavior_mode TEXT NOT NULL DEFAULT 'alive',
+                quiet_hours_start INTEGER,
+                quiet_hours_end INTEGER,
+                timezone TEXT NOT NULL DEFAULT 'Europe/Moscow',
+                autonomous_text_enabled INTEGER NOT NULL DEFAULT 1,
                 updated_at INTEGER NOT NULL
             )
             """
         )
+        await self._ensure_settings_schema()
         await self._ensure_messages_schema()
         await self.connection.execute(
             """
@@ -42,6 +58,24 @@ class SQLiteEntertainmentStorage:
             """
         )
         await self.connection.commit()
+
+    async def _ensure_settings_schema(self) -> None:
+        connection = self._require_connection()
+        async with connection.execute("PRAGMA table_info(entertainment_chat_settings)") as cursor:
+            rows = await cursor.fetchall()
+        columns = {str(row[1]) for row in rows}
+        upgrades = (
+            ("behavior_mode", "TEXT NOT NULL DEFAULT 'alive'"),
+            ("quiet_hours_start", "INTEGER"),
+            ("quiet_hours_end", "INTEGER"),
+            ("timezone", "TEXT NOT NULL DEFAULT 'Europe/Moscow'"),
+            ("autonomous_text_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        )
+        for column, definition in upgrades:
+            if column not in columns:
+                await connection.execute(
+                    f"ALTER TABLE entertainment_chat_settings ADD COLUMN {column} {definition}"
+                )
 
     async def _ensure_messages_schema(self) -> None:
         connection = self._require_connection()
@@ -106,7 +140,8 @@ class SQLiteEntertainmentStorage:
         connection = self._require_connection()
         async with connection.execute(
             """
-            SELECT enabled, laziness, cooldown_seconds
+            SELECT enabled, behavior_mode, quiet_hours_start, quiet_hours_end,
+                   timezone, autonomous_text_enabled, laziness, cooldown_seconds
             FROM entertainment_chat_settings
             WHERE chat_id = ?
             """,
@@ -117,21 +152,34 @@ class SQLiteEntertainmentStorage:
             return EntertainmentSettings()
         return EntertainmentSettings(
             enabled=bool(row[0]),
-            laziness=max(0, min(100, int(row[1]))),
-            cooldown_seconds=max(5, int(row[2])),
+            behavior_mode=normalize_behavior_mode(row[1]),
+            quiet_hours_start=_normalize_optional_hour(row[2]),
+            quiet_hours_end=_normalize_optional_hour(row[3]),
+            timezone=str(row[4] or "Europe/Moscow"),
+            autonomous_text_enabled=bool(row[5]),
+            laziness=max(0, min(100, int(row[6]))),
+            cooldown_seconds=max(5, int(row[7])),
         )
 
     async def save_settings(self, chat_id: int, settings: EntertainmentSettings) -> None:
         connection = self._require_connection()
+        behavior_mode = normalize_behavior_mode(settings.behavior_mode)
         await connection.execute(
             """
             INSERT INTO entertainment_chat_settings(
-                chat_id, enabled, laziness, cooldown_seconds, updated_at
-            ) VALUES(?, ?, ?, ?, ?)
+                chat_id, enabled, laziness, cooldown_seconds,
+                behavior_mode, quiet_hours_start, quiet_hours_end,
+                timezone, autonomous_text_enabled, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET
                 enabled = excluded.enabled,
                 laziness = excluded.laziness,
                 cooldown_seconds = excluded.cooldown_seconds,
+                behavior_mode = excluded.behavior_mode,
+                quiet_hours_start = excluded.quiet_hours_start,
+                quiet_hours_end = excluded.quiet_hours_end,
+                timezone = excluded.timezone,
+                autonomous_text_enabled = excluded.autonomous_text_enabled,
                 updated_at = excluded.updated_at
             """,
             (
@@ -139,6 +187,11 @@ class SQLiteEntertainmentStorage:
                 1 if settings.enabled else 0,
                 max(0, min(100, int(settings.laziness))),
                 max(5, int(settings.cooldown_seconds)),
+                behavior_mode.value,
+                _normalize_optional_hour(settings.quiet_hours_start),
+                _normalize_optional_hour(settings.quiet_hours_end),
+                str(settings.timezone or "Europe/Moscow"),
+                1 if settings.autonomous_text_enabled else 0,
                 int(time.time()),
             ),
         )
