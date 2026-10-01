@@ -10,7 +10,13 @@ from .config import (
 from .generation import generate_chat_text
 from .models import EntertainmentSettings, normalize_topic_id
 from .router import EntertainmentChatFilter, register_entertainment_handlers
-from .service import EntertainmentService, EntertainmentStorage
+from .service import EntertainmentService
+from .storage import LegacyCompatibleEntertainmentStorage, SQLiteEntertainmentStorage
+
+# Transitional public alias: main.py and the original tests still construct
+# EntertainmentStorage(Path). Internally the service already depends on the
+# new protocol in entertainment.storage.base.
+EntertainmentStorage = LegacyCompatibleEntertainmentStorage
 
 __all__ = [
     "DEFAULT_COOLDOWN_SECONDS",
@@ -20,6 +26,7 @@ __all__ = [
     "EntertainmentService",
     "EntertainmentSettings",
     "EntertainmentStorage",
+    "SQLiteEntertainmentStorage",
     "MEMORY_LIMIT",
     "generate_chat_text",
     "normalize_topic_id",
