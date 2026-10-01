@@ -77,6 +77,24 @@ class PostgresEntertainmentStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.storage.message_count(-990001, 20), 1)
         self.assertEqual(await self.storage.message_count(-990002, None), 1)
 
+    async def test_activity_snapshot_matches_sqlite_window_semantics(self) -> None:
+        now = 20_000
+        await self.storage.add_message(-990001, 30, 1, "fresh one", created_at=19_980)
+        await self.storage.add_message(-990001, 30, 2, "fresh two", created_at=19_940)
+        await self.storage.add_message(-990001, 30, 1, "five edge", created_at=19_700)
+        await self.storage.add_message(-990001, 30, 3, "previous", created_at=19_699)
+        await self.storage.add_message(-990001, 30, 4, "previous older", created_at=19_450)
+        await self.storage.add_message(-990001, 30, 5, "fifteen edge", created_at=19_100)
+        await self.storage.add_message(-990001, 40, 99, "sibling", created_at=19_990)
+
+        snapshot = await self.storage.activity_snapshot(-990001, 30, now=now)
+        self.assertEqual(snapshot.messages_1m, 2)
+        self.assertEqual(snapshot.messages_5m, 3)
+        self.assertEqual(snapshot.messages_previous_5m, 2)
+        self.assertEqual(snapshot.messages_15m, 6)
+        self.assertEqual(snapshot.active_users_5m, 2)
+        self.assertEqual(snapshot.seconds_since_human, 20.0)
+
     async def test_invalid_stored_mode_normalizes_to_alive(self) -> None:
         pool = self.storage._require_pool()
         await pool.execute(
