@@ -221,7 +221,22 @@ class PatchedMiniGameService(MiniGameService):
         if not self.can_build(word, round_data.base_word):
             return False
         # Add dynamic valid lemmas to the current round, so /game and final stats stay honest.
+        previous_total = len(round_data.allowed_words)
         round_data.allowed_words.add(word)
+        current_total = len(round_data.allowed_words)
+        extension_seconds = self.extend_round_deadline_for_total_words(round_data, current_total)
+        if extension_seconds:
+            LOGGER.info(
+                "LEXICON_ROUND_EXTENDED chat_id=%s thread_id=%s round=%s words=%s->%s "
+                "extension_seconds=%s total_duration_seconds=%s",
+                round_data.chat_id,
+                round_data.message_thread_id,
+                round_data.round_code,
+                previous_total,
+                current_total,
+                extension_seconds,
+                self.round_duration_seconds(current_total),
+            )
         return True
 
     def render_start(self, round_data: WordGameRound) -> str:
