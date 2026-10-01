@@ -18,6 +18,7 @@ from .autonomy import ActionCandidate, ConversationPhase, DecisionContext, deriv
 from .config import MAX_MESSAGE_LENGTH, MEMORY_LIMIT, MIN_MESSAGE_LENGTH, MIN_MESSAGES_TO_GENERATE, URL_RE
 from .generation import generate_chat_text, tokenize
 from .models import (
+    BehaviorMode,
     EntertainmentActionRecord,
     EntertainmentActionType,
     EntertainmentSettings,
@@ -87,23 +88,27 @@ class EntertainmentService:
             return False
         return True
 
-    async def _is_admin(self, message: Message) -> bool:
-        if message.from_user is None:
+    async def _is_admin_identity(self, chat_id: int, user_id: int | None) -> bool:
+        if user_id is None:
             return False
         try:
-            member = await self.app.bot.get_chat_member(
-                chat_id=message.chat.id,
-                user_id=message.from_user.id,
-            )
+            member = await self.app.bot.get_chat_member(chat_id=int(chat_id), user_id=int(user_id))
         except Exception:
             LOGGER.info(
                 "Could not check entertainment admin status chat_id=%s user_id=%s",
-                message.chat.id,
-                message.from_user.id,
+                chat_id,
+                user_id,
                 exc_info=True,
             )
             return False
         return getattr(member, "status", None) in {"creator", "administrator"}
+
+    async def _is_admin(self, message: Message) -> bool:
+        from_user = getattr(message, "from_user", None)
+        return await self._is_admin_identity(
+            int(message.chat.id),
+            getattr(from_user, "id", None),
+        )
 
     def _is_direct_trigger(self, message: Message) -> bool:
         replied = getattr(message, "reply_to_message", None)
@@ -327,11 +332,29 @@ class EntertainmentService:
         await self.evaluate_topic(message)
 
     @staticmethod
-    def panel_keyboard() -> InlineKeyboardMarkup:
+    def panel_keyboard(settings: EntertainmentSettings | None = None) -> InlineKeyboardMarkup:
+        settings = settings or EntertainmentSettings()
+        mode_specs = (
+            (BehaviorMode.CALM, "🌙 Спокойный"),
+            (BehaviorMode.ALIVE, "✨ Живой"),
+            (BehaviorMode.ACTIVE, "⚡ Активный"),
+        )
+        mode_row = [
+            InlineKeyboardButton(
+                text=(f"✅ {label}" if settings.behavior_mode is mode else label),
+                callback_data=f"fun:mode:{mode.value}",
+            )
+            for mode, label in mode_specs
+        ]
+        toggle = InlineKeyboardButton(
+            text="⏸ Выключить" if settings.enabled else "▶️ Включить",
+            callback_data="fun:disable" if settings.enabled else "fun:enable",
+        )
         return InlineKeyboardMarkup(
             inline_keyboard=[
+                mode_row,
+                [InlineKeyboardButton(text="🧠 Память", callback_data="fun:status"), toggle],
                 [InlineKeyboardButton(text="🎲 Сгенерировать реплику", callback_data="fun:generate")],
-                [InlineKeyboardButton(text="🧠 Память и статус", callback_data="fun:status")],
             ]
         )
 
@@ -343,14 +366,13 @@ class EntertainmentService:
         await message.reply(
             "🎭 <b>Развлекательный режим</b>\n\n"
             f"Состояние: <b>{state}</b>\n"
-            f"Память этой темы: <b>{count}</b>/{MEMORY_LIMIT}\n"
-            f"Лень: <b>{settings.laziness}%</b> "
-            f"(legacy-настройка; Autonomy v2 ее не использует)\n"
-            f"Режим поведения: <b>{settings.behavior_mode.display_name}</b>\n\n"
-            "Темы форума обучаются отдельно. Данные между чатами не смешиваются.\n\n"
-            "Админам: /fun_on · /fun_off · /fun_laziness 0-100 · "
-            "/fun_cooldown 5-3600 · /fun_forget",
-            reply_markup=self.panel_keyboard(),
+            f"Режим поведения: <b>{settings.behavior_mode.display_name}</b>\n"
+            f"Память этой темы: <b>{count}</b>/{MEMORY_LIMIT}\n\n"
+            "Бот сам выбирает момент по активности конкретной темы, хранит историю своих действий "
+            "и не должен перебивать живой разговор.\n"
+            "Темы форума и разные чаты изолированы друг от друга.\n\n"
+            "Админам: выберите режим кнопкой ниже · /fun_on · /fun_off · /fun_forget",
+            reply_markup=self.panel_keyboard(settings),
         )
 
     async def show_status(self, message: Message) -> None:
@@ -403,50 +425,30 @@ class EntertainmentService:
             else "🎭 Развлекательный режим <b>выключен</b>."
         )
 
-    async def set_laziness(self, message: Message) -> None:
+    async def set_behavior_mode(self, message: Message, mode: BehaviorMode) -> None:
         if not await self._is_admin(message):
-            await message.reply("⚙️ Legacy-настройку может менять только администрация чата.")
-            return
-        parts = (message.text or "").split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply("Использование: <code>/fun_laziness 0-100</code>")
-            return
-        try:
-            value = int(parts[1].strip())
-        except ValueError:
-            await message.reply("Значение должно быть целым числом от 0 до 100.")
-            return
-        if not 0 <= value <= 100:
-            await message.reply("Значение должно быть от 0 до 100.")
+            await message.reply("⚙️ Режим поведения может менять только администрация чата.")
             return
         current = await self.storage.get_settings(message.chat.id)
-        await self.storage.save_settings(message.chat.id, replace(current, laziness=value))
+        await self.storage.save_settings(message.chat.id, replace(current, behavior_mode=mode))
+        await message.reply(f"🎭 Режим поведения: <b>{mode.display_name}</b>.")
+
+    async def set_laziness(self, message: Message) -> None:
+        if not await self._is_admin(message):
+            await message.reply("⚙️ Настройки поведения может менять только администрация чата.")
+            return
         await message.reply(
-            f"⚙️ Legacy-параметр сохранен: <b>{value}%</b>. "
-            "Autonomy v2 не использует его для решений."
+            "⚙️ Числовая настройка больше не управляет поведением. "
+            "Открой /fun и выбери режим: Спокойный, Живой или Активный."
         )
 
     async def set_cooldown(self, message: Message) -> None:
         if not await self._is_admin(message):
-            await message.reply("⚙️ Legacy-настройку может менять только администрация чата.")
+            await message.reply("⚙️ Настройки поведения может менять только администрация чата.")
             return
-        parts = (message.text or "").split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply("Использование: <code>/fun_cooldown 5-3600</code>")
-            return
-        try:
-            value = int(parts[1].strip())
-        except ValueError:
-            await message.reply("Значение должно быть целым числом секунд.")
-            return
-        if not 5 <= value <= 3600:
-            await message.reply("Значение должно быть от 5 до 3600 секунд.")
-            return
-        current = await self.storage.get_settings(message.chat.id)
-        await self.storage.save_settings(message.chat.id, replace(current, cooldown_seconds=value))
         await message.reply(
-            f"⚙️ Legacy-кулдаун сохранен: <b>{value} сек.</b> "
-            "Autonomy v2 использует собственные бюджеты режима."
+            "⚙️ Ручная задержка больше не управляет автономным движком. "
+            "Открой /fun и выбери режим поведения."
         )
 
     async def forget_chat(self, message: Message) -> None:
@@ -461,6 +463,30 @@ class EntertainmentService:
             "Другие темы и чаты не затронуты."
         )
 
+    async def _handle_mode_callback(self, callback: CallbackQuery, mode: BehaviorMode) -> None:
+        assert callback.message is not None
+        chat_id = int(callback.message.chat.id)
+        actor_id = getattr(getattr(callback, "from_user", None), "id", None)
+        if not await self._is_admin_identity(chat_id, actor_id):
+            await callback.answer("Режим может менять только администрация чата.", show_alert=True)
+            return
+        current = await self.storage.get_settings(chat_id)
+        await self.storage.save_settings(chat_id, replace(current, behavior_mode=mode))
+        await callback.answer(f"Режим: {mode.display_name}")
+        await self.show_panel(callback.message)  # type: ignore[arg-type]
+
+    async def _handle_enabled_callback(self, callback: CallbackQuery, enabled: bool) -> None:
+        assert callback.message is not None
+        chat_id = int(callback.message.chat.id)
+        actor_id = getattr(getattr(callback, "from_user", None), "id", None)
+        if not await self._is_admin_identity(chat_id, actor_id):
+            await callback.answer("Эту настройку может менять только администрация чата.", show_alert=True)
+            return
+        current = await self.storage.get_settings(chat_id)
+        await self.storage.save_settings(chat_id, replace(current, enabled=enabled))
+        await callback.answer("Включено" if enabled else "Выключено")
+        await self.show_panel(callback.message)  # type: ignore[arg-type]
+
     async def handle_callback(self, callback: CallbackQuery) -> None:
         if callback.message is None:
             await callback.answer()
@@ -470,6 +496,20 @@ class EntertainmentService:
             await callback.answer("Здесь развлекательный режим недоступен.", show_alert=True)
             return
         data = callback.data or ""
+        if data.startswith("fun:mode:"):
+            try:
+                mode = BehaviorMode(data.rsplit(":", 1)[1])
+            except ValueError:
+                await callback.answer("Неизвестный режим.", show_alert=True)
+                return
+            await self._handle_mode_callback(callback, mode)
+            return
+        if data == "fun:enable":
+            await self._handle_enabled_callback(callback, True)
+            return
+        if data == "fun:disable":
+            await self._handle_enabled_callback(callback, False)
+            return
         if data == "fun:generate":
             await callback.answer("Собираю фразу…")
             await self.generate_now(callback.message)  # type: ignore[arg-type]
