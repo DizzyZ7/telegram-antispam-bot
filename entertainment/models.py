@@ -26,8 +26,10 @@ class BehaviorMode(str, Enum):
 
 def normalize_behavior_mode(value: object) -> BehaviorMode:
     """Return a safe behavior mode for persisted/untrusted values."""
+    if isinstance(value, BehaviorMode):
+        return value
     try:
-        return BehaviorMode(str(value))
+        return BehaviorMode(str(value).strip().casefold())
     except (TypeError, ValueError):
         return BehaviorMode.ALIVE
 
