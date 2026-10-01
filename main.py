@@ -174,6 +174,12 @@ install_ignored_topic_filter()
 
 import legacy_main as app
 from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
+from entertainment import (
+    ENTERTAINMENT_CHAT_IDS,
+    EntertainmentService,
+    EntertainmentStorage,
+    register_entertainment_handlers,
+)
 from lexicon_game_scope import (
     LEXICON_ONLY_CHAT_IDS,
     LexiconGameAppScope,
@@ -192,9 +198,12 @@ async def main() -> None:
 
     accurate_storage = AccurateStatsStorage(RUNTIME_DATA_DIR / "accurate_stats.db")
     minigame_storage = MiniGameStorage(RUNTIME_DATA_DIR / "minigames.db")
+    entertainment_storage = EntertainmentStorage(RUNTIME_DATA_DIR / "entertainment.db")
     await accurate_storage.initialize()
     await minigame_storage.initialize()
+    await entertainment_storage.initialize()
     accurate_stats = AccurateStatsService(app, accurate_storage, app.SUMMARY_TIMEZONE)
+    entertainment = EntertainmentService(app, entertainment_storage, ENTERTAINMENT_CHAT_IDS)
 
     # The proxy extends chat access only inside the Lexicon service. The base app
     # remains unchanged, so all unrelated handlers stay disabled in these chats.
@@ -204,6 +213,7 @@ async def main() -> None:
     try:
         scope = register_writers_chat_handlers(app)
         register_accurate_stats_handlers(app, accurate_stats)
+        register_entertainment_handlers(app, entertainment)
 
         # Guard is promoted ahead of legacy handlers first. Lexicon handlers are
         # registered afterward and promoted above the guard, so only the game can
@@ -229,6 +239,7 @@ async def main() -> None:
         )
         await app.main()
     finally:
+        await entertainment_storage.close()
         await minigame_storage.close()
         await accurate_stats.close()
 

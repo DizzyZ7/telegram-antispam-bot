@@ -47,3 +47,26 @@ pip install -r requirements.txt
 
 # Запуск системы
 python main.py
+
+
+## Entertainment mode
+
+The entertainment layer is disabled unless `ENTERTAINMENT_CHAT_IDS` contains explicit Telegram chat IDs.
+
+Example:
+
+```env
+ENTERTAINMENT_CHAT_IDS=-1001234567890,-1009876543210
+```
+
+Each enabled chat has isolated memory and settings. V1 supports per-chat learning, Markov-style phrase generation, spontaneous replies with configurable laziness/cooldown, an inline panel, admin enable/disable controls and full per-chat memory reset.
+
+Commands:
+- `/fun` — panel/status
+- `/fun_generate` — generate a phrase from this chat's learned style
+- `/fun_on`, `/fun_off` — admin toggle
+- `/fun_laziness 0-100` — admin spontaneous-reply frequency
+- `/fun_cooldown 5-3600` — admin cooldown in seconds
+- `/fun_forget` — admin-only memory reset
+
+For ordinary group messages to be available for learning, Telegram Group Privacy Mode must allow the bot to receive them (or the bot must be an admin).
