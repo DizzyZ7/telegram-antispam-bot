@@ -7,7 +7,17 @@ import time
 import asyncpg
 
 from ..config import GENERATION_SAMPLE_LIMIT, MEMORY_LIMIT
-from ..models import EntertainmentSettings
+from ..models import EntertainmentSettings, normalize_behavior_mode
+
+
+def _normalize_optional_hour(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        hour = int(value)
+    except (TypeError, ValueError):
+        return None
+    return hour if 0 <= hour <= 23 else None
 
 
 class PostgresEntertainmentStorage:
@@ -34,9 +44,29 @@ class PostgresEntertainmentStorage:
                         enabled BOOLEAN NOT NULL DEFAULT TRUE,
                         laziness INTEGER NOT NULL DEFAULT 92,
                         cooldown_seconds INTEGER NOT NULL DEFAULT 45,
+                        behavior_mode TEXT NOT NULL DEFAULT 'alive',
+                        quiet_hours_start INTEGER,
+                        quiet_hours_end INTEGER,
+                        timezone TEXT NOT NULL DEFAULT 'Europe/Moscow',
+                        autonomous_text_enabled BOOLEAN NOT NULL DEFAULT TRUE,
                         updated_at BIGINT NOT NULL
                     )
                     """
+                )
+                await connection.execute(
+                    "ALTER TABLE entertainment_chat_settings ADD COLUMN IF NOT EXISTS behavior_mode TEXT NOT NULL DEFAULT 'alive'"
+                )
+                await connection.execute(
+                    "ALTER TABLE entertainment_chat_settings ADD COLUMN IF NOT EXISTS quiet_hours_start INTEGER"
+                )
+                await connection.execute(
+                    "ALTER TABLE entertainment_chat_settings ADD COLUMN IF NOT EXISTS quiet_hours_end INTEGER"
+                )
+                await connection.execute(
+                    "ALTER TABLE entertainment_chat_settings ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'Europe/Moscow'"
+                )
+                await connection.execute(
+                    "ALTER TABLE entertainment_chat_settings ADD COLUMN IF NOT EXISTS autonomous_text_enabled BOOLEAN NOT NULL DEFAULT TRUE"
                 )
                 await connection.execute(
                     """
@@ -90,31 +120,56 @@ class PostgresEntertainmentStorage:
 
     async def get_settings(self, chat_id: int) -> EntertainmentSettings:
         row = await self._require_pool().fetchrow(
-            "SELECT enabled, laziness, cooldown_seconds FROM entertainment_chat_settings WHERE chat_id = $1",
+            """
+            SELECT enabled, behavior_mode, quiet_hours_start, quiet_hours_end,
+                   timezone, autonomous_text_enabled, laziness, cooldown_seconds
+            FROM entertainment_chat_settings WHERE chat_id = $1
+            """,
             int(chat_id),
         )
         if row is None:
             return EntertainmentSettings()
         return EntertainmentSettings(
             enabled=bool(row["enabled"]),
+            behavior_mode=normalize_behavior_mode(row["behavior_mode"]),
+            quiet_hours_start=_normalize_optional_hour(row["quiet_hours_start"]),
+            quiet_hours_end=_normalize_optional_hour(row["quiet_hours_end"]),
+            timezone=str(row["timezone"] or "Europe/Moscow"),
+            autonomous_text_enabled=bool(row["autonomous_text_enabled"]),
             laziness=max(0, min(100, int(row["laziness"]))),
             cooldown_seconds=max(5, int(row["cooldown_seconds"])),
         )
 
     async def save_settings(self, chat_id: int, settings: EntertainmentSettings) -> None:
+        behavior_mode = normalize_behavior_mode(settings.behavior_mode)
         await self._require_pool().execute(
             """
             INSERT INTO entertainment_chat_settings(
-                chat_id, enabled, laziness, cooldown_seconds, updated_at
-            ) VALUES($1, $2, $3, $4, $5)
+                chat_id, enabled, laziness, cooldown_seconds,
+                behavior_mode, quiet_hours_start, quiet_hours_end,
+                timezone, autonomous_text_enabled, updated_at
+            ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT(chat_id) DO UPDATE SET
                 enabled = EXCLUDED.enabled,
                 laziness = EXCLUDED.laziness,
                 cooldown_seconds = EXCLUDED.cooldown_seconds,
+                behavior_mode = EXCLUDED.behavior_mode,
+                quiet_hours_start = EXCLUDED.quiet_hours_start,
+                quiet_hours_end = EXCLUDED.quiet_hours_end,
+                timezone = EXCLUDED.timezone,
+                autonomous_text_enabled = EXCLUDED.autonomous_text_enabled,
                 updated_at = EXCLUDED.updated_at
             """,
-            int(chat_id), bool(settings.enabled), max(0, min(100, int(settings.laziness))),
-            max(5, int(settings.cooldown_seconds)), int(time.time()),
+            int(chat_id),
+            bool(settings.enabled),
+            max(0, min(100, int(settings.laziness))),
+            max(5, int(settings.cooldown_seconds)),
+            behavior_mode.value,
+            _normalize_optional_hour(settings.quiet_hours_start),
+            _normalize_optional_hour(settings.quiet_hours_end),
+            str(settings.timezone or "Europe/Moscow"),
+            bool(settings.autonomous_text_enabled),
+            int(time.time()),
         )
 
     async def add_message(
