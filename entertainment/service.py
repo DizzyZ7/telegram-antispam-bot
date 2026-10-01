@@ -46,6 +46,7 @@ class EntertainmentService:
         self.chat_ids = frozenset(int(chat_id) for chat_id in chat_ids)
         self.rng = rng or random.Random()
         self._now_fn = now_fn or time.time
+        self._active_topics: dict[tuple[int, int], Any] = {}
 
     def is_allowed_chat(self, chat_id: int) -> bool:
         return int(chat_id) in self.chat_ids
@@ -58,6 +59,13 @@ class EntertainmentService:
     @staticmethod
     def _topic_id(message: Message) -> int:
         return normalize_topic_id(getattr(message, "message_thread_id", None))
+
+    def remember_active_topic(self, message: Message) -> None:
+        """Remember only scopes observed in this process for bounded supervisor scans."""
+        chat_id = int(message.chat.id)
+        if not self.is_allowed_chat(chat_id):
+            return
+        self._active_topics[(chat_id, self._topic_id(message))] = message
 
     def is_eligible_learning_message(self, message: Message) -> bool:
         if not self.is_allowed_chat(message.chat.id):
@@ -164,7 +172,12 @@ class EntertainmentService:
                 return generated
         return None
 
-    async def evaluate_topic(self, message: Message) -> EntertainmentActionRecord | None:
+    async def evaluate_topic(
+        self,
+        message: Message,
+        *,
+        supervisor: bool = False,
+    ) -> EntertainmentActionRecord | None:
         chat_id = int(message.chat.id)
         topic_id = self._topic_id(message)
         now = int(self._now_fn())
@@ -178,6 +191,9 @@ class EntertainmentService:
 
         activity = await self.storage.activity_snapshot(chat_id, topic_id, now=now)
         phase = derive_phase(activity)
+        if supervisor and phase not in {ConversationPhase.QUIET, ConversationPhase.COOLDOWN}:
+            return None
+
         recent_actions = tuple(
             await self.storage.recent_actions(
                 chat_id,
@@ -191,7 +207,7 @@ class EntertainmentService:
             await self.storage.human_messages_since(
                 chat_id,
                 topic_id,
-                since=int(last_action.created_at),
+                since=int(last_action.created_at) + 1,
             )
             if last_action is not None
             else 0
@@ -224,7 +240,16 @@ class EntertainmentService:
         if generated is None:
             return None
 
-        await message.reply(html.escape(generated))
+        escaped = html.escape(generated)
+        if supervisor:
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=escaped,
+                message_thread_id=(topic_id or None),
+            )
+        else:
+            await message.reply(escaped)
+
         record = EntertainmentActionRecord(
             id=None,
             chat_id=chat_id,
@@ -241,20 +266,44 @@ class EntertainmentService:
                 "mode": settings.behavior_mode.value,
                 "output": generated,
                 "memory_count": memory_count,
+                "source": "supervisor" if supervisor else "message",
             },
         )
         action_id = await self.storage.record_action(record)
         stored_record = replace(record, id=action_id)
         LOGGER.info(
-            "ENTERTAINMENT_AUTONOMOUS_ACTION chat_id=%s topic_id=%s action=%s phase=%s mode=%s memory=%s",
+            "ENTERTAINMENT_AUTONOMOUS_ACTION chat_id=%s topic_id=%s action=%s phase=%s mode=%s memory=%s source=%s",
             chat_id,
             topic_id,
             selected.action_type.value,
             phase.value,
             settings.behavior_mode.value,
             memory_count,
+            record.metadata["source"],
         )
         return stored_record
+
+    async def run_supervisor_tick(self) -> None:
+        """Evaluate only recently active in-process scopes; never scan full history."""
+        now = int(self._now_fn())
+        for key, message in list(self._active_topics.items()):
+            chat_id, topic_id = key
+            try:
+                recent_human = await self.storage.human_messages_since(
+                    chat_id,
+                    topic_id,
+                    since=now - 30 * 60,
+                )
+                if recent_human <= 0:
+                    self._active_topics.pop(key, None)
+                    continue
+                await self.evaluate_topic(message, supervisor=True)
+            except Exception:
+                LOGGER.exception(
+                    "Entertainment supervisor scope failed chat_id=%s topic_id=%s",
+                    chat_id,
+                    topic_id,
+                )
 
     async def observe_message(self, message: Message) -> None:
         if not self.is_eligible_learning_message(message):
@@ -274,6 +323,7 @@ class EntertainmentService:
             message_id=getattr(message, "message_id", None),
             created_at=now,
         )
+        self.remember_active_topic(message)
         await self.evaluate_topic(message)
 
     @staticmethod
@@ -405,6 +455,7 @@ class EntertainmentService:
             return
         topic_id = self._topic_id(message)
         removed = await self.storage.clear_scope(message.chat.id, topic_id)
+        self._active_topics.pop((int(message.chat.id), topic_id), None)
         await message.reply(
             f"🧠 Память этой темы очищена. Удалено сообщений: <b>{removed}</b>. "
             "Другие темы и чаты не затронуты."
