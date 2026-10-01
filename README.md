@@ -1,72 +1,16 @@
-# 🛡️ telegram-antispam-bot
+# Telegram Anti-Spam Bot
 
-**telegram-antispam-bot** — это специализированный шлюз безопасности, работающий по принципу **Challenge-Response**. Бот предназначен для жесткой фильтрации входящих субъектов и предотвращения спам-атак на закрытые периметры (чаты).
-
-Также бот поддерживает **дневную сводку чата**: сбор текстовых сообщений за текущие сутки и ручную краткую сводку по команде.
-
-## 🧩 Механика защиты
-
-Система работает в режиме **Zero Trust** (Нулевое доверие):
-1.  **Intercept**: Захват события входа нового участника.
-2.  **Quarantine**: Мгновенное лишение прав на отправку любого контента.
-3.  **Challenge**: Генерация уникальной арифметической задачи с ограничением по времени (TTL: 60 сек).
-4.  **Verification**: 
-    *   При успехе: Полная авторизация и возврат прав.
-    *   При провале/тайм-ауте: Немедленная терминация сессии (Ban/Kick).
-
-## ⚙️ Конфигурация
-
-Система требует наличия следующих переменных среды:
-*   `BOT_TOKEN` — уникальный ключ доступа к API Telegram.
-*   `ALLOWED_CHATS` — белый список ID чатов через запятую (например: `-1001,-1002`).
-*   `SUMMARY_STORAGE_PATH` — путь к SQLite базе для временного хранения сообщений (по умолчанию: `daily_summary.db`).
-*   `SUMMARY_TIMEZONE` — таймзона для расчета суток в ручной сводке (по умолчанию: `Europe/Moscow`).
-*   `SUMMARY_MIN_MESSAGES` — минимальное число сообщений для полноценной аналитики (по умолчанию: `12`).
-
-## 🧠 Дневная сводка
-
-Поддерживаемые команды:
-* `/summary` или `/today` — новостная сводка дня в формате `Cocoon AI Summary`, без тегов участников.
-* `/stats` — краткая статистика за текущие сутки (тексты, стикеры, эмодзи, реакции) без расширенной аналитики.
-
-Правила хранения:
-* Сохраняются тексты сообщений из групп/супергрупп и отдельные счетчики активности (стикеры/реакции).
-* Данные разделяются по `chat_id`.
-* Сообщения старше 24 часов очищаются при записи новых сообщений/событий.
-
-Автоматическая отправка итогов дня удалена. Сводка доступна только вручную по команде.
-
-## 🛠 Установка и запуск
-
-```bash
-# Клонирование репозитория
-git clone https://github.com
-
-# Установка зависимостей
-pip install -r requirements.txt
-
-# Запуск системы
-python main.py
-
+This repository contains the Telegram bot and its scoped moderation, statistics and Lexicon game features.
 
 ## Entertainment mode
 
-The entertainment layer is disabled unless `ENTERTAINMENT_CHAT_IDS` contains explicit Telegram chat IDs.
+The entertainment layer is enabled only for explicitly allowed chats. The first enabled chat is `-1002619489118`.
 
-Example:
+Current v1 supports per-chat learning, local phrase generation, spontaneous replies and admin controls. A larger v2 architecture is being designed specifically for this bot and Bothost rather than copying another bot's terminology or UX.
 
-```env
-ENTERTAINMENT_CHAT_IDS=-1001234567890,-1009876543210
-```
+Design and implementation docs:
 
-Each enabled chat has isolated memory and settings. V1 supports per-chat learning, Markov-style phrase generation, spontaneous replies with configurable laziness/cooldown, an inline panel, admin enable/disable controls and full per-chat memory reset.
+- `docs/superpowers/specs/2026-10-01-entertainment-autonomy-v2-design.md`
+- `docs/superpowers/plans/2026-10-01-entertainment-foundation-persistence.md`
 
-Commands:
-- `/fun` — panel/status
-- `/fun_generate` — generate a phrase from this chat's learned style
-- `/fun_on`, `/fun_off` — admin toggle
-- `/fun_laziness 0-100` — admin spontaneous-reply frequency
-- `/fun_cooldown 5-3600` — admin cooldown in seconds
-- `/fun_forget` — admin-only memory reset
-
-For ordinary group messages to be available for learning, Telegram Group Privacy Mode must allow the bot to receive them (or the bot must be an admin).
+The first implementation phase moves entertainment to a package, introduces per-topic isolation and adds PostgreSQL-first persistence with SQLite fallback. Later phases add the autonomous activity engine, media memory, local meme rendering, polls/events, our own admin presets and optional AI providers.
