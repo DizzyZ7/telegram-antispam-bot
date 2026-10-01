@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from .config import DEFAULT_COOLDOWN_SECONDS, DEFAULT_LAZINESS
@@ -32,6 +32,23 @@ def normalize_behavior_mode(value: object) -> BehaviorMode:
         return BehaviorMode(str(value).strip().casefold())
     except (TypeError, ValueError):
         return BehaviorMode.ALIVE
+
+
+class EntertainmentActionType(str, Enum):
+    CONTEXTUAL_REPLY = "contextual_reply"
+    REMIXED_PHRASE = "remixed_phrase"
+    MEMORY_CALLBACK = "memory_callback"
+
+
+@dataclass(frozen=True, slots=True)
+class EntertainmentActionRecord:
+    id: int | None
+    chat_id: int
+    topic_id: int
+    action_type: EntertainmentActionType
+    trigger_message_id: int | None
+    created_at: int
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
