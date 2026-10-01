@@ -13,10 +13,14 @@ import traceback
 from dataclasses import replace
 from pathlib import Path
 
+from runtime_env import load_runtime_env
+
+APP_DIR = Path(__file__).resolve().parent
+load_runtime_env(APP_DIR)
+
 os.environ.setdefault("WRITERS_CHAT_ID", "-1002619489118")
 os.environ.setdefault("ENTERTAINMENT_CHAT_IDS", "-1002619489118")
 
-APP_DIR = Path(__file__).resolve().parent
 BUNDLED_LEXICON_PATH = APP_DIR / "bundled_moderation_lexicon.json"
 RUNTIME_DATA_DIR = Path(os.getenv("DATA_DIR", APP_DIR / "data"))
 RUNTIME_LEXICON_PATH = RUNTIME_DATA_DIR / "moderation_lexicon.json"
@@ -181,6 +185,7 @@ from entertainment import (
     register_entertainment_handlers,
 )
 from entertainment.runtime import open_entertainment_runtime_storage
+from entertainment.scheduler import EntertainmentSupervisor
 from lexicon_game_scope import (
     LEXICON_ONLY_CHAT_IDS,
     LexiconGameAppScope,
@@ -200,6 +205,7 @@ async def main() -> None:
     accurate_storage = AccurateStatsStorage(RUNTIME_DATA_DIR / "accurate_stats.db")
     minigame_storage = MiniGameStorage(RUNTIME_DATA_DIR / "minigames.db")
     entertainment_storage = None
+    entertainment_supervisor: EntertainmentSupervisor | None = None
     accurate_initialized = False
     minigame_initialized = False
 
@@ -224,6 +230,7 @@ async def main() -> None:
 
         accurate_stats = AccurateStatsService(app, accurate_storage, app.SUMMARY_TIMEZONE)
         entertainment = EntertainmentService(app, entertainment_storage, ENTERTAINMENT_CHAT_IDS)
+        entertainment_supervisor = EntertainmentSupervisor(entertainment)
 
         # The proxy extends chat access only inside the Lexicon service. The base app
         # remains unchanged, so all unrelated handlers stay disabled in these chats.
@@ -256,8 +263,12 @@ async def main() -> None:
             f"chat_id={scope.chat_id} rules={MODERATION_LEXICON.rule_count}",
             flush=True,
         )
+        entertainment_supervisor.start()
+        print("ENTERTAINMENT_SUPERVISOR_READY interval_seconds=60", flush=True)
         await app.main()
     finally:
+        if entertainment_supervisor is not None:
+            await entertainment_supervisor.stop()
         if entertainment_storage is not None:
             await entertainment_storage.close()
         if minigame_initialized:

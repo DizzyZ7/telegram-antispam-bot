@@ -84,14 +84,16 @@ def register_entertainment_handlers(app: Any, service: EntertainmentService) -> 
 
     _promote_last_message_handler(app)
 
+    # One-release compatibility aliases. They no longer mutate numeric behavior;
+    # the service only points administrators to the mode-based /fun panel.
     @dispatcher.message(chat_filter, Command(commands=["fun_laziness"]))
-    async def entertainment_laziness(message: Message) -> None:
+    async def entertainment_laziness_compat(message: Message) -> None:
         await service.set_laziness(message)
 
     _promote_last_message_handler(app)
 
     @dispatcher.message(chat_filter, Command(commands=["fun_cooldown"]))
-    async def entertainment_cooldown(message: Message) -> None:
+    async def entertainment_cooldown_compat(message: Message) -> None:
         await service.set_cooldown(message)
 
     _promote_last_message_handler(app)
@@ -109,6 +111,7 @@ def register_entertainment_handlers(app: Any, service: EntertainmentService) -> 
     ids_label = ",".join(str(chat_id) for chat_id in sorted(service.chat_ids)) or "none"
     print(
         "ENTERTAINMENT_SCOPE_READY "
-        f"chat_ids={ids_label} learning=per_chat spontaneous=on external_ai=off",
+        f"chat_ids={ids_label} learning=per_topic autonomy=state_driven "
+        "behavior_modes=calm,alive,active external_ai=off",
         flush=True,
     )
