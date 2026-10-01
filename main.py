@@ -13,10 +13,14 @@ import traceback
 from dataclasses import replace
 from pathlib import Path
 
+from runtime_env import load_runtime_env
+
+APP_DIR = Path(__file__).resolve().parent
+load_runtime_env(APP_DIR)
+
 os.environ.setdefault("WRITERS_CHAT_ID", "-1002619489118")
 os.environ.setdefault("ENTERTAINMENT_CHAT_IDS", "-1002619489118")
 
-APP_DIR = Path(__file__).resolve().parent
 BUNDLED_LEXICON_PATH = APP_DIR / "bundled_moderation_lexicon.json"
 RUNTIME_DATA_DIR = Path(os.getenv("DATA_DIR", APP_DIR / "data"))
 RUNTIME_LEXICON_PATH = RUNTIME_DATA_DIR / "moderation_lexicon.json"
