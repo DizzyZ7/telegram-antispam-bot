@@ -7,6 +7,7 @@ import time
 import asyncpg
 
 from ..config import GENERATION_SAMPLE_LIMIT, MEMORY_LIMIT
+from ..context import ActivitySnapshot
 from ..models import EntertainmentSettings, normalize_behavior_mode
 
 
@@ -93,6 +94,12 @@ class PostgresEntertainmentStorage:
                 )
                 await connection.execute(
                     """
+                    CREATE INDEX IF NOT EXISTS idx_entertainment_messages_activity
+                    ON entertainment_messages(chat_id, topic_id, created_at DESC)
+                    """
+                )
+                await connection.execute(
+                    """
                     CREATE UNIQUE INDEX IF NOT EXISTS idx_entertainment_messages_legacy_source
                     ON entertainment_messages(legacy_source_id)
                     WHERE legacy_source_id IS NOT NULL
@@ -173,9 +180,17 @@ class PostgresEntertainmentStorage:
         )
 
     async def add_message(
-        self, chat_id: int, topic_id: int, user_id: int, text: str, *, message_id: int | None = None
+        self,
+        chat_id: int,
+        topic_id: int,
+        user_id: int,
+        text: str,
+        *,
+        message_id: int | None = None,
+        created_at: int | None = None,
     ) -> None:
         pool = self._require_pool()
+        timestamp = int(time.time()) if created_at is None else int(created_at)
         async with pool.acquire() as connection:
             async with connection.transaction():
                 await connection.execute(
@@ -185,7 +200,7 @@ class PostgresEntertainmentStorage:
                     ) VALUES($1, $2, $3, $4, $5, $6)
                     """,
                     int(chat_id), int(topic_id), int(message_id) if message_id is not None else None,
-                    int(user_id), text, int(time.time()),
+                    int(user_id), text, timestamp,
                 )
                 await connection.execute(
                     """
@@ -237,6 +252,56 @@ class PostgresEntertainmentStorage:
                 int(chat_id), int(topic_id),
             )
         return count
+
+    async def activity_snapshot(
+        self,
+        chat_id: int,
+        topic_id: int,
+        *,
+        now: int,
+    ) -> ActivitySnapshot:
+        now_i = int(now)
+        row = await self._require_pool().fetchrow(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE created_at >= $3) AS messages_1m,
+                COUNT(*) FILTER (WHERE created_at >= $4) AS messages_5m,
+                COUNT(*) FILTER (WHERE created_at >= $5 AND created_at < $4) AS messages_previous_5m,
+                COUNT(*) AS messages_15m,
+                COUNT(DISTINCT user_id) FILTER (WHERE created_at >= $4) AS active_users_5m,
+                (
+                    SELECT created_at
+                    FROM entertainment_messages latest
+                    WHERE latest.chat_id = $1 AND latest.topic_id = $2 AND latest.created_at <= $6
+                    ORDER BY latest.created_at DESC
+                    LIMIT 1
+                ) AS last_human_at
+            FROM entertainment_messages
+            WHERE chat_id = $1 AND topic_id = $2
+              AND created_at >= $7 AND created_at <= $6
+            """,
+            int(chat_id),
+            int(topic_id),
+            now_i - 60,
+            now_i - 300,
+            now_i - 600,
+            now_i,
+            now_i - 900,
+        )
+        assert row is not None
+        last_human_at = row["last_human_at"]
+        return ActivitySnapshot(
+            chat_id=int(chat_id),
+            topic_id=int(topic_id),
+            messages_1m=int(row["messages_1m"] or 0),
+            messages_5m=int(row["messages_5m"] or 0),
+            messages_previous_5m=int(row["messages_previous_5m"] or 0),
+            messages_15m=int(row["messages_15m"] or 0),
+            active_users_5m=int(row["active_users_5m"] or 0),
+            seconds_since_human=(
+                float(max(0, now_i - int(last_human_at))) if last_human_at is not None else None
+            ),
+        )
 
     async def is_migration_applied(self, migration_key: str) -> bool:
         value = await self._require_pool().fetchval(
