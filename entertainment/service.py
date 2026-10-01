@@ -1,94 +1,39 @@
-"""Scoped entertainment layer with per-chat learning and lightweight generation.
-
-The module is deliberately disabled unless a chat id is present in
-ENTERTAINMENT_CHAT_IDS. Learned data never crosses chat boundaries.
-
-V1 intentionally has no external AI dependency:
-- remembers eligible text messages per enabled chat;
-- generates new phrases with a small Markov-style model;
-- can reply spontaneously with configurable "laziness";
-- exposes admin controls for enable/disable, laziness, cooldown and memory reset.
-
-Future meme/image/voice/comic providers can plug into the same scoped service.
-"""
+"""Entertainment service and the v1-compatible SQLite storage."""
 
 from __future__ import annotations
 
 import html
 import logging
-import os
 import random
-import re
 import time
-from collections import defaultdict
-from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
-from aiogram import BaseMiddleware, F
-from aiogram.filters import BaseFilter, Command
-from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+from .config import (
+    GENERATION_SAMPLE_LIMIT,
+    MAX_MESSAGE_LENGTH,
+    MEMORY_LIMIT,
+    MIN_MESSAGE_LENGTH,
+    MIN_MESSAGES_TO_GENERATE,
+    URL_RE,
 )
+from .generation import generate_chat_text, tokenize
+from .models import EntertainmentSettings
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_LAZINESS = 92
-DEFAULT_COOLDOWN_SECONDS = 45
-MEMORY_LIMIT = 5_000
-GENERATION_SAMPLE_LIMIT = 900
-MIN_MESSAGES_TO_GENERATE = 25
-MIN_MESSAGE_LENGTH = 3
-MAX_MESSAGE_LENGTH = 600
-MAX_GENERATED_TOKENS = 30
-
-TOKEN_RE = re.compile(
-    r"[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_'’-]*|[.,!?…:;]",
-    re.UNICODE,
-)
-URL_RE = re.compile(r"(?:https?://|www\.|t\.me/)", re.IGNORECASE)
-CHAT_ID_SPLIT_RE = re.compile(r"[\s,;]+")
-START_TOKEN = "<START>"
-END_TOKEN = "<END>"
-
-
-def parse_chat_ids(raw_value: str | None) -> frozenset[int]:
-    """Parse comma/space/semicolon separated Telegram chat ids."""
-    if not raw_value:
-        return frozenset()
-
-    result: set[int] = set()
-    for item in CHAT_ID_SPLIT_RE.split(raw_value.strip()):
-        if not item:
-            continue
-        try:
-            result.add(int(item))
-        except ValueError:
-            LOGGER.warning("Ignoring invalid ENTERTAINMENT_CHAT_IDS item: %r", item)
-    return frozenset(result)
-
-
-ENTERTAINMENT_CHAT_IDS = parse_chat_ids(os.getenv("ENTERTAINMENT_CHAT_IDS"))
-
-
-@dataclass(frozen=True, slots=True)
-class EntertainmentSettings:
-    enabled: bool = True
-    laziness: int = DEFAULT_LAZINESS
-    cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS
-
-    @property
-    def spontaneous_chance_percent(self) -> int:
-        return max(0, min(100, 100 - self.laziness))
-
 
 class EntertainmentStorage:
-    """SQLite-backed chat settings and isolated learning memory."""
+    """SQLite-backed chat settings and isolated learning memory.
+
+    This concrete v1-compatible class intentionally remains unchanged during
+    the package split. Task 2 replaces it with a storage protocol plus an
+    explicit SQLite backend.
+    """
 
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
@@ -192,9 +137,6 @@ class EntertainmentStorage:
             """,
             (int(chat_id), int(user_id), text, int(time.time())),
         )
-
-        # Keep each chat isolated and bounded. This avoids a global unbounded
-        # transcript while retaining enough material for a recognizable style.
         await connection.execute(
             """
             DELETE FROM entertainment_messages
@@ -251,103 +193,6 @@ class EntertainmentStorage:
         return count
 
 
-class EntertainmentChatFilter(BaseFilter):
-    """Match only explicitly allowlisted entertainment chats."""
-
-    __slots__ = ("chat_ids",)
-
-    def __init__(self, chat_ids: Iterable[int]) -> None:
-        self.chat_ids = frozenset(int(chat_id) for chat_id in chat_ids)
-
-    async def __call__(self, message: Message) -> bool:
-        return int(message.chat.id) in self.chat_ids
-
-
-def _tokenize(text: str) -> list[str]:
-    return TOKEN_RE.findall(text)
-
-
-def _detokenize(tokens: list[str]) -> str:
-    if not tokens:
-        return ""
-
-    no_space_before = {".", ",", "!", "?", "…", ":", ";"}
-    result = ""
-    for token in tokens:
-        if not result:
-            result = token
-        elif token in no_space_before:
-            result += token
-        else:
-            result += " " + token
-
-    if result and result[-1] not in ".!?…":
-        result += "."
-    return result
-
-
-def _normalized_for_comparison(text: str) -> str:
-    return re.sub(r"\s+", " ", text.strip().casefold())
-
-
-def generate_chat_text(
-    messages: list[str],
-    *,
-    rng: random.Random | None = None,
-    max_tokens: int = MAX_GENERATED_TOKENS,
-) -> str | None:
-    """Generate a new phrase from one chat without mixing data across chats."""
-    rng = rng or random.Random()
-
-    tokenized: list[list[str]] = []
-    originals: set[str] = set()
-    for message in messages:
-        tokens = _tokenize(message)
-        if len(tokens) < 2:
-            continue
-        tokenized.append(tokens)
-        originals.add(_normalized_for_comparison(_detokenize(tokens)))
-
-    if len(tokenized) < MIN_MESSAGES_TO_GENERATE:
-        return None
-
-    transitions: dict[str, list[str]] = defaultdict(list)
-    for tokens in tokenized:
-        previous = START_TOKEN
-        for token in tokens:
-            transitions[previous].append(token)
-            previous = token.casefold()
-        transitions[previous].append(END_TOKEN)
-
-    if not transitions.get(START_TOKEN):
-        return None
-
-    # Try several times to avoid simply reproducing an existing message.
-    for _ in range(8):
-        output: list[str] = []
-        current = START_TOKEN
-
-        for _step in range(max(4, int(max_tokens))):
-            options = transitions.get(current)
-            if not options:
-                break
-            token = rng.choice(options)
-            if token == END_TOKEN:
-                if len(output) >= 4:
-                    break
-                current = START_TOKEN
-                continue
-            output.append(token)
-            current = token.casefold()
-
-        generated = _detokenize(output).strip()
-        normalized = _normalized_for_comparison(generated)
-        if len(output) >= 4 and generated and normalized not in originals:
-            return generated
-
-    return None
-
-
 class EntertainmentService:
     """Per-chat entertainment behavior with strict allowlist isolation."""
 
@@ -390,7 +235,7 @@ class EntertainmentService:
             return False
         if URL_RE.search(text):
             return False
-        if len(_tokenize(text)) < 2:
+        if len(tokenize(text)) < 2:
             return False
         return True
 
@@ -413,7 +258,6 @@ class EntertainmentService:
         return getattr(member, "status", None) in {"creator", "administrator"}
 
     async def observe_message(self, message: Message) -> None:
-        """Learn a message and optionally emit a spontaneous generated reply."""
         if not self.is_eligible_learning_message(message):
             return
 
@@ -432,7 +276,6 @@ class EntertainmentService:
         previous_reply = self._last_spontaneous_reply_at.get(message.chat.id, 0.0)
         if now - previous_reply < settings.cooldown_seconds:
             return
-
         if self.rng.randrange(100) < settings.laziness:
             return
 
@@ -454,12 +297,8 @@ class EntertainmentService:
     def panel_keyboard() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="🎲 Сгенерировать реплику", callback_data="fun:generate"),
-                ],
-                [
-                    InlineKeyboardButton(text="🧠 Память и статус", callback_data="fun:status"),
-                ],
+                [InlineKeyboardButton(text="🎲 Сгенерировать реплику", callback_data="fun:generate")],
+                [InlineKeyboardButton(text="🧠 Память и статус", callback_data="fun:status")],
             ]
         )
 
@@ -604,7 +443,6 @@ class EntertainmentService:
         data = callback.data or ""
         if data == "fun:generate":
             await callback.answer("Собираю фразу…")
-            # aiogram's Message-like callback message is compatible with the methods used.
             await self.generate_now(callback.message)  # type: ignore[arg-type]
             return
         if data == "fun:status":
@@ -612,105 +450,3 @@ class EntertainmentService:
             await self.show_status(callback.message)  # type: ignore[arg-type]
             return
         await callback.answer()
-
-
-class EntertainmentLearningMiddleware(BaseMiddleware):
-    """Observe allowlisted chat messages without consuming other bot handlers."""
-
-    def __init__(self, service: EntertainmentService) -> None:
-        self.service = service
-
-    async def __call__(
-        self,
-        handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
-        event: Message,
-        data: dict[str, Any],
-    ) -> Any:
-        try:
-            await self.service.observe_message(event)
-        except Exception:
-            LOGGER.exception(
-                "Could not process entertainment learning chat_id=%s",
-                getattr(getattr(event, "chat", None), "id", None),
-            )
-        return await handler(event, data)
-
-
-def _promote_last_message_handler(app: Any) -> None:
-    handler = app.dp.message.handlers.pop()
-    app.dp.message.handlers.insert(0, handler)
-
-
-def register_entertainment_handlers(app: Any, service: EntertainmentService) -> None:
-    """Register scoped entertainment handlers; no allowlisted ids means no effect."""
-    dispatcher = app.dp
-    dispatcher.message.outer_middleware(EntertainmentLearningMiddleware(service))
-    chat_filter = EntertainmentChatFilter(service.chat_ids)
-
-    @dispatcher.message(chat_filter, Command(commands=["fun", "entertainment"]))
-    async def entertainment_panel(message: Message) -> None:
-        await service.show_panel(message)
-
-    _promote_last_message_handler(app)
-
-    @dispatcher.message(chat_filter, Command(commands=["fun_generate", "fun_gen"]))
-    async def entertainment_generate(message: Message) -> None:
-        await service.generate_now(message)
-
-    _promote_last_message_handler(app)
-
-    @dispatcher.message(chat_filter, Command(commands=["fun_on"]))
-    async def entertainment_on(message: Message) -> None:
-        await service.set_enabled(message, True)
-
-    _promote_last_message_handler(app)
-
-    @dispatcher.message(chat_filter, Command(commands=["fun_off"]))
-    async def entertainment_off(message: Message) -> None:
-        await service.set_enabled(message, False)
-
-    _promote_last_message_handler(app)
-
-    @dispatcher.message(chat_filter, Command(commands=["fun_laziness"]))
-    async def entertainment_laziness(message: Message) -> None:
-        await service.set_laziness(message)
-
-    _promote_last_message_handler(app)
-
-    @dispatcher.message(chat_filter, Command(commands=["fun_cooldown"]))
-    async def entertainment_cooldown(message: Message) -> None:
-        await service.set_cooldown(message)
-
-    _promote_last_message_handler(app)
-
-    @dispatcher.message(chat_filter, Command(commands=["fun_forget"]))
-    async def entertainment_forget(message: Message) -> None:
-        await service.forget_chat(message)
-
-    _promote_last_message_handler(app)
-
-    @dispatcher.callback_query(F.data.startswith("fun:"))
-    async def entertainment_callback(callback: CallbackQuery) -> None:
-        await service.handle_callback(callback)
-
-    ids_label = ",".join(str(chat_id) for chat_id in sorted(service.chat_ids)) or "none"
-    print(
-        "ENTERTAINMENT_SCOPE_READY "
-        f"chat_ids={ids_label} learning=per_chat spontaneous=on external_ai=off",
-        flush=True,
-    )
-
-
-__all__ = [
-    "DEFAULT_COOLDOWN_SECONDS",
-    "DEFAULT_LAZINESS",
-    "ENTERTAINMENT_CHAT_IDS",
-    "EntertainmentChatFilter",
-    "EntertainmentService",
-    "EntertainmentSettings",
-    "EntertainmentStorage",
-    "MEMORY_LIMIT",
-    "generate_chat_text",
-    "parse_chat_ids",
-    "register_entertainment_handlers",
-]
