@@ -7,6 +7,9 @@ from typing import Protocol, runtime_checkable
 from ..config import GENERATION_SAMPLE_LIMIT
 from ..models import EntertainmentSettings
 
+LegacySettingsRow = tuple[int, bool, int, int, int]
+LegacyMessageRow = tuple[int, int, int, str, int]
+
 
 @runtime_checkable
 class EntertainmentStorage(Protocol):
@@ -38,3 +41,12 @@ class EntertainmentStorage(Protocol):
     async def message_count(self, chat_id: int, topic_id: int | None = None) -> int: ...
 
     async def clear_scope(self, chat_id: int, topic_id: int | None = None) -> int: ...
+
+    async def is_migration_applied(self, migration_key: str) -> bool: ...
+
+    async def import_legacy_batch(
+        self,
+        migration_key: str,
+        settings_rows: list[LegacySettingsRow],
+        message_rows: list[LegacyMessageRow],
+    ) -> tuple[int, int]: ...
