@@ -8,8 +8,9 @@ from .config import (
     parse_chat_ids,
 )
 from .generation import generate_chat_text
-from .models import EntertainmentSettings, normalize_topic_id
+from .models import BehaviorMode, EntertainmentSettings, normalize_topic_id
 from .router import EntertainmentChatFilter, register_entertainment_handlers
+from .scheduler import EntertainmentSupervisor
 from .service import EntertainmentService
 from .storage import LegacyCompatibleEntertainmentStorage, SQLiteEntertainmentStorage
 
@@ -19,6 +20,7 @@ from .storage import LegacyCompatibleEntertainmentStorage, SQLiteEntertainmentSt
 EntertainmentStorage = LegacyCompatibleEntertainmentStorage
 
 __all__ = [
+    "BehaviorMode",
     "DEFAULT_COOLDOWN_SECONDS",
     "DEFAULT_LAZINESS",
     "ENTERTAINMENT_CHAT_IDS",
@@ -26,6 +28,7 @@ __all__ = [
     "EntertainmentService",
     "EntertainmentSettings",
     "EntertainmentStorage",
+    "EntertainmentSupervisor",
     "SQLiteEntertainmentStorage",
     "MEMORY_LIMIT",
     "generate_chat_text",
