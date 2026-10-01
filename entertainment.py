@@ -410,7 +410,7 @@ class EntertainmentService:
                 exc_info=True,
             )
             return False
-        return str(getattr(member, "status", "")) in {"creator", "administrator"}
+        return getattr(member, "status", None) in {"creator", "administrator"}
 
     async def observe_message(self, message: Message) -> None:
         """Learn a message and optionally emit a spontaneous generated reply."""
