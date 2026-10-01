@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 
 os.environ.setdefault("WRITERS_CHAT_ID", "-1002619489118")
+os.environ.setdefault("ENTERTAINMENT_CHAT_IDS", "-1002619489118")
 
 APP_DIR = Path(__file__).resolve().parent
 BUNDLED_LEXICON_PATH = APP_DIR / "bundled_moderation_lexicon.json"
