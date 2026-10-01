@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import entertainment
 from entertainment import (
     MEMORY_LIMIT,
     EntertainmentService,
@@ -17,6 +18,9 @@ from entertainment import (
 
 
 class EntertainmentPureTests(unittest.TestCase):
+    def test_entertainment_is_a_package(self) -> None:
+        self.assertTrue(hasattr(entertainment, "__path__"))
+
     def test_parse_chat_ids_accepts_common_separators(self) -> None:
         self.assertEqual(
             parse_chat_ids("-1001, -1002; -1003\n-1004"),

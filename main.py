@@ -178,9 +178,9 @@ from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_
 from entertainment import (
     ENTERTAINMENT_CHAT_IDS,
     EntertainmentService,
-    EntertainmentStorage,
     register_entertainment_handlers,
 )
+from entertainment.runtime import open_entertainment_runtime_storage
 from lexicon_game_scope import (
     LEXICON_ONLY_CHAT_IDS,
     LexiconGameAppScope,
@@ -199,19 +199,37 @@ async def main() -> None:
 
     accurate_storage = AccurateStatsStorage(RUNTIME_DATA_DIR / "accurate_stats.db")
     minigame_storage = MiniGameStorage(RUNTIME_DATA_DIR / "minigames.db")
-    entertainment_storage = EntertainmentStorage(RUNTIME_DATA_DIR / "entertainment.db")
-    await accurate_storage.initialize()
-    await minigame_storage.initialize()
-    await entertainment_storage.initialize()
-    accurate_stats = AccurateStatsService(app, accurate_storage, app.SUMMARY_TIMEZONE)
-    entertainment = EntertainmentService(app, entertainment_storage, ENTERTAINMENT_CHAT_IDS)
-
-    # The proxy extends chat access only inside the Lexicon service. The base app
-    # remains unchanged, so all unrelated handlers stay disabled in these chats.
-    lexicon_app = LexiconGameAppScope(app, LEXICON_ONLY_CHAT_IDS)
-    minigames = LearningLexiconService(lexicon_app, minigame_storage)
+    entertainment_storage = None
+    accurate_initialized = False
+    minigame_initialized = False
 
     try:
+        await accurate_storage.initialize()
+        accurate_initialized = True
+        await minigame_storage.initialize()
+        minigame_initialized = True
+
+        entertainment_runtime = await open_entertainment_runtime_storage(RUNTIME_DATA_DIR)
+        entertainment_storage = entertainment_runtime.storage
+        migration = entertainment_runtime.migration
+        print(
+            "ENTERTAINMENT_STORAGE_READY "
+            f"backend={entertainment_runtime.backend} "
+            f"migration_settings={migration.settings_imported} "
+            f"migration_messages={migration.messages_imported} "
+            f"migration_skipped={migration.skipped} "
+            f"migration_already_applied={int(migration.already_applied)}",
+            flush=True,
+        )
+
+        accurate_stats = AccurateStatsService(app, accurate_storage, app.SUMMARY_TIMEZONE)
+        entertainment = EntertainmentService(app, entertainment_storage, ENTERTAINMENT_CHAT_IDS)
+
+        # The proxy extends chat access only inside the Lexicon service. The base app
+        # remains unchanged, so all unrelated handlers stay disabled in these chats.
+        lexicon_app = LexiconGameAppScope(app, LEXICON_ONLY_CHAT_IDS)
+        minigames = LearningLexiconService(lexicon_app, minigame_storage)
+
         scope = register_writers_chat_handlers(app)
         register_accurate_stats_handlers(app, accurate_stats)
         register_entertainment_handlers(app, entertainment)
@@ -240,9 +258,12 @@ async def main() -> None:
         )
         await app.main()
     finally:
-        await entertainment_storage.close()
-        await minigame_storage.close()
-        await accurate_stats.close()
+        if entertainment_storage is not None:
+            await entertainment_storage.close()
+        if minigame_initialized:
+            await minigame_storage.close()
+        if accurate_initialized:
+            await accurate_storage.close()
 
 
 if __name__ == "__main__":
