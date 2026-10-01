@@ -6,14 +6,24 @@ import html
 import logging
 import random
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import replace
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from .autonomy import ActionCandidate, ConversationPhase, DecisionContext, derive_phase, select_action
 from .config import MAX_MESSAGE_LENGTH, MEMORY_LIMIT, MIN_MESSAGE_LENGTH, MIN_MESSAGES_TO_GENERATE, URL_RE
 from .generation import generate_chat_text, tokenize
-from .models import EntertainmentSettings, normalize_topic_id
+from .models import (
+    EntertainmentActionRecord,
+    EntertainmentActionType,
+    EntertainmentSettings,
+    normalize_topic_id,
+)
+from .novelty import is_novel_generated_text
 from .storage.base import EntertainmentStorage
 
 LOGGER = logging.getLogger(__name__)
@@ -29,12 +39,13 @@ class EntertainmentService:
         chat_ids: Iterable[int],
         *,
         rng: random.Random | None = None,
+        now_fn: Callable[[], float] | None = None,
     ) -> None:
         self.app = app
         self.storage = storage
         self.chat_ids = frozenset(int(chat_id) for chat_id in chat_ids)
         self.rng = rng or random.Random()
-        self._last_spontaneous_reply_at: dict[tuple[int, int], float] = {}
+        self._now_fn = now_fn or time.time
 
     def is_allowed_chat(self, chat_id: int) -> bool:
         return int(chat_id) in self.chat_ids
@@ -86,6 +97,165 @@ class EntertainmentService:
             return False
         return getattr(member, "status", None) in {"creator", "administrator"}
 
+    def _is_direct_trigger(self, message: Message) -> bool:
+        replied = getattr(message, "reply_to_message", None)
+        replied_user = getattr(replied, "from_user", None)
+        if replied_user is None or not getattr(replied_user, "is_bot", False):
+            return False
+        bot_id = getattr(getattr(self.app, "bot", None), "id", None)
+        return bot_id is not None and getattr(replied_user, "id", None) == bot_id
+
+    @staticmethod
+    def _quiet_hours_active(settings: EntertainmentSettings, now: int) -> bool:
+        start = settings.quiet_hours_start
+        end = settings.quiet_hours_end
+        if start is None or end is None or start == end:
+            return False
+        try:
+            timezone = ZoneInfo(settings.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            timezone = ZoneInfo("Europe/Moscow")
+        hour = datetime.fromtimestamp(int(now), timezone).hour
+        if start < end:
+            return start <= hour < end
+        return hour >= start or hour < end
+
+    @staticmethod
+    def _phase_candidate(phase: ConversationPhase) -> ActionCandidate:
+        profiles = {
+            ConversationPhase.QUIET: (0.58, 0.80, 0.18),
+            ConversationPhase.WARMING_UP: (0.72, 0.82, 0.12),
+            ConversationPhase.ACTIVE: (0.62, 0.80, 0.28),
+            ConversationPhase.PEAK: (0.30, 0.75, 0.85),
+            ConversationPhase.COOLDOWN: (0.88, 0.86, 0.08),
+        }
+        relevance, novelty, annoyance = profiles[phase]
+        return ActionCandidate(
+            action_type=EntertainmentActionType.REMIXED_PHRASE,
+            relevance=relevance,
+            novelty=novelty,
+            annoyance_cost=annoyance,
+        )
+
+    def _build_candidates(self, phase: ConversationPhase, trigger_message: Message) -> list[ActionCandidate]:
+        candidates = [self._phase_candidate(phase)]
+        if self._is_direct_trigger(trigger_message):
+            candidates.append(
+                ActionCandidate(
+                    action_type=EntertainmentActionType.CONTEXTUAL_REPLY,
+                    relevance=0.97,
+                    novelty=0.88,
+                    annoyance_cost=0.03,
+                    trigger_message_id=getattr(trigger_message, "message_id", None),
+                )
+            )
+        return candidates
+
+    def _generate_novel_text(
+        self,
+        messages: list[str],
+        recent_outputs: list[str],
+    ) -> str | None:
+        for _ in range(5):
+            generated = generate_chat_text(messages, rng=self.rng)
+            if not generated:
+                continue
+            if is_novel_generated_text(generated, messages, recent_outputs):
+                return generated
+        return None
+
+    async def evaluate_topic(self, message: Message) -> EntertainmentActionRecord | None:
+        chat_id = int(message.chat.id)
+        topic_id = self._topic_id(message)
+        now = int(self._now_fn())
+        settings = await self.storage.get_settings(chat_id)
+        if not settings.enabled or not settings.autonomous_text_enabled:
+            return None
+
+        memory_count = await self.storage.message_count(chat_id, topic_id)
+        if memory_count < MIN_MESSAGES_TO_GENERATE:
+            return None
+
+        activity = await self.storage.activity_snapshot(chat_id, topic_id, now=now)
+        phase = derive_phase(activity)
+        recent_actions = tuple(
+            await self.storage.recent_actions(
+                chat_id,
+                topic_id,
+                since=now - 30 * 60,
+                limit=20,
+            )
+        )
+        last_action = recent_actions[0] if recent_actions else None
+        human_messages = (
+            await self.storage.human_messages_since(
+                chat_id,
+                topic_id,
+                since=int(last_action.created_at),
+            )
+            if last_action is not None
+            else 0
+        )
+        context = DecisionContext(
+            settings=settings,
+            phase=phase,
+            activity=activity,
+            recent_actions=recent_actions,
+            human_messages_since_last_action=human_messages,
+            memory_count=memory_count,
+            quiet_hours_active=self._quiet_hours_active(settings, now),
+            now=now,
+        )
+        selected = select_action(
+            context,
+            self._build_candidates(phase, message),
+            rng=self.rng,
+        )
+        if selected is None:
+            return None
+
+        messages = await self.storage.recent_messages(chat_id, topic_id)
+        recent_outputs = [
+            output
+            for action in recent_actions
+            if isinstance((output := action.metadata.get("output")), str) and output
+        ]
+        generated = self._generate_novel_text(messages, recent_outputs)
+        if generated is None:
+            return None
+
+        await message.reply(html.escape(generated))
+        record = EntertainmentActionRecord(
+            id=None,
+            chat_id=chat_id,
+            topic_id=topic_id,
+            action_type=selected.action_type,
+            trigger_message_id=(
+                selected.trigger_message_id
+                if selected.trigger_message_id is not None
+                else getattr(message, "message_id", None)
+            ),
+            created_at=now,
+            metadata={
+                "phase": phase.value,
+                "mode": settings.behavior_mode.value,
+                "output": generated,
+                "memory_count": memory_count,
+            },
+        )
+        action_id = await self.storage.record_action(record)
+        stored_record = replace(record, id=action_id)
+        LOGGER.info(
+            "ENTERTAINMENT_AUTONOMOUS_ACTION chat_id=%s topic_id=%s action=%s phase=%s mode=%s memory=%s",
+            chat_id,
+            topic_id,
+            selected.action_type.value,
+            phase.value,
+            settings.behavior_mode.value,
+            memory_count,
+        )
+        return stored_record
+
     async def observe_message(self, message: Message) -> None:
         if not self.is_eligible_learning_message(message):
             return
@@ -95,35 +265,16 @@ class EntertainmentService:
 
         topic_id = self._topic_id(message)
         text = message.text.strip()
+        now = int(self._now_fn())
         await self.storage.add_message(
             chat_id=message.chat.id,
             topic_id=topic_id,
             user_id=message.from_user.id,
             text=text,
             message_id=getattr(message, "message_id", None),
+            created_at=now,
         )
-
-        key = (int(message.chat.id), topic_id)
-        now = time.monotonic()
-        previous_reply = self._last_spontaneous_reply_at.get(key, 0.0)
-        if now - previous_reply < settings.cooldown_seconds:
-            return
-        if self.rng.randrange(100) < settings.laziness:
-            return
-
-        messages = await self.storage.recent_messages(message.chat.id, topic_id)
-        generated = generate_chat_text(messages, rng=self.rng)
-        if not generated:
-            return
-
-        self._last_spontaneous_reply_at[key] = now
-        await message.reply(html.escape(generated))
-        LOGGER.info(
-            "ENTERTAINMENT_SPONTANEOUS_REPLY chat_id=%s topic_id=%s memory=%s",
-            message.chat.id,
-            topic_id,
-            len(messages),
-        )
+        await self.evaluate_topic(message)
 
     @staticmethod
     def panel_keyboard() -> InlineKeyboardMarkup:
@@ -144,8 +295,8 @@ class EntertainmentService:
             f"Состояние: <b>{state}</b>\n"
             f"Память этой темы: <b>{count}</b>/{MEMORY_LIMIT}\n"
             f"Лень: <b>{settings.laziness}%</b> "
-            f"(сам ответит примерно в {settings.spontaneous_chance_percent}% подходящих случаев)\n"
-            f"Кулдаун случайных ответов: <b>{settings.cooldown_seconds} сек.</b>\n\n"
+            f"(legacy-настройка; Autonomy v2 ее не использует)\n"
+            f"Режим поведения: <b>{settings.behavior_mode.display_name}</b>\n\n"
             "Темы форума обучаются отдельно. Данные между чатами не смешиваются.\n\n"
             "Админам: /fun_on · /fun_off · /fun_laziness 0-100 · "
             "/fun_cooldown 5-3600 · /fun_forget",
@@ -170,7 +321,18 @@ class EntertainmentService:
             )
             return
         messages = await self.storage.recent_messages(message.chat.id, topic_id)
-        generated = generate_chat_text(messages, rng=self.rng)
+        recent_actions = await self.storage.recent_actions(
+            message.chat.id,
+            topic_id,
+            since=int(self._now_fn()) - 30 * 60,
+            limit=20,
+        )
+        recent_outputs = [
+            output
+            for action in recent_actions
+            if isinstance((output := action.metadata.get("output")), str) and output
+        ]
+        generated = self._generate_novel_text(messages, recent_outputs)
         if not generated:
             await message.reply(
                 "🧠 Материал уже есть, но сейчас не получилось собрать нормальную новую фразу. "
@@ -184,14 +346,7 @@ class EntertainmentService:
             await message.reply("⚙️ Эту настройку может менять только администрация чата.")
             return
         current = await self.storage.get_settings(message.chat.id)
-        await self.storage.save_settings(
-            message.chat.id,
-            EntertainmentSettings(
-                enabled=enabled,
-                laziness=current.laziness,
-                cooldown_seconds=current.cooldown_seconds,
-            ),
-        )
+        await self.storage.save_settings(message.chat.id, replace(current, enabled=enabled))
         await message.reply(
             "🎭 Развлекательный режим <b>включен</b>."
             if enabled
@@ -200,7 +355,7 @@ class EntertainmentService:
 
     async def set_laziness(self, message: Message) -> None:
         if not await self._is_admin(message):
-            await message.reply("⚙️ Лень может менять только администрация чата.")
+            await message.reply("⚙️ Legacy-настройку может менять только администрация чата.")
             return
         parts = (message.text or "").split(maxsplit=1)
         if len(parts) < 2:
@@ -209,28 +364,21 @@ class EntertainmentService:
         try:
             value = int(parts[1].strip())
         except ValueError:
-            await message.reply("Лень должна быть целым числом от 0 до 100.")
+            await message.reply("Значение должно быть целым числом от 0 до 100.")
             return
         if not 0 <= value <= 100:
-            await message.reply("Лень должна быть от 0 до 100.")
+            await message.reply("Значение должно быть от 0 до 100.")
             return
         current = await self.storage.get_settings(message.chat.id)
-        await self.storage.save_settings(
-            message.chat.id,
-            EntertainmentSettings(
-                enabled=current.enabled,
-                laziness=value,
-                cooldown_seconds=current.cooldown_seconds,
-            ),
-        )
+        await self.storage.save_settings(message.chat.id, replace(current, laziness=value))
         await message.reply(
-            f"😴 Лень теперь <b>{value}%</b>. "
-            f"Шанс самопроизвольной реплики — примерно <b>{100 - value}%</b>."
+            f"⚙️ Legacy-параметр сохранен: <b>{value}%</b>. "
+            "Autonomy v2 не использует его для решений."
         )
 
     async def set_cooldown(self, message: Message) -> None:
         if not await self._is_admin(message):
-            await message.reply("⚙️ Кулдаун может менять только администрация чата.")
+            await message.reply("⚙️ Legacy-настройку может менять только администрация чата.")
             return
         parts = (message.text or "").split(maxsplit=1)
         if len(parts) < 2:
@@ -239,21 +387,17 @@ class EntertainmentService:
         try:
             value = int(parts[1].strip())
         except ValueError:
-            await message.reply("Кулдаун должен быть целым числом секунд.")
+            await message.reply("Значение должно быть целым числом секунд.")
             return
         if not 5 <= value <= 3600:
-            await message.reply("Кулдаун должен быть от 5 до 3600 секунд.")
+            await message.reply("Значение должно быть от 5 до 3600 секунд.")
             return
         current = await self.storage.get_settings(message.chat.id)
-        await self.storage.save_settings(
-            message.chat.id,
-            EntertainmentSettings(
-                enabled=current.enabled,
-                laziness=current.laziness,
-                cooldown_seconds=value,
-            ),
+        await self.storage.save_settings(message.chat.id, replace(current, cooldown_seconds=value))
+        await message.reply(
+            f"⚙️ Legacy-кулдаун сохранен: <b>{value} сек.</b> "
+            "Autonomy v2 использует собственные бюджеты режима."
         )
-        await message.reply(f"⏱ Кулдаун случайных реплик теперь <b>{value} сек.</b>")
 
     async def forget_chat(self, message: Message) -> None:
         if not await self._is_admin(message):
@@ -261,7 +405,6 @@ class EntertainmentService:
             return
         topic_id = self._topic_id(message)
         removed = await self.storage.clear_scope(message.chat.id, topic_id)
-        self._last_spontaneous_reply_at.pop((int(message.chat.id), topic_id), None)
         await message.reply(
             f"🧠 Память этой темы очищена. Удалено сообщений: <b>{removed}</b>. "
             "Другие темы и чаты не затронуты."
