@@ -33,6 +33,14 @@ class SQLiteEntertainmentStorage:
             """
         )
         await self._ensure_messages_schema()
+        await self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ent_schema_migrations (
+                migration_key TEXT PRIMARY KEY,
+                applied_at INTEGER NOT NULL
+            )
+            """
+        )
         await self.connection.commit()
 
     async def _ensure_messages_schema(self) -> None:
@@ -52,7 +60,8 @@ class SQLiteEntertainmentStorage:
                     message_id INTEGER,
                     user_id INTEGER NOT NULL,
                     text TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
+                    created_at INTEGER NOT NULL,
+                    legacy_source_id INTEGER
                 )
                 """
             )
@@ -68,10 +77,18 @@ class SQLiteEntertainmentStorage:
                 await connection.execute(
                     "ALTER TABLE entertainment_messages ADD COLUMN message_id INTEGER"
                 )
+            if "legacy_source_id" not in columns:
+                await connection.execute(
+                    "ALTER TABLE entertainment_messages ADD COLUMN legacy_source_id INTEGER"
+                )
 
         await connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_entertainment_messages_scope "
             "ON entertainment_messages(chat_id, topic_id, id DESC)"
+        )
+        await connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_entertainment_messages_legacy_source "
+            "ON entertainment_messages(legacy_source_id) WHERE legacy_source_id IS NOT NULL"
         )
 
     async def close(self) -> None:
@@ -110,8 +127,7 @@ class SQLiteEntertainmentStorage:
             """
             INSERT INTO entertainment_chat_settings(
                 chat_id, enabled, laziness, cooldown_seconds, updated_at
-            )
-            VALUES(?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET
                 enabled = excluded.enabled,
                 laziness = excluded.laziness,
@@ -142,8 +158,7 @@ class SQLiteEntertainmentStorage:
             """
             INSERT INTO entertainment_messages(
                 chat_id, topic_id, message_id, user_id, text, created_at
-            )
-            VALUES(?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?)
             """,
             (int(chat_id), int(topic_id), message_id, int(user_id), text, int(time.time())),
         )
@@ -152,11 +167,9 @@ class SQLiteEntertainmentStorage:
             DELETE FROM entertainment_messages
             WHERE chat_id = ? AND topic_id = ?
               AND id NOT IN (
-                  SELECT id
-                  FROM entertainment_messages
+                  SELECT id FROM entertainment_messages
                   WHERE chat_id = ? AND topic_id = ?
-                  ORDER BY id DESC
-                  LIMIT ?
+                  ORDER BY id DESC LIMIT ?
               )
             """,
             (int(chat_id), int(topic_id), int(chat_id), int(topic_id), MEMORY_LIMIT),
@@ -172,11 +185,9 @@ class SQLiteEntertainmentStorage:
         connection = self._require_connection()
         async with connection.execute(
             """
-            SELECT text
-            FROM entertainment_messages
+            SELECT text FROM entertainment_messages
             WHERE chat_id = ? AND topic_id = ?
-            ORDER BY id DESC
-            LIMIT ?
+            ORDER BY id DESC LIMIT ?
             """,
             (int(chat_id), int(topic_id), max(1, int(limit))),
         ) as cursor:
@@ -210,3 +221,62 @@ class SQLiteEntertainmentStorage:
             )
         await connection.commit()
         return count
+
+    async def is_migration_applied(self, migration_key: str) -> bool:
+        connection = self._require_connection()
+        async with connection.execute(
+            "SELECT 1 FROM ent_schema_migrations WHERE migration_key = ?",
+            (migration_key,),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def import_legacy_batch(
+        self,
+        migration_key: str,
+        settings_rows: list[tuple[int, bool, int, int, int]],
+        message_rows: list[tuple[int, int, int, str, int]],
+    ) -> tuple[int, int]:
+        connection = self._require_connection()
+        settings_imported = 0
+        messages_imported = 0
+        await connection.execute("BEGIN IMMEDIATE")
+        try:
+            async with connection.execute(
+                "SELECT 1 FROM ent_schema_migrations WHERE migration_key = ?",
+                (migration_key,),
+            ) as cursor:
+                if await cursor.fetchone() is not None:
+                    await connection.rollback()
+                    return 0, 0
+
+            for chat_id, enabled, laziness, cooldown_seconds, updated_at in settings_rows:
+                cursor = await connection.execute(
+                    """
+                    INSERT OR IGNORE INTO entertainment_chat_settings(
+                        chat_id, enabled, laziness, cooldown_seconds, updated_at
+                    ) VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (chat_id, 1 if enabled else 0, laziness, cooldown_seconds, updated_at),
+                )
+                settings_imported += max(0, cursor.rowcount)
+
+            for legacy_id, chat_id, user_id, text, created_at in message_rows:
+                cursor = await connection.execute(
+                    """
+                    INSERT OR IGNORE INTO entertainment_messages(
+                        chat_id, topic_id, message_id, user_id, text, created_at, legacy_source_id
+                    ) VALUES(?, 0, NULL, ?, ?, ?, ?)
+                    """,
+                    (chat_id, user_id, text, created_at, legacy_id),
+                )
+                messages_imported += max(0, cursor.rowcount)
+
+            await connection.execute(
+                "INSERT INTO ent_schema_migrations(migration_key, applied_at) VALUES(?, ?)",
+                (migration_key, int(time.time())),
+            )
+            await connection.commit()
+            return settings_imported, messages_imported
+        except Exception:
+            await connection.rollback()
+            raise
