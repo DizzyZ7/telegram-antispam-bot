@@ -8,7 +8,8 @@ from pathlib import Path
 import aiosqlite
 
 from ..config import GENERATION_SAMPLE_LIMIT, MEMORY_LIMIT
-from ..models import BehaviorMode, EntertainmentSettings, normalize_behavior_mode
+from ..context import ActivitySnapshot
+from ..models import EntertainmentSettings, normalize_behavior_mode
 
 
 def _normalize_optional_hour(value: object) -> int | None:
@@ -121,6 +122,10 @@ class SQLiteEntertainmentStorage:
             "ON entertainment_messages(chat_id, topic_id, id DESC)"
         )
         await connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_entertainment_messages_activity "
+            "ON entertainment_messages(chat_id, topic_id, created_at DESC)"
+        )
+        await connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_entertainment_messages_legacy_source "
             "ON entertainment_messages(legacy_source_id) WHERE legacy_source_id IS NOT NULL"
         )
@@ -205,15 +210,17 @@ class SQLiteEntertainmentStorage:
         text: str,
         *,
         message_id: int | None = None,
+        created_at: int | None = None,
     ) -> None:
         connection = self._require_connection()
+        timestamp = int(time.time()) if created_at is None else int(created_at)
         await connection.execute(
             """
             INSERT INTO entertainment_messages(
                 chat_id, topic_id, message_id, user_id, text, created_at
             ) VALUES(?, ?, ?, ?, ?, ?)
             """,
-            (int(chat_id), int(topic_id), message_id, int(user_id), text, int(time.time())),
+            (int(chat_id), int(topic_id), message_id, int(user_id), text, timestamp),
         )
         await connection.execute(
             """
@@ -274,6 +281,65 @@ class SQLiteEntertainmentStorage:
             )
         await connection.commit()
         return count
+
+    async def activity_snapshot(
+        self,
+        chat_id: int,
+        topic_id: int,
+        *,
+        now: int,
+    ) -> ActivitySnapshot:
+        connection = self._require_connection()
+        now_i = int(now)
+        async with connection.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0),
+                COUNT(*),
+                COUNT(DISTINCT CASE WHEN created_at >= ? THEN user_id END),
+                (
+                    SELECT created_at
+                    FROM entertainment_messages latest
+                    WHERE latest.chat_id = ? AND latest.topic_id = ? AND latest.created_at <= ?
+                    ORDER BY latest.created_at DESC
+                    LIMIT 1
+                )
+            FROM entertainment_messages
+            WHERE chat_id = ? AND topic_id = ?
+              AND created_at >= ? AND created_at <= ?
+            """,
+            (
+                now_i - 60,
+                now_i - 300,
+                now_i - 600,
+                now_i - 300,
+                now_i - 300,
+                int(chat_id),
+                int(topic_id),
+                now_i,
+                int(chat_id),
+                int(topic_id),
+                now_i - 900,
+                now_i,
+            ),
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        last_human_at = row[5]
+        return ActivitySnapshot(
+            chat_id=int(chat_id),
+            topic_id=int(topic_id),
+            messages_1m=int(row[0]),
+            messages_5m=int(row[1]),
+            messages_previous_5m=int(row[2]),
+            messages_15m=int(row[3]),
+            active_users_5m=int(row[4]),
+            seconds_since_human=(
+                float(max(0, now_i - int(last_human_at))) if last_human_at is not None else None
+            ),
+        )
 
     async def is_migration_applied(self, migration_key: str) -> bool:
         connection = self._require_connection()
