@@ -184,6 +184,12 @@ class AutonomousDecisionTests(unittest.TestCase):
             now=self.NOW,
         )
 
+    def previous_other_type(self, *, seconds_ago: int) -> EntertainmentActionRecord:
+        return self.action(
+            seconds_ago=seconds_ago,
+            action_type=EntertainmentActionType.CONTEXTUAL_REPLY,
+        )
+
     def test_policies_have_exact_limits(self) -> None:
         calm = behavior_policy(BehaviorMode.CALM)
         alive = behavior_policy(BehaviorMode.ALIVE)
@@ -216,7 +222,7 @@ class AutonomousDecisionTests(unittest.TestCase):
         )
 
     def test_old_actions_outside_thirty_minutes_do_not_consume_budget(self) -> None:
-        actions = (self.action(seconds_ago=1_801),)
+        actions = (self.previous_other_type(seconds_ago=1_801),)
         selected = select_action(
             self.context(recent_actions=actions, human_messages=10),
             [self.candidate()],
@@ -225,13 +231,13 @@ class AutonomousDecisionTests(unittest.TestCase):
         self.assertIsNotNone(selected)
 
     def test_min_gap_boundary_is_inclusive(self) -> None:
-        blocked = self.context(recent_actions=(self.action(seconds_ago=359),), human_messages=10)
-        allowed = self.context(recent_actions=(self.action(seconds_ago=360),), human_messages=10)
+        blocked = self.context(recent_actions=(self.previous_other_type(seconds_ago=359),), human_messages=10)
+        allowed = self.context(recent_actions=(self.previous_other_type(seconds_ago=360),), human_messages=10)
         self.assertIsNone(select_action(blocked, [self.candidate()], rng=random.Random(1)))
         self.assertIsNotNone(select_action(allowed, [self.candidate()], rng=random.Random(1)))
 
     def test_human_message_budget_blocks_zero_and_below_policy_minimum(self) -> None:
-        actions = (self.action(seconds_ago=500),)
+        actions = (self.previous_other_type(seconds_ago=500),)
         self.assertIsNone(
             select_action(
                 self.context(recent_actions=actions, human_messages=0),
@@ -256,9 +262,7 @@ class AutonomousDecisionTests(unittest.TestCase):
 
     def test_peak_rejects_ordinary_autonomous_text_but_allows_direct_contextual_reply(self) -> None:
         peak = self.context(phase=ConversationPhase.PEAK)
-        self.assertIsNone(
-            select_action(peak, [self.candidate()], rng=random.Random(1))
-        )
+        self.assertIsNone(select_action(peak, [self.candidate()], rng=random.Random(1)))
         direct = self.candidate(
             EntertainmentActionType.CONTEXTUAL_REPLY,
             trigger_message_id=777,
@@ -266,19 +270,14 @@ class AutonomousDecisionTests(unittest.TestCase):
             novelty=0.85,
             annoyance_cost=0.05,
         )
-        self.assertEqual(
-            select_action(peak, [direct], rng=random.Random(1)),
-            direct,
-        )
+        self.assertEqual(select_action(peak, [direct], rng=random.Random(1)), direct)
 
     def test_non_direct_same_action_type_is_not_repeated_back_to_back(self) -> None:
         context = self.context(
             recent_actions=(self.action(seconds_ago=500, action_type=EntertainmentActionType.REMIXED_PHRASE),),
             human_messages=10,
         )
-        self.assertIsNone(
-            select_action(context, [self.candidate()], rng=random.Random(1))
-        )
+        self.assertIsNone(select_action(context, [self.candidate()], rng=random.Random(1)))
         direct = self.candidate(
             EntertainmentActionType.CONTEXTUAL_REPLY,
             trigger_message_id=888,
