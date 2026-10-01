@@ -7,8 +7,7 @@ from urllib.parse import urlsplit
 
 from ..config import EntertainmentDatabaseConfig
 from .base import EntertainmentStorage
-from .postgres import PostgresEntertainmentStorage
-from .sqlite import SQLiteEntertainmentStorage
+from .retention import PostgresEntertainmentStorage, SQLiteEntertainmentStorage
 
 LOGGER = logging.getLogger(__name__)
 
