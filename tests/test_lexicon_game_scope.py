@@ -56,7 +56,7 @@ class LexiconGameScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(app.is_allowed_chat(UNRELATED_CHAT_ID))
         self.assertFalse(scoped_app.is_allowed_chat(UNRELATED_CHAT_ID))
 
-    def test_old_writers_topic_is_not_intercepted_by_lexicon_only_guard(self) -> None:
+    async def test_old_writers_topic_is_not_intercepted_by_lexicon_only_guard(self) -> None:
         filter_ = LexiconOnlyChatFilter(LEXICON_ONLY_CHAT_IDS)
         old_chat_topic_message = SimpleNamespace(
             chat=SimpleNamespace(id=WRITERS_CHAT_ID),

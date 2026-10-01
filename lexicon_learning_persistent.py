@@ -40,7 +40,6 @@ from lexicon_scoring import BALANCED_SCORING_TEXT, balanced_word_points, player_
 from minigames import (
     ATMOSPHERIC_WORDS,
     MIN_WORD_LENGTH,
-    ROUND_SECONDS,
     WORD_RE,
     PlayerResult,
     WordGameRound,
@@ -95,6 +94,7 @@ class LearningLexiconService(BaseLearningLexiconService):
 
             base_word, allowed = await self._claim_next_source(game_key)
             now = time.monotonic()
+            round_seconds = self.round_duration_seconds(len(allowed))
             round_data = WordGameRound(
                 chat_id=message.chat.id,
                 round_code=self.round_code(),
@@ -102,18 +102,21 @@ class LearningLexiconService(BaseLearningLexiconService):
                 allowed_words=allowed,
                 min_length=MIN_WORD_LENGTH,
                 started_at=now,
-                ends_at=now + ROUND_SECONDS,
+                ends_at=now + round_seconds,
                 message_thread_id=normalized_thread_id,
             )
             self.active_word_games[game_key] = round_data
             round_data.finish_task = asyncio.create_task(self.finish_later(round_data))
 
         LOGGER.info(
-            "LEXICON_ROUND_STARTED chat_id=%s raw_thread_id=%s normalized_thread_id=%s forum=%s",
+            "LEXICON_ROUND_STARTED chat_id=%s raw_thread_id=%s normalized_thread_id=%s forum=%s "
+            "total_words=%s duration_seconds=%s",
             message.chat.id,
             message.message_thread_id,
             normalized_thread_id,
             getattr(message.chat, "is_forum", None),
+            len(allowed),
+            round_seconds,
         )
         sent_message = await message.answer(self.render_start(round_data))
         await self.pin_start_message(sent_message)

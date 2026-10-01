@@ -24,7 +24,6 @@ from minigames import (
     ATMOSPHERIC_WORDS,
     HINT_LIMIT,
     MIN_WORD_LENGTH,
-    ROUND_SECONDS,
     WORD_RE,
     MiniGameService,
     PlayerResult,
@@ -227,6 +226,7 @@ class PatchedMiniGameService(MiniGameService):
 
     def render_start(self, round_data: WordGameRound) -> str:
         total = len(round_data.allowed_words)
+        round_seconds = max(0, int(round_data.ends_at - round_data.started_at))
         return (
             f"<code>{self.spaced_word(round_data.base_word)}</code>\n"
             "📖 <b>ЛЕКСИКОН открыт</b>\n\n"
@@ -235,7 +235,7 @@ class PatchedMiniGameService(MiniGameService):
             f"В стартовом словаре страницы уже есть <b>{total}</b> слов.\n"
             "Лексикон также проверяет большой русский словарь начальных форм.\n"
             f"Минимум — <b>{round_data.min_length}</b> буквы.\n"
-            f"Время до закрытия страницы — <b>{self.format_duration(ROUND_SECONDS)}</b>.\n\n"
+            f"Время до закрытия страницы — <b>{self.format_duration(round_seconds)}</b>.\n\n"
             "Пишите слова прямо в чат.\n"
             "Первый, кто нашел слово, забирает его себе.\n"
             "Принимаются существительные в начальной форме: например, <b>станция</b>, но не <b>станцией</b>.\n\n"
@@ -332,6 +332,7 @@ class PatchedMiniGameService(MiniGameService):
 
             base_word, allowed = self.choose_base_word()
             now = time.monotonic()
+            round_seconds = self.round_duration_seconds(len(allowed))
             round_data = WordGameRound(
                 chat_id=message.chat.id,
                 round_code=self.round_code(),
@@ -339,7 +340,7 @@ class PatchedMiniGameService(MiniGameService):
                 allowed_words=allowed,
                 min_length=MIN_WORD_LENGTH,
                 started_at=now,
-                ends_at=now + ROUND_SECONDS,
+                ends_at=now + round_seconds,
                 message_thread_id=message.message_thread_id,
             )
             self.active_word_games[game_key] = round_data

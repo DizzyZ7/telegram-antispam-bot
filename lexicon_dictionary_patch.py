@@ -17,7 +17,7 @@ from aiogram.types import ChatMemberAdministrator, Message
 from lexicon_live_patch import MORPH, WORD_RE, PatchedMiniGameService
 from lexicon_source_cycle import choose_cycle_word
 from lexicon_source_words import LONG_SOURCE_WORDS
-from minigames import GameKey, MIN_WORD_LENGTH, ROUND_SECONDS, WordGameRound
+from minigames import GameKey, MIN_WORD_LENGTH, WordGameRound
 
 LOGGER = logging.getLogger(__name__)
 MIN_SOURCE_LENGTH = 10
@@ -244,6 +244,7 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
 
             base_word, allowed = await self._claim_next_source(game_key)
             now = time.monotonic()
+            round_seconds = self.round_duration_seconds(len(allowed))
             round_data = WordGameRound(
                 chat_id=message.chat.id,
                 round_code=self.round_code(),
@@ -251,7 +252,7 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
                 allowed_words=allowed,
                 min_length=MIN_WORD_LENGTH,
                 started_at=now,
-                ends_at=now + ROUND_SECONDS,
+                ends_at=now + round_seconds,
                 message_thread_id=message.message_thread_id,
             )
             self.active_word_games[game_key] = round_data
