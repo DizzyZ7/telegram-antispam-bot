@@ -384,8 +384,8 @@ Include backend-selection behavior, migration test counts, topic-isolation proof
 - Spec coverage for this phase is complete: package split, storage abstraction, PostgreSQL-first Bothost support, SQLite fallback, topic isolation, v1 migration, lifecycle, CI and deployment runbook are all assigned to tasks.
 - Interfaces are consistent across Tasks 2-5: `EntertainmentStorage` owns topic-aware methods; both backends implement the same contract; `main.py` only depends on the factory/protocol.
 - The temporary `storage_legacy.py` explicitly prevents the Task 1 refactor from accidentally changing persistence behavior before Task 2 is ready.
-- The five highest-risk uncovered conditions from the spec are pinned to concrete tests in the Review Focus section.
-- Scope remains intentionally smaller than the full v2 spec; autonomy/media/UI/AI are separate follow-on plans rather than being mixed into this persistence change.
+- The five highest-risk conditions from the spec are pinned to concrete tests in the Review Focus section.
+- Scope remains intentionally smaller than the full v2 spec; autonomy/media/UI/AI are separate follow-on plans rather than mixed into this persistence change.
 
 ## Follow-on Plans
 
