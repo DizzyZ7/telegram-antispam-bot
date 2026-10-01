@@ -108,14 +108,14 @@ class SupervisorServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.close()
         self.temp_dir.cleanup()
 
-    async def seed_memory(self) -> None:
+    async def seed_memory(self, *, topic_id: int = 10) -> None:
         for index in range(25):
             await self.storage.add_message(
                 -1001,
-                10,
+                topic_id,
                 index % 5 + 1,
-                f"историческая фраза номер {index} для памяти темы",
-                message_id=1_000 + index,
+                f"историческая фраза номер {index} для памяти темы {topic_id}",
+                message_id=topic_id * 1_000 + index,
                 created_at=self.NOW - 2_000 - index,
             )
 
@@ -132,8 +132,6 @@ class SupervisorServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 metadata={"output": "предыдущее действие"},
             )
         )
-        # This is the message that originally triggered the previous action. It is
-        # not new human activity after that action.
         old_message = FakeMessage(message_id=700, text="старый триггер")
         await self.storage.add_message(
             -1001,
@@ -167,14 +165,13 @@ class SupervisorServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 metadata={"output": "старое действие"},
             )
         )
-        # Alive mode needs four human messages after the last action.
         latest: FakeMessage | None = None
-        for offset in (900, 800, 700, 650):
-            latest = FakeMessage(message_id=800 + offset, text=f"новая активность {offset}")
+        for index, offset in enumerate((550, 520, 500, 470, 440, 410, 380, 350, 100)):
+            latest = FakeMessage(message_id=800 + index, text=f"новая активность {offset}")
             await self.storage.add_message(
                 -1001,
                 10,
-                7 + offset,
+                20 + index,
                 latest.text,
                 message_id=latest.message_id,
                 created_at=self.NOW - offset,
@@ -196,21 +193,12 @@ class SupervisorServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(actions), 2)
         self.assertEqual(actions[0].action_type, EntertainmentActionType.REMIXED_PHRASE)
 
-        # No new human messages happened after the just-recorded supervisor action.
         await self.service.run_supervisor_tick()
         self.assertEqual(len(self.bot.sent), 1)
 
     async def test_one_broken_topic_does_not_block_other_topic(self) -> None:
-        await self.seed_memory()
-        for index in range(25):
-            await self.storage.add_message(
-                -1001,
-                20,
-                index % 5 + 20,
-                f"память второй темы номер {index}",
-                message_id=2_000 + index,
-                created_at=self.NOW - 2_100 - index,
-            )
+        await self.seed_memory(topic_id=10)
+        await self.seed_memory(topic_id=20)
         first = FakeMessage(message_id=901, text="активная тема с ошибкой", topic_id=10)
         second = FakeMessage(message_id=902, text="другая рабочая тема", topic_id=20)
         await self.storage.add_message(-1001, 10, 1, first.text, message_id=901, created_at=self.NOW - 400)
