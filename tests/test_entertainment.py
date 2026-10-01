@@ -53,12 +53,10 @@ class EntertainmentPureTests(unittest.TestCase):
         subjects = ["кот", "енот", "робот", "гусь", "админ"]
         verbs = ["ищет", "любит", "несет", "прячет", "роняет"]
         objects = ["плед", "чайник", "диван", "мем", "тапок"]
-        for index in range(35):
-            messages.append(
-                f"{subjects[index % len(subjects)]} "
-                f"{verbs[(index * 2) % len(verbs)]} "
-                f"{objects[(index * 3) % len(objects)]} сегодня"
-            )
+        for subject_index, subject in enumerate(subjects):
+            for verb_index, verb in enumerate(verbs):
+                obj = objects[(subject_index + verb_index) % len(objects)]
+                messages.append(f"{subject} {verb} {obj} сегодня")
 
         originals = {item.casefold().rstrip(".") for item in messages}
         generated = None
