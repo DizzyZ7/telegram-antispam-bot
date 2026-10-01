@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from ..config import GENERATION_SAMPLE_LIMIT
+from ..context import ActivitySnapshot
 from ..models import EntertainmentSettings
 
 LegacySettingsRow = tuple[int, bool, int, int, int]
@@ -29,6 +30,7 @@ class EntertainmentStorage(Protocol):
         text: str,
         *,
         message_id: int | None = None,
+        created_at: int | None = None,
     ) -> None: ...
 
     async def recent_messages(
@@ -41,6 +43,14 @@ class EntertainmentStorage(Protocol):
     async def message_count(self, chat_id: int, topic_id: int | None = None) -> int: ...
 
     async def clear_scope(self, chat_id: int, topic_id: int | None = None) -> int: ...
+
+    async def activity_snapshot(
+        self,
+        chat_id: int,
+        topic_id: int,
+        *,
+        now: int,
+    ) -> ActivitySnapshot: ...
 
     async def is_migration_applied(self, migration_key: str) -> bool: ...
 
