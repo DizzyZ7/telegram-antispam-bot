@@ -6,11 +6,18 @@ from typing import Any
 
 from ..config import GENERATION_SAMPLE_LIMIT
 from .base import EntertainmentStorage as EntertainmentStorageProtocol
+from .factory import (
+    EntertainmentDatabaseConfig,
+    EntertainmentStorageConfigurationError,
+    EntertainmentStorageUnavailableError,
+    open_entertainment_storage,
+)
+from .postgres import PostgresEntertainmentStorage
 from .sqlite import SQLiteEntertainmentStorage
 
 
 class LegacyCompatibleEntertainmentStorage(SQLiteEntertainmentStorage):
-    """Preserve the v1 constructor/API while service code moves to topic-aware calls."""
+    """Preserve the v1 constructor/API while callers migrate to the v2 contract."""
 
     async def add_message(self, chat_id: int, *args: Any, **kwargs: Any) -> None:
         if "topic_id" in kwargs:
@@ -46,7 +53,12 @@ class LegacyCompatibleEntertainmentStorage(SQLiteEntertainmentStorage):
 
 
 __all__ = [
+    "EntertainmentDatabaseConfig",
+    "EntertainmentStorageConfigurationError",
     "EntertainmentStorageProtocol",
+    "EntertainmentStorageUnavailableError",
     "LegacyCompatibleEntertainmentStorage",
+    "PostgresEntertainmentStorage",
     "SQLiteEntertainmentStorage",
+    "open_entertainment_storage",
 ]
