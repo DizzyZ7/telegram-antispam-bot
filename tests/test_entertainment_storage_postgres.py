@@ -6,9 +6,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from entertainment.models import BehaviorMode, EntertainmentSettings
+from entertainment.models import (
+    BehaviorMode,
+    EntertainmentActionRecord,
+    EntertainmentActionType,
+    EntertainmentSettings,
+)
 from entertainment.storage.migrations import MIGRATION_KEY, migrate_v1_sqlite_if_needed
 from entertainment.storage.postgres import PostgresEntertainmentStorage
+
+
+TEST_CHAT_IDS = (-990001, -990002, -990003, -990004)
 
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "TEST_DATABASE_URL is not configured")
@@ -17,15 +25,13 @@ class PostgresEntertainmentStorageTests(unittest.IsolatedAsyncioTestCase):
         assert os.environ.get("TEST_DATABASE_URL")
         self.storage = PostgresEntertainmentStorage(os.environ["TEST_DATABASE_URL"])
         await self.storage.initialize()
-        for chat_id in (-990001, -990002, -990003, -990004):
+        for chat_id in TEST_CHAT_IDS:
             await self.storage.clear_scope(chat_id, None)
         pool = self.storage._require_pool()
+        await pool.execute("DELETE FROM ent_actions WHERE chat_id = ANY($1::bigint[])", list(TEST_CHAT_IDS))
         await pool.execute(
-            "DELETE FROM entertainment_chat_settings WHERE chat_id IN ($1, $2, $3, $4)",
-            -990001,
-            -990002,
-            -990003,
-            -990004,
+            "DELETE FROM entertainment_chat_settings WHERE chat_id = ANY($1::bigint[])",
+            list(TEST_CHAT_IDS),
         )
         await pool.execute(
             "DELETE FROM ent_schema_migrations WHERE migration_key = $1",
@@ -33,15 +39,13 @@ class PostgresEntertainmentStorageTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self) -> None:
-        for chat_id in (-990001, -990002, -990003, -990004):
+        for chat_id in TEST_CHAT_IDS:
             await self.storage.clear_scope(chat_id, None)
         pool = self.storage._require_pool()
+        await pool.execute("DELETE FROM ent_actions WHERE chat_id = ANY($1::bigint[])", list(TEST_CHAT_IDS))
         await pool.execute(
-            "DELETE FROM entertainment_chat_settings WHERE chat_id IN ($1, $2, $3, $4)",
-            -990001,
-            -990002,
-            -990003,
-            -990004,
+            "DELETE FROM entertainment_chat_settings WHERE chat_id = ANY($1::bigint[])",
+            list(TEST_CHAT_IDS),
         )
         await pool.execute(
             "DELETE FROM ent_schema_migrations WHERE migration_key = $1",
@@ -94,6 +98,48 @@ class PostgresEntertainmentStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.messages_15m, 6)
         self.assertEqual(snapshot.active_users_5m, 2)
         self.assertEqual(snapshot.seconds_since_human, 20.0)
+
+    async def test_action_history_matches_sqlite_contract(self) -> None:
+        first_id = await self.storage.record_action(
+            EntertainmentActionRecord(
+                id=None,
+                chat_id=-990001,
+                topic_id=50,
+                action_type=EntertainmentActionType.REMIXED_PHRASE,
+                trigger_message_id=501,
+                created_at=30_000,
+                metadata={"phase": "active", "score": 0.75},
+            )
+        )
+        second_id = await self.storage.record_action(
+            EntertainmentActionRecord(
+                id=None,
+                chat_id=-990001,
+                topic_id=50,
+                action_type=EntertainmentActionType.CONTEXTUAL_REPLY,
+                trigger_message_id=502,
+                created_at=30_100,
+                metadata={"phase": "cooldown"},
+            )
+        )
+        await self.storage.record_action(
+            EntertainmentActionRecord(
+                id=None,
+                chat_id=-990001,
+                topic_id=51,
+                action_type=EntertainmentActionType.MEMORY_CALLBACK,
+                trigger_message_id=None,
+                created_at=30_200,
+                metadata={"isolated": True},
+            )
+        )
+        await self.storage.add_message(-990001, 50, 1, "after", created_at=30_150)
+
+        actions = await self.storage.recent_actions(-990001, 50, since=29_000)
+        self.assertEqual([action.id for action in actions], [second_id, first_id])
+        self.assertEqual(actions[0].metadata, {"phase": "cooldown"})
+        self.assertEqual(actions[1].metadata["score"], 0.75)
+        self.assertEqual(await self.storage.human_messages_since(-990001, 50, since=30_100), 1)
 
     async def test_invalid_stored_mode_normalizes_to_alive(self) -> None:
         pool = self.storage._require_pool()
