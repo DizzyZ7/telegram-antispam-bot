@@ -27,6 +27,7 @@ class RecordingStorage:
         text: str,
         *,
         message_id: int | None = None,
+        created_at: int | None = None,
     ) -> None:
         self.added.append((chat_id, topic_id, user_id, text, message_id))
         self.messages.setdefault((chat_id, topic_id), []).append(text)
