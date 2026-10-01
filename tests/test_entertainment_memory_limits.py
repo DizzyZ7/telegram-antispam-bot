@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from entertainment.storage.sqlite import SQLiteEntertainmentStorage
+from entertainment.storage import SQLiteEntertainmentStorage
 
 
 class EntertainmentMemoryConfigTests(unittest.TestCase):
