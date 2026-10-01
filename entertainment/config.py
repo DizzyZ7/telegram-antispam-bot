@@ -12,8 +12,29 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_LAZINESS = 92
 DEFAULT_COOLDOWN_SECONDS = 45
-MEMORY_LIMIT = 5_000
-GENERATION_SAMPLE_LIMIT = 900
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return int(default)
+    try:
+        value = int(raw.strip())
+    except (TypeError, ValueError):
+        LOGGER.warning("Ignoring invalid integer value for %s", name)
+        return int(default)
+    if value <= 0:
+        LOGGER.warning("Ignoring non-positive value for %s", name)
+        return int(default)
+    return value
+
+
+MEMORY_LIMIT = _env_positive_int("ENTERTAINMENT_MEMORY_LIMIT", 100_000)
+GENERATION_SAMPLE_LIMIT = min(
+    _env_positive_int("ENTERTAINMENT_GENERATION_SAMPLE_LIMIT", 1_500),
+    MEMORY_LIMIT,
+)
+MEMORY_PRUNE_BUFFER = _env_positive_int("ENTERTAINMENT_MEMORY_PRUNE_BUFFER", 1_000)
 MIN_MESSAGES_TO_GENERATE = 25
 MIN_MESSAGE_LENGTH = 3
 MAX_MESSAGE_LENGTH = 600

@@ -6,14 +6,13 @@ from typing import Any
 
 from ..config import GENERATION_SAMPLE_LIMIT
 from .base import EntertainmentStorage as EntertainmentStorageProtocol
+from .retention import PostgresEntertainmentStorage, SQLiteEntertainmentStorage
 from .factory import (
     EntertainmentDatabaseConfig,
     EntertainmentStorageConfigurationError,
     EntertainmentStorageUnavailableError,
     open_entertainment_storage,
 )
-from .postgres import PostgresEntertainmentStorage
-from .sqlite import SQLiteEntertainmentStorage
 
 
 class LegacyCompatibleEntertainmentStorage(SQLiteEntertainmentStorage):
