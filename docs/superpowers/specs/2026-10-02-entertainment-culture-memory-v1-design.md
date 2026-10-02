@@ -9,13 +9,14 @@ The intended experience is deliberately meme-friendly: the bot should feel as if
 Success means:
 - consecutive messages remain consecutive in memory and can influence generation as a sequence;
 - reply relationships and conversational neighborhoods are preserved;
-- text generation can learn from adjacent turns instead of receiving only an unordered-looking `list[str]` projection;
+- text generation can learn from adjacent turns instead of receiving only a flat `list[str]` projection;
+- old culture from the retained ~100k-event history can periodically re-enter generation through bounded historical windows rather than becoming dead archive data;
 - Unicode emoji and emoji-only messages are remembered and can influence output;
 - stickers, photos and animations are remembered by Telegram `file_id` and may be reused contextually without permanently downloading binary media;
 - the bot can create new caption memes from a replied-to or remembered photo;
 - all memory remains isolated by chat + topic;
 - media actions remain governed by the existing autonomy budget and do not become spam;
-- users can opt out of future learning and delete their own stored contributions.
+- users can opt out of future learning and delete their own stored contributions without leaving duplicated raw text in derived media metadata.
 
 ## 2. Relationship to Generation v3
 
@@ -23,7 +24,8 @@ Culture Memory v1 is a storage/runtime foundation and must not be blocked by the
 
 The rollout keeps compatibility in both directions:
 - the current generator can continue receiving a text projection (`recent_texts`) from the new event stream;
-- Generation v3 can later consume structured turns, reply anchors and chronological neighborhoods directly;
+- Culture Memory Phase B can already improve source selection through chronological windows;
+- Generation v3 can later consume structured turns, reply anchors, author boundaries and chronological neighborhoods directly;
 - no external AI provider is required by Culture Memory.
 
 Culture Memory should improve the available source data even before Generation v3 lands.
@@ -46,14 +48,15 @@ The current learning path also rejects non-text messages and text that does not 
 - emoji-only messages are effectively excluded;
 - reply relationships are not persisted for Entertainment;
 - media is not associated with nearby text;
-- the bot cannot learn which sticker/meme tends to appear around which topic.
+- old history outside the bounded recent generation sample is retained but rarely influences output;
+- the bot cannot learn which sticker/meme tends to appear around which topic or conversational turn.
 
 ## 4. Scope
 
 Culture Memory v1 includes four implementation phases under one architecture:
 
 1. **Chronological Event Memory + privacy controls**
-2. **Sequence/Culture Engine + emoji behavior**
+2. **Sequence/Culture Engine + historical windows + emoji behavior**
 3. **Contextual sticker/photo/animation reuse**
 4. **Meme Engine for captioned photo remixes**
 
@@ -80,7 +83,7 @@ A future image/vision provider may enrich image semantics, but v1 must work with
 
 Introduce a new `ent_memory_events` table rather than mutating the legacy text table into a polymorphic shape. This keeps migration reversible and avoids making the old `text NOT NULL` contract ambiguous.
 
-Each stored event represents one human Telegram message in an Entertainment-enabled chat/topic.
+Each stored event represents one supported human Telegram message in an Entertainment-enabled chat/topic.
 
 Proposed logical model:
 
@@ -103,19 +106,21 @@ MemoryEvent
   media_height          optional height
   media_duration        optional animation duration
   is_forwarded          whether Telegram marks it as forwarded
-  context_hint          bounded textual neighborhood captured at ingest time
+  legacy_source_id      source id used only for idempotent legacy backfill
   metadata              backend-neutral structured metadata
   created_at            event timestamp
 ```
 
 SQLite stores structured metadata as JSON text. PostgreSQL uses JSONB.
 
+No raw neighborhood/context copy is persisted in another user's media row. Context is resolved from the canonical event stream at read time. This is important for `/fun_delete_me`: deleting a user's events must not leave their raw text duplicated elsewhere.
+
 ### 6.2 Event types
 
 `TEXT`
-- normal text with at least useful textual content;
+- normal text with useful textual content;
 - may contain Unicode emoji;
-- current min/max length safety checks remain for text generation quality, but storage may accept short conversational text that is useful as a sequence boundary.
+- storage accepts short conversational messages that are useful as sequence boundaries even when they are too short to independently trigger generation.
 
 `EMOJI`
 - Unicode emoji-only or near-emoji-only message;
@@ -152,7 +157,9 @@ For modern Telegram messages, `message_id` provides a stable within-chat order. 
 
 Persist `reply_to_message_id` whenever available.
 
-A storage index on `(chat_id, message_id)` allows the culture layer to resolve a reply target without mixing topics/chats. If the replied-to event is unavailable or already pruned, the relationship is simply unresolved; ingestion must not fail.
+A storage index on `(chat_id, message_id)` allows the culture layer to resolve a reply target without mixing chats. The resolved target must still belong to the same topic before it is used as topic-local generation context.
+
+If the replied-to event is unavailable or already pruned, the relationship is simply unresolved; ingestion must not fail.
 
 ### 7.2 Conversation runs
 
@@ -168,7 +175,7 @@ Runs are an in-memory generation/retrieval concept, not another persistent table
 
 The bot should learn from consecutive messages without naively concatenating every user's tokens into one giant Markov chain.
 
-Use three relation levels:
+Use three relation levels.
 
 ### 8.1 Intra-message phrase relations
 
@@ -191,56 +198,81 @@ This preserves the meme value of real chat adjacency while reducing grammatical 
 
 Explicit reply links receive more weight than accidental adjacency.
 
-## 9. Context hints for media
+## 9. Historical window sampling
 
-A sticker/photo/animation needs textual context to be reusable intelligently months later.
+The ~100k retained events must not become an archive that never affects generation.
 
-At ingest time, derive a bounded `context_hint` from:
-- media caption;
-- replied-to text when available;
-- approximately the preceding 3–5 useful text events in the same topic.
+Every generation request may use two bounded sources:
 
-`context_hint` is only a retrieval hint. It is not a generated summary and does not require an AI model.
+1. **Recent window** — the normal recent generation sample, approximately up to the configured 1,500 text-capable events.
+2. **Historical windows** — several small contiguous windows sampled from older retained history in the same chat/topic.
 
-Later following messages are not retroactively written into the event. This keeps ingestion cheap and avoids update storms.
+Historical sampling requirements:
+- no full 100k scan;
+- preserve adjacency inside each sampled window;
+- select only a small bounded number of windows/events per generation;
+- deterministic under a supplied seeded RNG in tests;
+- keep recent context weighted more strongly than random historical culture;
+- do not mix events from another chat/topic;
+- ignored/deleted users disappear naturally because their canonical events no longer exist.
 
-Generation v3 may additionally inspect neighboring events at retrieval time when richer context is needed.
+A practical initial target is roughly 4–8 historical windows of 10–25 events each, configurable internally after benchmarks.
 
-## 10. Storage migration strategy
+This means an old phrase/sticker/meme can periodically return months later without loading the whole retained corpus into memory on every message.
 
-### 10.1 Why a new table
+## 10. Context neighborhoods for media
+
+A sticker/photo/animation needs textual context to be reusable intelligently months later, but that context must not be duplicated into persistent raw-text hints.
+
+For each bounded media candidate, build its context neighborhood at retrieval time from:
+- its own caption;
+- replied-to event when resolvable;
+- approximately 3–5 neighboring useful text/emoji events before it;
+- optionally a small number of immediately following events when available.
+
+Storage should expose a batched neighborhood query so media ranking does not perform one SQL round trip per candidate.
+
+The resulting context representation exists only for the selection request and is discarded afterward.
+
+Generation v3 may later apply lemmas/morphology to these neighborhoods; Culture Memory v1 can begin with the current tokenizer/surface forms.
+
+## 11. Storage migration strategy
+
+### 11.1 Why a new table
 
 The existing `entertainment_messages` table remains a safe rollback source and has stable production behavior. Culture Memory therefore creates `ent_memory_events` and performs an idempotent migration rather than destructively rewriting the old table.
 
-### 10.2 Backfill
+### 11.2 Backfill
 
 One migration key backfills existing `entertainment_messages` rows as `TEXT` events.
 
 The migration:
 - preserves chat/topic/user/text/message id/created_at;
+- stores the old row id as `legacy_source_id`;
+- has a unique partial index on `legacy_source_id` when non-null;
 - is idempotent;
 - processes in bounded batches;
 - does not delete the old table;
 - records completion in `ent_schema_migrations`;
 - never duplicates a legacy source row on restart.
 
-### 10.3 Compatibility cutover
+### 11.3 Compatibility cutover
 
-Phase 1 uses a compatibility projection:
+Phase A uses a compatibility projection:
 - canonical new reads for Culture Memory use `ent_memory_events`;
-- current text-generation APIs expose `recent_texts(...)` projected from TEXT/caption-bearing events;
+- current text-generation APIs expose `recent_texts(...)` projected from TEXT and caption-bearing events;
 - current action/activity behavior is verified for parity before switching all read paths;
 - the legacy text table is retained for one release cycle as rollback data, then can be removed in a later cleanup PR.
 
 No destructive migration is part of Culture Memory v1.
 
-## 11. Retention
+## 12. Retention
 
 The existing Entertainment memory policy remains the primary cap.
 
 Default target:
-- approximately 100,000 culture events per topic, with the existing buffered/batch-prune strategy rather than pruning on every insert;
-- generation still reads only a bounded sample;
+- approximately 100,000 culture events per topic, with buffered/batch pruning rather than an expensive full retention delete after every insert;
+- generation reads only bounded recent + historical samples;
 - media references count as events but are tiny compared with binary media because only Telegram ids/metadata are stored.
 
 The bot must never download and retain 100,000 media files.
@@ -249,9 +281,9 @@ When pruning:
 - oldest events are removed first;
 - reply links may become unresolved safely;
 - no cascading delete of Telegram content occurs;
-- associated derived references owned solely by deleted events are removed/ignored.
+- selection code treats missing neighbors/reply targets as normal.
 
-## 12. Privacy and user control
+## 13. Privacy and user control
 
 Introduce `ent_memory_preferences` keyed by `(chat_id, user_id)`.
 
@@ -271,15 +303,15 @@ Commands:
 `/fun_delete_me`
 - deletes that user's Culture Memory events in the current chat across all topics;
 - removes their remembered media references because those are events too;
-- clears derived associations that point only to deleted events;
-- does **not** delete Telegram messages from the chat.
+- does **not** delete Telegram messages from the chat;
+- because media context is derived on read rather than persisted as copied text, deleted raw text cannot remain embedded in another user's media event.
 
 `/fun_forget`
 - existing admin behavior evolves to clear the full current Culture Memory scope, not only text projection.
 
-Privacy checks happen before storage so ignored users do not leak into context hints.
+Privacy checks happen before storage.
 
-## 13. Ingestion pipeline
+## 14. Ingestion pipeline
 
 `EntertainmentLearningMiddleware` remains non-consuming: it observes messages and then allows normal bot handlers to continue.
 
@@ -292,36 +324,46 @@ Pipeline:
 4. classify message into supported event type;
 5. normalize topic and reply link;
 6. extract text/emoji/media metadata;
-7. build bounded context hint for media;
-8. persist event;
-9. update active-topic marker;
-10. invoke autonomous evaluation only when appropriate.
+7. persist the canonical event idempotently;
+8. update active-topic marker;
+9. invoke autonomous evaluation only when appropriate.
 
-Not every stored event must trigger text generation. A sticker/photo can update activity/context without necessarily asking the text engine to respond immediately.
+Not every stored event must trigger text generation. A sticker/photo can update activity/context without forcing a text reply.
 
-## 14. Emoji culture
+### 14.1 Activity semantics
 
-### 14.1 Learning
+Supported human culture events are real chat activity.
+
+During Phase A, existing text-based counters stay unchanged until storage parity is verified. Once the canonical event stream is authoritative:
+- conversation phase/activity snapshots may count supported human events, not only long text;
+- generation readiness still requires enough text-capable source events, so a sticker flood cannot pretend to be a rich text corpus;
+- post-action human-activity budgets may count supported human events because emoji/sticker responses are still human participation.
+
+This cutover is covered by explicit regression tests so autonomy frequency does not accidentally increase.
+
+## 15. Emoji culture
+
+### 15.1 Learning
 
 Extract Unicode emoji from:
 - normal text events;
 - emoji-only events;
 - sticker-associated emoji.
 
-Learn co-occurrence with nearby words/lemmas and conversation runs in memory during generation/retrieval.
+Learn co-occurrence with nearby words/lemmas and conversation runs during generation/retrieval.
 
 Do not create a global emoji dictionary across chats.
 
-### 14.2 Output
+### 15.2 Output
 
 The generator may:
-- append 0–2 contextually learned emoji to a generated text;
+- append 0–2 contextually learned emoji to generated text;
 - occasionally emit a short emoji-only response when autonomy selects that action type;
 - avoid repeating the same emoji signature across recent bot actions.
 
 Emoji is a style signal, not a mandatory decoration on every message.
 
-## 15. Contextual media retrieval
+## 16. Contextual media retrieval
 
 Add a `MediaCultureSelector` independent from Telegram sending.
 
@@ -330,10 +372,11 @@ Inputs:
 - current conversation text/lemmas;
 - optional direct trigger/reply target;
 - recent bot actions;
-- bounded historical media candidates.
+- bounded recent and historical media candidates;
+- batched context neighborhoods for those candidates.
 
 Candidate score combines:
-- overlap with `context_hint`/caption;
+- overlap with caption + derived neighborhood;
 - overlap with trigger text for direct replies;
 - reply-chain relation where available;
 - recency decay;
@@ -342,9 +385,11 @@ Candidate score combines:
 - penalty for forwarded media when stronger local media exists;
 - hard exclusion of media from another chat/topic.
 
+Candidate acquisition should combine recent media with a bounded historical sample so old memes can return without scanning all retained events.
+
 No semantic vector database is required.
 
-## 16. Sticker behavior
+## 17. Sticker behavior
 
 The bot may autonomously send a remembered sticker when selected by the normal autonomy engine.
 
@@ -352,32 +397,32 @@ Rules:
 - send by Telegram `file_id`;
 - never download merely to resend;
 - preserve topic/thread id;
-- record the action after successful send;
-- if Telegram rejects/stales a `file_id`, mark/suppress that media candidate and fall back instead of retrying repeatedly;
-- do not reuse the same sticker in a short recent-action window;
+- record the action only after successful send;
+- if Telegram rejects/stales a `file_id`, suppress that media candidate for a bounded period and fall back instead of retrying repeatedly;
+- do not reuse the same `file_unique_id` in a recent bot-media window;
 - media actions share the existing global Entertainment action budget.
 
 Sticker reuse must not create a second independent spam scheduler.
 
-## 17. Photo and animation reuse
+## 18. Photo and animation reuse
 
 Photos and animations follow the same contextual selector.
 
 For direct reuse:
 - use Telegram `file_id`;
-- preserve caption only when explicitly selected by a future feature; v1 should normally send media without copying the original human caption verbatim;
+- v1 normally sends media without copying the original human caption verbatim;
 - do not forward original sender attribution;
-- record the generated/reused action in `ent_actions`.
+- record the action in `ent_actions` only after successful send.
 
 Media selection failure falls back to text/no action rather than breaking the supervisor loop.
 
-## 18. Meme Engine
+## 19. Meme Engine
 
-### 18.1 Purpose
+### 19.1 Purpose
 
 Create new meme variants from the chat's own remembered/replied photos and local language without requiring a remote image-generation model.
 
-### 18.2 Source selection
+### 19.2 Source selection
 
 Priority:
 1. photo in the message being replied to;
@@ -386,7 +431,7 @@ Priority:
 
 A user-provided reply-photo is never copied into another chat/topic.
 
-### 18.3 Caption generation
+### 19.3 Caption generation
 
 Meme caption text comes from the local text/culture engine with stronger novelty requirements.
 
@@ -396,9 +441,7 @@ Initial styles:
 - classic top/bottom caption;
 - demotivator-style frame/caption.
 
-The style may be selected randomly within configured bounds or later exposed as a command option.
-
-### 18.4 Rendering
+### 19.4 Rendering
 
 Use Pillow as a lightweight dependency.
 
@@ -412,7 +455,7 @@ For a new meme:
 
 A render/download failure must degrade gracefully to the original text/media action path.
 
-## 19. Autonomy integration
+## 20. Autonomy integration
 
 Extend `EntertainmentActionType` with media-aware actions, for example:
 - `EMOJI_REPLY`;
@@ -427,11 +470,11 @@ Additional anti-spam constraints:
 - at most one autonomous media action in a bounded media cooldown window;
 - no identical `file_unique_id` in the recent bot-media history;
 - PEAK phase continues to suppress intrusive autonomous behavior unless it is a direct contextual reply;
-- direct user-triggered commands can bypass autonomous timing budgets but still use novelty/repetition guards.
+- direct user-triggered commands may bypass autonomous timing budgets but still use novelty/repetition guards.
 
 Do not create another background task beyond the existing Entertainment supervisor.
 
-## 20. `/fun` UX
+## 21. `/fun` UX
 
 Extend the status panel to show useful memory counters for the current topic:
 - total culture events;
@@ -450,7 +493,7 @@ Optional admin toggles may be introduced only if needed during implementation:
 
 They should default to conservative values during rollout.
 
-## 21. Storage contract changes
+## 22. Storage contract changes
 
 Introduce typed storage APIs rather than leaking SQL into the service.
 
@@ -460,8 +503,10 @@ Target contract additions:
 add_event(event)
 recent_events(chat_id, topic_id, limit)
 recent_texts(chat_id, topic_id, limit)
+sample_event_windows(chat_id, topic_id, window_count, window_size, rng_seed)
 get_event_by_message_id(chat_id, message_id)
 recent_media(chat_id, topic_id, limit, kinds)
+media_neighborhoods(chat_id, topic_id, event_ids, radius)
 memory_counts(chat_id, topic_id)
 get_memory_preference(chat_id, user_id)
 set_memory_preference(chat_id, user_id, enabled)
@@ -472,18 +517,20 @@ The existing `recent_messages(...)` compatibility method may delegate to `recent
 
 PostgreSQL and SQLite implementations must remain behaviorally equivalent.
 
-## 22. Indexing
+## 23. Indexing
 
 PostgreSQL/SQLite indexes should support:
 - `(chat_id, topic_id, created_at DESC, id DESC)` for chronology;
 - `(chat_id, message_id)` for reply resolution;
 - `(chat_id, topic_id, event_type, created_at DESC)` for bounded media retrieval;
-- `(chat_id, user_id)` for privacy deletion/preferences;
-- optional unique `(chat_id, message_id)` where message id is non-null to make ingestion idempotent.
+- `(chat_id, user_id)` for user-memory deletion;
+- `(chat_id, user_id)` primary/unique path for preferences;
+- unique `(chat_id, message_id)` where message id is non-null to make ingestion idempotent;
+- unique `legacy_source_id` where non-null for migration idempotency.
 
 Do not add unbounded full-text indexes in v1.
 
-## 23. Failure handling
+## 24. Failure handling
 
 Storage:
 - event ingestion is idempotent for duplicate Telegram updates;
@@ -497,13 +544,15 @@ Telegram media:
 
 Culture generation:
 - insufficient relevant media -> choose text or no action;
-- no good text candidate -> do not force a meme caption.
+- no good text candidate -> do not force a meme caption;
+- sampled historical windows are optional enrichment, never a reason to fail the generation request.
 
-## 24. Observability
+## 25. Observability
 
 Add structured logs/counters without logging full private chat contents:
 - event ingested by type;
 - event ignored due to privacy/preferences;
+- recent/historical culture window sizes;
 - media candidate count;
 - selected media type;
 - stale media ids;
@@ -514,7 +563,7 @@ Add structured logs/counters without logging full private chat contents:
 
 Never log BOT_TOKEN, DATABASE_URL, full media payloads or full historical corpus.
 
-## 25. Performance constraints
+## 26. Performance constraints
 
 Bothost compatibility remains mandatory.
 
@@ -523,27 +572,27 @@ Targets:
 - no GPU;
 - no persistent binary media cache;
 - no full 100k-event scan on each message;
-- media retrieval uses bounded indexed queries;
-- context hints use only a small recent neighborhood;
+- recent generation uses the bounded configured sample;
+- historical culture enters through small sampled contiguous windows;
+- media retrieval uses bounded indexed queries plus batched neighborhood lookup;
 - meme rendering is on-demand and bounded in dimensions;
 - no new supervisor/background worker.
 
-Text generation continues to use the bounded generation sample rather than full retention history.
+## 27. Testing strategy
 
-## 26. Testing strategy
-
-### 26.1 Storage tests
+### 27.1 Storage tests
 - round-trip every event type in PostgreSQL and SQLite;
 - chronological ordering;
 - duplicate Telegram update idempotency;
-- reply lookup;
+- reply lookup with topic validation;
 - migration/backfill idempotency;
 - retention pruning;
 - memory counters;
 - privacy preference persistence;
-- delete-user-memory removes text/media contributions only for that user/chat.
+- delete-user-memory removes text/media contributions only for that user/chat;
+- deleted user text is not retained in another event as duplicated neighborhood text.
 
-### 26.2 Ingestion tests
+### 27.2 Ingestion tests
 - short normal text can be remembered as conversation context even when it is not enough to trigger generation;
 - emoji-only event stored;
 - sticker metadata stored;
@@ -555,21 +604,24 @@ Text generation continues to use the bounded generation sample rather than full 
 - reply link captured;
 - no cross-topic pollution.
 
-### 26.3 Culture/sequence tests
+### 27.3 Culture/sequence tests
 - same-user adjacent split messages form a strong continuation relation;
 - cross-user adjacency influences phrase/turn selection without raw arbitrary token concatenation;
 - explicit replies outrank accidental adjacency;
-- old context remains available but recent context receives more weight;
+- recent context receives more weight than historical windows;
+- deterministic historical sampling can surface an old retained phrase under fixed seeds;
+- no full-history scan is used by the generation path;
 - exact source replay is still rejected.
 
-### 26.4 Emoji/media selector tests
+### 27.4 Emoji/media selector tests
 - contextual sticker beats unrelated sticker under fixed seeds;
+- an older historically sampled relevant sticker can beat an unrelated recent sticker;
 - recent duplicate sticker is suppressed;
 - media never crosses chat/topic;
 - stale file id is demoted after send failure;
 - emoji selection reflects local co-occurrence rather than global frequency only.
 
-### 26.5 Meme tests
+### 27.5 Meme tests
 - replied photo has source priority;
 - generated caption passes novelty rules;
 - Pillow renderer bounds dimensions;
@@ -577,14 +629,15 @@ Text generation continues to use the bounded generation sample rather than full 
 - failed render falls back safely;
 - no permanent binary is stored.
 
-### 26.6 Integration tests
+### 27.6 Integration tests
 - middleware observes media without consuming legacy handlers;
 - autonomy records action only after successful send;
 - existing text autonomy remains functional during migration;
+- activity-budget cutover does not increase action frequency beyond configured behavior budgets;
 - existing behavior budgets remain authoritative;
 - PostgreSQL integration job remains green.
 
-## 27. Rollout phases
+## 28. Rollout phases
 
 ### Phase A — Chronological Event Memory + privacy
 - event model/table;
@@ -596,14 +649,18 @@ Text generation continues to use the bounded generation sample rather than full 
 - counters/tests;
 - no autonomous media sending yet.
 
-### Phase B — Sequence/Culture Engine + emoji
+### Phase B — Sequence/Culture Engine + historical windows + emoji
 - conversation-run extraction;
 - adjacent-message relations;
+- bounded historical window sampler;
 - emoji co-occurrence/style output;
 - current text generator consumes improved sequential context where possible;
+- activity-count cutover after parity tests;
 - no media reuse until selector tests are green.
 
 ### Phase C — Contextual media reuse
+- bounded recent + historical media acquisition;
+- batched media neighborhoods;
 - media selector;
 - sticker/photo/animation actions;
 - stale-file handling;
@@ -617,30 +674,33 @@ Text generation continues to use the bounded generation sample rather than full 
 - classic + demotivator renderers;
 - temp cleanup and performance tests.
 
-Each phase may ship as its own PR after tests rather than making one giant high-risk merge.
+Each phase should ship as its own PR after verification rather than becoming one giant high-risk merge.
 
-## 28. Interaction with existing Generation v3 design
+## 29. Interaction with existing Generation v3 design
 
-Culture Memory should expose structured events without forcing Generation v3 to land first.
+Culture Memory exposes structured events without forcing Generation v3 to land first.
 
 When Generation v3 is implemented, it can consume:
 - structured recent text turns;
+- sampled historical conversation windows;
 - reply target text;
 - author boundaries;
 - time gaps;
 - emoji associations;
-- context hints.
+- media neighborhoods.
 
 Generation v3 must not become responsible for media persistence or Telegram sending; those remain Culture Memory/service responsibilities.
 
-## 29. Acceptance criteria
+## 30. Acceptance criteria
 
 Culture Memory v1 is complete when:
 - existing text history is backfilled idempotently into the new event stream;
 - new human text/emoji/sticker/photo/animation events are stored in chronological order per chat/topic;
 - reply relationships are persisted when available;
 - user opt-out/delete controls work for both PostgreSQL and SQLite;
-- text generation continues working through the compatibility projection;
+- deleting user memory does not leave duplicated raw text in persisted media-context metadata;
+- current text generation continues working through the compatibility projection;
+- old retained history can re-enter generation through bounded chronological windows without full-history scans;
 - sequence logic demonstrably uses adjacent turns without arbitrary cross-author token fusion;
 - contextual emoji/sticker/media selection passes deterministic relevance tests;
 - repeated media is suppressed;
