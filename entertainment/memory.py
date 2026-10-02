@@ -18,6 +18,7 @@ _EMOJI_RE = re.compile(
     "]"
 )
 _WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9]", re.UNICODE)
+_COMMAND_RE = re.compile(r"^/[A-Za-z0-9_]+(?:@[A-Za-z0-9_]+)?(?:\s|$)")
 
 
 def _value(obj: object, name: str, default: Any = None) -> Any:
@@ -37,6 +38,10 @@ def _is_emoji_only(text: str) -> bool:
     remainder = _EMOJI_RE.sub("", text)
     remainder = re.sub(r"[\s\u200d\ufe0f]", "", remainder)
     return not _WORD_RE.search(remainder)
+
+
+def _is_command_text(text: str) -> bool:
+    return bool(_COMMAND_RE.match(text.lstrip()))
 
 
 def _reply_id(message: Message) -> int | None:
@@ -76,6 +81,7 @@ def _base_event(
         created_at=int(created_at),
         reply_to_message_id=_reply_id(message),
         is_forwarded=_is_forwarded(message),
+        sender_is_bot=bool(_value(from_user, "is_bot", False)),
         **kwargs,
     )
 
@@ -87,7 +93,7 @@ def classify_memory_event(
     topic_id: int,
     created_at: int,
 ) -> MemoryEvent | None:
-    """Convert one supported human Telegram message into a canonical event.
+    """Convert one supported Telegram message into a canonical event.
 
     The classifier is intentionally metadata-only for media: it never downloads
     files and never copies surrounding chat text into another event.
@@ -171,6 +177,7 @@ def classify_memory_event(
         created_at=created_at,
         event_type=event_type,
         text=text,
+        is_command=_is_command_text(text),
     )
 
 
