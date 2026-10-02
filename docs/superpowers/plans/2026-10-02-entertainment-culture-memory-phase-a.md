@@ -24,11 +24,11 @@
 
 ## Review Focus
 
-- Duplicate `(chat_id, message_id)` delivery must stay idempotent.
-- Topic `0` and real forum topics must never bleed together.
-- Opted-out users must create neither canonical nor legacy rows.
-- User deletion must remove both canonical and compatibility text rows while leaving other users/chats untouched.
-- Missing optional Telegram media fields must be ignored safely, never crash middleware.
+- Duplicate `(chat_id, message_id)` delivery must stay idempotent. Covered in Task 2 duplicate-delivery test.
+- Topic `0` and real forum topics must never bleed together. Covered in Task 7 topic-isolation regression.
+- Opted-out users must create neither canonical nor legacy rows. Covered in Task 5 opt-out test.
+- User deletion must remove both canonical and compatibility text rows while leaving other users/chats untouched. Covered in Tasks 2 and 6 deletion tests.
+- Missing optional Telegram media fields must be ignored safely, never crash middleware. Covered in Tasks 1 and 5 incomplete-media tests.
 
 ---
 
