@@ -34,6 +34,54 @@ def normalize_behavior_mode(value: object) -> BehaviorMode:
         return BehaviorMode.ALIVE
 
 
+class MemoryEventType(str, Enum):
+    """Supported human Telegram event kinds stored by Culture Memory."""
+
+    TEXT = "text"
+    EMOJI = "emoji"
+    STICKER = "sticker"
+    PHOTO = "photo"
+    ANIMATION = "animation"
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryEvent:
+    """One canonical, topic-isolated Culture Memory event."""
+
+    id: int | None
+    chat_id: int
+    topic_id: int
+    message_id: int | None
+    user_id: int
+    event_type: MemoryEventType
+    created_at: int
+    text: str | None = None
+    caption: str | None = None
+    reply_to_message_id: int | None = None
+    file_id: str | None = None
+    file_unique_id: str | None = None
+    sticker_emoji: str | None = None
+    sticker_set_name: str | None = None
+    media_width: int | None = None
+    media_height: int | None = None
+    media_duration: int | None = None
+    is_forwarded: bool = False
+    legacy_source_id: int | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryCounts:
+    """Compact per-topic Culture Memory counters for the /fun panel."""
+
+    total: int = 0
+    text: int = 0
+    emoji: int = 0
+    sticker: int = 0
+    photo: int = 0
+    animation: int = 0
+
+
 class EntertainmentActionType(str, Enum):
     CONTEXTUAL_REPLY = "contextual_reply"
     REMIXED_PHRASE = "remixed_phrase"
