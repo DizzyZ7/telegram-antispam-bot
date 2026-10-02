@@ -1,13 +1,18 @@
-"""Long-term message retention wrappers for Entertainment storage backends."""
+"""Long-term retention wrappers and Culture Memory storage helpers."""
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from pathlib import Path
 
-from ..config import MEMORY_LIMIT, MEMORY_PRUNE_BUFFER
+from ..config import GENERATION_SAMPLE_LIMIT, MEMORY_LIMIT, MEMORY_PRUNE_BUFFER
+from ..models import MemoryCounts, MemoryEvent, MemoryEventType
 from .postgres import PostgresEntertainmentStorage as CorePostgresEntertainmentStorage
 from .sqlite import SQLiteEntertainmentStorage as CoreSQLiteEntertainmentStorage
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SQLiteEntertainmentStorage(CoreSQLiteEntertainmentStorage):
@@ -23,6 +28,64 @@ class SQLiteEntertainmentStorage(CoreSQLiteEntertainmentStorage):
         super().__init__(database_path)
         self.memory_limit = max(1, int(memory_limit))
         self.prune_buffer = max(1, int(prune_buffer))
+
+    async def initialize(self) -> None:
+        await super().initialize()
+        connection = self._require_connection()
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ent_memory_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                topic_id INTEGER NOT NULL DEFAULT 0,
+                message_id INTEGER,
+                user_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                text TEXT,
+                caption TEXT,
+                reply_to_message_id INTEGER,
+                file_id TEXT,
+                file_unique_id TEXT,
+                sticker_emoji TEXT,
+                sticker_set_name TEXT,
+                media_width INTEGER,
+                media_height INTEGER,
+                media_duration INTEGER,
+                is_forwarded INTEGER NOT NULL DEFAULT 0,
+                legacy_source_id INTEGER,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        await connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ent_memory_chat_message "
+            "ON ent_memory_events(chat_id, message_id) WHERE message_id IS NOT NULL"
+        )
+        await connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ent_memory_legacy_source "
+            "ON ent_memory_events(legacy_source_id) WHERE legacy_source_id IS NOT NULL"
+        )
+        await connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ent_memory_scope_order "
+            "ON ent_memory_events(chat_id, topic_id, created_at DESC, message_id DESC, id DESC)"
+        )
+        await connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ent_memory_user "
+            "ON ent_memory_events(chat_id, user_id, id DESC)"
+        )
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ent_memory_preferences (
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                remember_enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(chat_id, user_id)
+            )
+            """
+        )
+        await connection.commit()
 
     async def add_message(
         self,
@@ -72,6 +135,245 @@ class SQLiteEntertainmentStorage(CoreSQLiteEntertainmentStorage):
                 ),
             )
         await connection.commit()
+
+    async def add_event(self, event: MemoryEvent) -> int:
+        connection = self._require_connection()
+        cursor = await connection.execute(
+            """
+            INSERT OR IGNORE INTO ent_memory_events(
+                chat_id, topic_id, message_id, user_id, event_type, text, caption,
+                reply_to_message_id, file_id, file_unique_id, sticker_emoji,
+                sticker_set_name, media_width, media_height, media_duration,
+                is_forwarded, legacy_source_id, metadata_json, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(event.chat_id),
+                int(event.topic_id),
+                int(event.message_id) if event.message_id is not None else None,
+                int(event.user_id),
+                event.event_type.value,
+                event.text,
+                event.caption,
+                int(event.reply_to_message_id) if event.reply_to_message_id is not None else None,
+                event.file_id,
+                event.file_unique_id,
+                event.sticker_emoji,
+                event.sticker_set_name,
+                int(event.media_width) if event.media_width is not None else None,
+                int(event.media_height) if event.media_height is not None else None,
+                int(event.media_duration) if event.media_duration is not None else None,
+                1 if event.is_forwarded else 0,
+                int(event.legacy_source_id) if event.legacy_source_id is not None else None,
+                json.dumps(event.metadata, ensure_ascii=False, separators=(",", ":")),
+                int(event.created_at),
+            ),
+        )
+        if cursor.rowcount > 0 and cursor.lastrowid is not None:
+            event_id = int(cursor.lastrowid)
+        else:
+            event_id = 0
+            if event.message_id is not None:
+                async with connection.execute(
+                    "SELECT id FROM ent_memory_events WHERE chat_id = ? AND message_id = ?",
+                    (int(event.chat_id), int(event.message_id)),
+                ) as existing:
+                    row = await existing.fetchone()
+                if row is not None:
+                    event_id = int(row[0])
+            if not event_id and event.legacy_source_id is not None:
+                async with connection.execute(
+                    "SELECT id FROM ent_memory_events WHERE legacy_source_id = ?",
+                    (int(event.legacy_source_id),),
+                ) as existing:
+                    row = await existing.fetchone()
+                if row is not None:
+                    event_id = int(row[0])
+            if not event_id:
+                raise RuntimeError("SQLite Culture Memory insert was ignored without a resolvable row")
+
+        async with connection.execute(
+            "SELECT COUNT(*) FROM ent_memory_events WHERE chat_id = ? AND topic_id = ?",
+            (int(event.chat_id), int(event.topic_id)),
+        ) as count_cursor:
+            count_row = await count_cursor.fetchone()
+        count = int(count_row[0]) if count_row else 0
+        if count > self.memory_limit + self.prune_buffer:
+            await connection.execute(
+                """
+                DELETE FROM ent_memory_events
+                WHERE chat_id = ? AND topic_id = ?
+                  AND id NOT IN (
+                      SELECT id FROM ent_memory_events
+                      WHERE chat_id = ? AND topic_id = ?
+                      ORDER BY created_at DESC, message_id DESC, id DESC
+                      LIMIT ?
+                  )
+                """,
+                (
+                    int(event.chat_id),
+                    int(event.topic_id),
+                    int(event.chat_id),
+                    int(event.topic_id),
+                    self.memory_limit,
+                ),
+            )
+        await connection.commit()
+        return event_id
+
+    @staticmethod
+    def _event_from_row(row: tuple[object, ...]) -> MemoryEvent | None:
+        try:
+            event_type = MemoryEventType(str(row[5]))
+        except ValueError:
+            LOGGER.warning("Skipping unknown Culture Memory event type id=%s type=%r", row[0], row[5])
+            return None
+        try:
+            metadata = json.loads(str(row[18] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return MemoryEvent(
+            id=int(row[0]),
+            chat_id=int(row[1]),
+            topic_id=int(row[2]),
+            message_id=int(row[3]) if row[3] is not None else None,
+            user_id=int(row[4]),
+            event_type=event_type,
+            text=str(row[6]) if row[6] is not None else None,
+            caption=str(row[7]) if row[7] is not None else None,
+            reply_to_message_id=int(row[8]) if row[8] is not None else None,
+            file_id=str(row[9]) if row[9] is not None else None,
+            file_unique_id=str(row[10]) if row[10] is not None else None,
+            sticker_emoji=str(row[11]) if row[11] is not None else None,
+            sticker_set_name=str(row[12]) if row[12] is not None else None,
+            media_width=int(row[13]) if row[13] is not None else None,
+            media_height=int(row[14]) if row[14] is not None else None,
+            media_duration=int(row[15]) if row[15] is not None else None,
+            is_forwarded=bool(row[16]),
+            legacy_source_id=int(row[17]) if row[17] is not None else None,
+            metadata=metadata,
+            created_at=int(row[19]),
+        )
+
+    async def recent_events(self, chat_id: int, topic_id: int, limit: int) -> list[MemoryEvent]:
+        connection = self._require_connection()
+        async with connection.execute(
+            """
+            SELECT id, chat_id, topic_id, message_id, user_id, event_type, text, caption,
+                   reply_to_message_id, file_id, file_unique_id, sticker_emoji,
+                   sticker_set_name, media_width, media_height, media_duration,
+                   is_forwarded, legacy_source_id, metadata_json, created_at
+            FROM ent_memory_events
+            WHERE chat_id = ? AND topic_id = ?
+            ORDER BY created_at DESC, message_id DESC, id DESC
+            LIMIT ?
+            """,
+            (int(chat_id), int(topic_id), max(1, int(limit))),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        result = [event for row in reversed(rows) if (event := self._event_from_row(row)) is not None]
+        return result
+
+    async def recent_texts(
+        self,
+        chat_id: int,
+        topic_id: int,
+        limit: int = GENERATION_SAMPLE_LIMIT,
+    ) -> list[str]:
+        connection = self._require_connection()
+        async with connection.execute(
+            """
+            SELECT CASE WHEN event_type = 'text' THEN text ELSE caption END AS source_text
+            FROM ent_memory_events
+            WHERE chat_id = ? AND topic_id = ?
+              AND ((event_type = 'text' AND text IS NOT NULL AND TRIM(text) <> '')
+                   OR (event_type IN ('sticker','photo','animation') AND caption IS NOT NULL AND TRIM(caption) <> ''))
+            ORDER BY created_at DESC, message_id DESC, id DESC
+            LIMIT ?
+            """,
+            (int(chat_id), int(topic_id), max(1, int(limit))),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [str(row[0]) for row in reversed(rows)]
+
+    async def memory_counts(self, chat_id: int, topic_id: int) -> MemoryCounts:
+        connection = self._require_connection()
+        async with connection.execute(
+            """
+            SELECT COUNT(*),
+                   SUM(CASE WHEN event_type = 'text' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN event_type = 'emoji' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN event_type = 'sticker' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN event_type = 'photo' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN event_type = 'animation' THEN 1 ELSE 0 END)
+            FROM ent_memory_events WHERE chat_id = ? AND topic_id = ?
+            """,
+            (int(chat_id), int(topic_id)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        values = tuple(int(value or 0) for value in (row or (0, 0, 0, 0, 0, 0)))
+        return MemoryCounts(*values)
+
+    async def get_remember_enabled(self, chat_id: int, user_id: int) -> bool:
+        connection = self._require_connection()
+        async with connection.execute(
+            "SELECT remember_enabled FROM ent_memory_preferences WHERE chat_id = ? AND user_id = ?",
+            (int(chat_id), int(user_id)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return True if row is None else bool(row[0])
+
+    async def set_remember_enabled(self, chat_id: int, user_id: int, enabled: bool) -> None:
+        connection = self._require_connection()
+        await connection.execute(
+            """
+            INSERT INTO ent_memory_preferences(chat_id, user_id, remember_enabled, updated_at)
+            VALUES(?, ?, ?, ?)
+            ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                remember_enabled = excluded.remember_enabled,
+                updated_at = excluded.updated_at
+            """,
+            (int(chat_id), int(user_id), 1 if enabled else 0, int(time.time())),
+        )
+        await connection.commit()
+
+    async def delete_user_memory(self, chat_id: int, user_id: int) -> int:
+        connection = self._require_connection()
+        cursor = await connection.execute(
+            "DELETE FROM ent_memory_events WHERE chat_id = ? AND user_id = ?",
+            (int(chat_id), int(user_id)),
+        )
+        await connection.commit()
+        return max(0, int(cursor.rowcount))
+
+    async def delete_legacy_user_messages(self, chat_id: int, user_id: int) -> int:
+        connection = self._require_connection()
+        cursor = await connection.execute(
+            "DELETE FROM entertainment_messages WHERE chat_id = ? AND user_id = ?",
+            (int(chat_id), int(user_id)),
+        )
+        await connection.commit()
+        return max(0, int(cursor.rowcount))
+
+    async def clear_memory_scope(self, chat_id: int, topic_id: int | None = None) -> int:
+        connection = self._require_connection()
+        if topic_id is None:
+            params = (int(chat_id),)
+            where = "chat_id = ?"
+        else:
+            params = (int(chat_id), int(topic_id))
+            where = "chat_id = ? AND topic_id = ?"
+        async with connection.execute(f"SELECT COUNT(*) FROM ent_memory_events WHERE {where}", params) as cursor:
+            row = await cursor.fetchone()
+        count = int(row[0]) if row else 0
+        await connection.execute(f"DELETE FROM ent_memory_events WHERE {where}", params)
+        await connection.commit()
+        return count
+
+    async def backfill_legacy_memory(self, migration_key: str) -> int:
+        raise NotImplementedError("Culture Memory legacy backfill is implemented in Phase A Task 3")
 
 
 class PostgresEntertainmentStorage(CorePostgresEntertainmentStorage):
