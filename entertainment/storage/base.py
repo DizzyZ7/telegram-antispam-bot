@@ -6,7 +6,7 @@ from typing import Protocol, runtime_checkable
 
 from ..config import GENERATION_SAMPLE_LIMIT
 from ..context import ActivitySnapshot
-from ..models import EntertainmentActionRecord, EntertainmentSettings
+from ..models import EntertainmentActionRecord, EntertainmentSettings, MemoryCounts, MemoryEvent
 
 LegacySettingsRow = tuple[int, bool, int, int, int]
 LegacyMessageRow = tuple[int, int, int, str, int]
@@ -39,6 +39,36 @@ class EntertainmentStorage(Protocol):
         topic_id: int,
         limit: int = GENERATION_SAMPLE_LIMIT,
     ) -> list[str]: ...
+
+    async def add_event(self, event: MemoryEvent) -> int: ...
+
+    async def recent_events(
+        self,
+        chat_id: int,
+        topic_id: int,
+        limit: int,
+    ) -> list[MemoryEvent]: ...
+
+    async def recent_texts(
+        self,
+        chat_id: int,
+        topic_id: int,
+        limit: int = GENERATION_SAMPLE_LIMIT,
+    ) -> list[str]: ...
+
+    async def memory_counts(self, chat_id: int, topic_id: int) -> MemoryCounts: ...
+
+    async def get_remember_enabled(self, chat_id: int, user_id: int) -> bool: ...
+
+    async def set_remember_enabled(self, chat_id: int, user_id: int, enabled: bool) -> None: ...
+
+    async def delete_user_memory(self, chat_id: int, user_id: int) -> int: ...
+
+    async def delete_legacy_user_messages(self, chat_id: int, user_id: int) -> int: ...
+
+    async def clear_memory_scope(self, chat_id: int, topic_id: int | None = None) -> int: ...
+
+    async def backfill_legacy_memory(self, migration_key: str) -> int: ...
 
     async def message_count(self, chat_id: int, topic_id: int | None = None) -> int: ...
 

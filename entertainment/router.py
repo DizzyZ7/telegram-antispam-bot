@@ -84,6 +84,24 @@ def register_entertainment_handlers(app: Any, service: EntertainmentService) -> 
 
     _promote_last_message_handler(app)
 
+    @dispatcher.message(chat_filter, Command(commands=["fun_ignore_me"]))
+    async def entertainment_ignore_me(message: Message) -> None:
+        await service.set_remember_me(message, False)
+
+    _promote_last_message_handler(app)
+
+    @dispatcher.message(chat_filter, Command(commands=["fun_remember_me"]))
+    async def entertainment_remember_me(message: Message) -> None:
+        await service.set_remember_me(message, True)
+
+    _promote_last_message_handler(app)
+
+    @dispatcher.message(chat_filter, Command(commands=["fun_delete_me"]))
+    async def entertainment_delete_me(message: Message) -> None:
+        await service.delete_my_memory(message)
+
+    _promote_last_message_handler(app)
+
     # One-release compatibility aliases. They no longer mutate numeric behavior;
     # the service only points administrators to the mode-based /fun panel.
     @dispatcher.message(chat_filter, Command(commands=["fun_laziness"]))
@@ -112,6 +130,6 @@ def register_entertainment_handlers(app: Any, service: EntertainmentService) -> 
     print(
         "ENTERTAINMENT_SCOPE_READY "
         f"chat_ids={ids_label} learning=per_topic autonomy=state_driven "
-        "behavior_modes=calm,alive,active external_ai=off",
+        "behavior_modes=calm,alive,active culture_memory=on external_ai=off",
         flush=True,
     )

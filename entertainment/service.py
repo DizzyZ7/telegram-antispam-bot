@@ -17,6 +17,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .autonomy import ActionCandidate, ConversationPhase, DecisionContext, derive_phase, select_action
 from .config import MAX_MESSAGE_LENGTH, MEMORY_LIMIT, MIN_MESSAGE_LENGTH, MIN_MESSAGES_TO_GENERATE, URL_RE
 from .generation import generate_chat_text, tokenize
+from .memory import classify_memory_event
 from .models import (
     BehaviorMode,
     EntertainmentActionRecord,
@@ -69,6 +70,7 @@ class EntertainmentService:
         self._active_topics[(chat_id, self._topic_id(message))] = message
 
     def is_eligible_learning_message(self, message: Message) -> bool:
+        """Return whether a message belongs to the legacy text/activity path."""
         if not self.is_allowed_chat(message.chat.id):
             return False
         if self._chat_type_value(message) not in {"group", "supergroup"}:
@@ -87,6 +89,22 @@ class EntertainmentService:
         if len(tokenize(text)) < 2:
             return False
         return True
+
+    def _is_eligible_memory_sender(self, message: Message) -> bool:
+        if not self.is_allowed_chat(message.chat.id):
+            return False
+        if self._chat_type_value(message) not in {"group", "supergroup"}:
+            return False
+        from_user = getattr(message, "from_user", None)
+        return from_user is not None and not bool(getattr(from_user, "is_bot", False))
+
+    @staticmethod
+    def _event_looks_like_command(event: object) -> bool:
+        for name in ("text", "caption"):
+            value = getattr(event, name, None)
+            if isinstance(value, str) and value.lstrip().startswith("/"):
+                return True
+        return False
 
     async def _is_admin_identity(self, chat_id: int, user_id: int | None) -> bool:
         if user_id is None:
@@ -177,6 +195,13 @@ class EntertainmentService:
                 return generated
         return None
 
+    async def _generation_texts(self, chat_id: int, topic_id: int) -> list[str]:
+        """Read canonical Culture Memory text when the backend supports it."""
+        recent_texts = getattr(self.storage, "recent_texts", None)
+        if callable(recent_texts):
+            return await recent_texts(int(chat_id), int(topic_id))
+        return await self.storage.recent_messages(int(chat_id), int(topic_id))
+
     async def evaluate_topic(
         self,
         message: Message,
@@ -235,7 +260,7 @@ class EntertainmentService:
         if selected is None:
             return None
 
-        messages = await self.storage.recent_messages(chat_id, topic_id)
+        messages = await self._generation_texts(chat_id, topic_id)
         recent_outputs = [
             output
             for action in recent_actions
@@ -310,13 +335,13 @@ class EntertainmentService:
                     topic_id,
                 )
 
-    async def observe_message(self, message: Message) -> None:
+    async def _observe_legacy_only(self, message: Message) -> None:
+        """One-release fallback for consumers still constructing core storage directly."""
         if not self.is_eligible_learning_message(message):
             return
         settings = await self.storage.get_settings(message.chat.id)
         if not settings.enabled:
             return
-
         topic_id = self._topic_id(message)
         text = message.text.strip()
         now = int(self._now_fn())
@@ -330,6 +355,85 @@ class EntertainmentService:
         )
         self.remember_active_topic(message)
         await self.evaluate_topic(message)
+
+    async def observe_message(self, message: Message) -> None:
+        if not self._is_eligible_memory_sender(message):
+            return
+
+        add_event = getattr(self.storage, "add_event", None)
+        get_remember_enabled = getattr(self.storage, "get_remember_enabled", None)
+        if not callable(add_event) or not callable(get_remember_enabled):
+            await self._observe_legacy_only(message)
+            return
+
+        settings = await self.storage.get_settings(message.chat.id)
+        if not settings.enabled:
+            return
+
+        user_id = int(message.from_user.id)
+        if not await get_remember_enabled(int(message.chat.id), user_id):
+            return
+
+        topic_id = self._topic_id(message)
+        now = int(self._now_fn())
+        event = classify_memory_event(
+            message,
+            chat_id=int(message.chat.id),
+            topic_id=topic_id,
+            created_at=now,
+        )
+        if event is None or self._event_looks_like_command(event):
+            return
+
+        await add_event(event)
+
+        # Phase A keeps autonomy/activity on the legacy text gate. Media enriches
+        # Culture Memory without increasing current activity or response cadence.
+        if not self.is_eligible_learning_message(message):
+            return
+
+        text = message.text.strip()
+        await self.storage.add_message(
+            chat_id=message.chat.id,
+            topic_id=topic_id,
+            user_id=user_id,
+            text=text,
+            message_id=getattr(message, "message_id", None),
+            created_at=now,
+        )
+        self.remember_active_topic(message)
+        await self.evaluate_topic(message)
+
+    async def set_remember_me(self, message: Message, enabled: bool) -> None:
+        from_user = getattr(message, "from_user", None)
+        user_id = getattr(from_user, "id", None)
+        if user_id is None:
+            return
+        await self.storage.set_remember_enabled(int(message.chat.id), int(user_id), bool(enabled))
+        if enabled:
+            await message.reply("🧠 Снова запоминаю твои новые сообщения в этом чате.")
+        else:
+            await message.reply(
+                "🧠 Хорошо, теперь я не запоминаю твои новые сообщения в этом чате. "
+                "Старую память можно удалить командой /fun_delete_me."
+            )
+
+    async def delete_my_memory(self, message: Message) -> int:
+        from_user = getattr(message, "from_user", None)
+        user_id = getattr(from_user, "id", None)
+        if user_id is None:
+            return 0
+        chat_id = int(message.chat.id)
+        canonical = await self.storage.delete_user_memory(chat_id, int(user_id))
+        legacy = await self.storage.delete_legacy_user_messages(chat_id, int(user_id))
+        for key in [key for key in self._active_topics if key[0] == chat_id]:
+            self._active_topics.pop(key, None)
+        removed = int(canonical) + int(legacy)
+        await message.reply(
+            f"🧠 Удалил из своей памяти: <b>{removed}</b> записей. "
+            "Сообщения в Telegram не удалялись."
+        )
+        return removed
 
     @staticmethod
     def panel_keyboard(settings: EntertainmentSettings | None = None) -> InlineKeyboardMarkup:
@@ -361,16 +465,29 @@ class EntertainmentService:
     async def show_panel(self, message: Message) -> None:
         settings = await self.storage.get_settings(message.chat.id)
         topic_id = self._topic_id(message)
-        count = await self.storage.message_count(message.chat.id, topic_id)
+        memory_counts = getattr(self.storage, "memory_counts", None)
+        if callable(memory_counts):
+            counts = await memory_counts(message.chat.id, topic_id)
+            count = counts.total
+            culture_line = (
+                f"Текст: <b>{counts.text}</b> · Emoji: <b>{counts.emoji}</b> · "
+                f"Стикеры: <b>{counts.sticker}</b> · "
+                f"Фото/анимации: <b>{counts.photo + counts.animation}</b>\n"
+            )
+        else:
+            count = await self.storage.message_count(message.chat.id, topic_id)
+            culture_line = ""
         state = "включен" if settings.enabled else "выключен"
         await message.reply(
             "🎭 <b>Развлекательный режим</b>\n\n"
             f"Состояние: <b>{state}</b>\n"
             f"Режим поведения: <b>{settings.behavior_mode.display_name}</b>\n"
-            f"Память этой темы: <b>{count}</b>/{MEMORY_LIMIT}\n\n"
+            f"Память этой темы: <b>{count}</b>/{MEMORY_LIMIT}\n"
+            f"{culture_line}\n"
             "Бот сам выбирает момент по активности конкретной темы, хранит историю своих действий "
             "и не должен перебивать живой разговор.\n"
             "Темы форума и разные чаты изолированы друг от друга.\n\n"
+            "Память: /fun_ignore_me · /fun_remember_me · /fun_delete_me\n"
             "Админам: выберите режим кнопкой ниже · /fun_on · /fun_off · /fun_forget",
             reply_markup=self.panel_keyboard(settings),
         )
@@ -392,7 +509,7 @@ class EntertainmentService:
                 f"Нужно еще примерно <b>{missing}</b> подходящих сообщений."
             )
             return
-        messages = await self.storage.recent_messages(message.chat.id, topic_id)
+        messages = await self._generation_texts(message.chat.id, topic_id)
         recent_actions = await self.storage.recent_actions(
             message.chat.id,
             topic_id,
@@ -455,11 +572,18 @@ class EntertainmentService:
         if not await self._is_admin(message):
             await message.reply("🧠 Стирать память темы может только администрация.")
             return
+        chat_id = int(message.chat.id)
         topic_id = self._topic_id(message)
-        removed = await self.storage.clear_scope(message.chat.id, topic_id)
-        self._active_topics.pop((int(message.chat.id), topic_id), None)
+        clear_memory_scope = getattr(self.storage, "clear_memory_scope", None)
+        canonical_removed = (
+            await clear_memory_scope(chat_id, topic_id)
+            if callable(clear_memory_scope)
+            else 0
+        )
+        legacy_removed = await self.storage.clear_scope(chat_id, topic_id)
+        self._active_topics.pop((chat_id, topic_id), None)
         await message.reply(
-            f"🧠 Память этой темы очищена. Удалено сообщений: <b>{removed}</b>. "
+            f"🧠 Память этой темы очищена. Удалено записей: <b>{canonical_removed + legacy_removed}</b>. "
             "Другие темы и чаты не затронуты."
         )
 
