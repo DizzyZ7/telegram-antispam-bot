@@ -70,11 +70,7 @@ class EntertainmentService:
         self._active_topics[(chat_id, self._topic_id(message))] = message
 
     def is_eligible_learning_message(self, message: Message) -> bool:
-        """Return whether a message belongs to the legacy text/activity path.
-
-        Phase A intentionally keeps this predicate unchanged so emoji/media
-        memory does not alter autonomy frequency before the later cutover.
-        """
+        """Return whether a message belongs to the legacy text/activity path."""
         if not self.is_allowed_chat(message.chat.id):
             return False
         if self._chat_type_value(message) not in {"group", "supergroup"}:
@@ -333,7 +329,7 @@ class EntertainmentService:
                 )
 
     async def _observe_legacy_only(self, message: Message) -> None:
-        """One-release fallback for tests/consumers still constructing core storage directly."""
+        """One-release fallback for consumers still constructing core storage directly."""
         if not self.is_eligible_learning_message(message):
             return
         settings = await self.storage.get_settings(message.chat.id)
@@ -384,9 +380,8 @@ class EntertainmentService:
 
         await add_event(event)
 
-        # Keep Phase A autonomy/activity exactly on the old text gate. Emoji,
-        # stickers, photos and animations enrich memory but do not increase the
-        # current activity counters or trigger text generation yet.
+        # Phase A keeps autonomy/activity on the legacy text gate. Media enriches
+        # Culture Memory without increasing current activity or response cadence.
         if not self.is_eligible_learning_message(message):
             return
 
@@ -408,6 +403,13 @@ class EntertainmentService:
         if user_id is None:
             return
         await self.storage.set_remember_enabled(int(message.chat.id), int(user_id), bool(enabled))
+        if enabled:
+            await message.reply("🧠 Снова запоминаю твои новые сообщения в этом чате.")
+        else:
+            await message.reply(
+                "🧠 Хорошо, теперь я не запоминаю твои новые сообщения в этом чате. "
+                "Старую память можно удалить командой /fun_delete_me."
+            )
 
     async def delete_my_memory(self, message: Message) -> int:
         from_user = getattr(message, "from_user", None)
@@ -419,7 +421,12 @@ class EntertainmentService:
         legacy = await self.storage.delete_legacy_user_messages(chat_id, int(user_id))
         for key in [key for key in self._active_topics if key[0] == chat_id]:
             self._active_topics.pop(key, None)
-        return int(canonical) + int(legacy)
+        removed = int(canonical) + int(legacy)
+        await message.reply(
+            f"🧠 Удалил из своей памяти: <b>{removed}</b> записей. "
+            "Сообщения в Telegram не удалялись."
+        )
+        return removed
 
     @staticmethod
     def panel_keyboard(settings: EntertainmentSettings | None = None) -> InlineKeyboardMarkup:
@@ -451,16 +458,29 @@ class EntertainmentService:
     async def show_panel(self, message: Message) -> None:
         settings = await self.storage.get_settings(message.chat.id)
         topic_id = self._topic_id(message)
-        count = await self.storage.message_count(message.chat.id, topic_id)
+        memory_counts = getattr(self.storage, "memory_counts", None)
+        if callable(memory_counts):
+            counts = await memory_counts(message.chat.id, topic_id)
+            count = counts.total
+            culture_line = (
+                f"Текст: <b>{counts.text}</b> · Emoji: <b>{counts.emoji}</b> · "
+                f"Стикеры: <b>{counts.sticker}</b> · "
+                f"Фото/анимации: <b>{counts.photo + counts.animation}</b>\n"
+            )
+        else:
+            count = await self.storage.message_count(message.chat.id, topic_id)
+            culture_line = ""
         state = "включен" if settings.enabled else "выключен"
         await message.reply(
             "🎭 <b>Развлекательный режим</b>\n\n"
             f"Состояние: <b>{state}</b>\n"
             f"Режим поведения: <b>{settings.behavior_mode.display_name}</b>\n"
-            f"Память этой темы: <b>{count}</b>/{MEMORY_LIMIT}\n\n"
+            f"Память этой темы: <b>{count}</b>/{MEMORY_LIMIT}\n"
+            f"{culture_line}\n"
             "Бот сам выбирает момент по активности конкретной темы, хранит историю своих действий "
             "и не должен перебивать живой разговор.\n"
             "Темы форума и разные чаты изолированы друг от друга.\n\n"
+            "Память: /fun_ignore_me · /fun_remember_me · /fun_delete_me\n"
             "Админам: выберите режим кнопкой ниже · /fun_on · /fun_off · /fun_forget",
             reply_markup=self.panel_keyboard(settings),
         )
@@ -545,11 +565,18 @@ class EntertainmentService:
         if not await self._is_admin(message):
             await message.reply("🧠 Стирать память темы может только администрация.")
             return
+        chat_id = int(message.chat.id)
         topic_id = self._topic_id(message)
-        removed = await self.storage.clear_scope(message.chat.id, topic_id)
-        self._active_topics.pop((int(message.chat.id), topic_id), None)
+        clear_memory_scope = getattr(self.storage, "clear_memory_scope", None)
+        canonical_removed = (
+            await clear_memory_scope(chat_id, topic_id)
+            if callable(clear_memory_scope)
+            else 0
+        )
+        legacy_removed = await self.storage.clear_scope(chat_id, topic_id)
+        self._active_topics.pop((chat_id, topic_id), None)
         await message.reply(
-            f"🧠 Память этой темы очищена. Удалено сообщений: <b>{removed}</b>. "
+            f"🧠 Память этой темы очищена. Удалено записей: <b>{canonical_removed + legacy_removed}</b>. "
             "Другие темы и чаты не затронуты."
         )
 
