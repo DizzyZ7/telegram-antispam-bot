@@ -17,6 +17,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .autonomy import ActionCandidate, ConversationPhase, DecisionContext, derive_phase, select_action
 from .config import MAX_MESSAGE_LENGTH, MEMORY_LIMIT, MIN_MESSAGE_LENGTH, MIN_MESSAGES_TO_GENERATE, URL_RE
 from .generation import generate_chat_text, tokenize
+from .memory import classify_memory_event
 from .models import (
     BehaviorMode,
     EntertainmentActionRecord,
@@ -69,6 +70,11 @@ class EntertainmentService:
         self._active_topics[(chat_id, self._topic_id(message))] = message
 
     def is_eligible_learning_message(self, message: Message) -> bool:
+        """Return whether a message belongs to the legacy text/activity path.
+
+        Phase A intentionally keeps this predicate unchanged so emoji/media
+        memory does not alter autonomy frequency before the later cutover.
+        """
         if not self.is_allowed_chat(message.chat.id):
             return False
         if self._chat_type_value(message) not in {"group", "supergroup"}:
@@ -87,6 +93,22 @@ class EntertainmentService:
         if len(tokenize(text)) < 2:
             return False
         return True
+
+    def _is_eligible_memory_sender(self, message: Message) -> bool:
+        if not self.is_allowed_chat(message.chat.id):
+            return False
+        if self._chat_type_value(message) not in {"group", "supergroup"}:
+            return False
+        from_user = getattr(message, "from_user", None)
+        return from_user is not None and not bool(getattr(from_user, "is_bot", False))
+
+    @staticmethod
+    def _event_looks_like_command(event: object) -> bool:
+        for name in ("text", "caption"):
+            value = getattr(event, name, None)
+            if isinstance(value, str) and value.lstrip().startswith("/"):
+                return True
+        return False
 
     async def _is_admin_identity(self, chat_id: int, user_id: int | None) -> bool:
         if user_id is None:
@@ -310,13 +332,13 @@ class EntertainmentService:
                     topic_id,
                 )
 
-    async def observe_message(self, message: Message) -> None:
+    async def _observe_legacy_only(self, message: Message) -> None:
+        """One-release fallback for tests/consumers still constructing core storage directly."""
         if not self.is_eligible_learning_message(message):
             return
         settings = await self.storage.get_settings(message.chat.id)
         if not settings.enabled:
             return
-
         topic_id = self._topic_id(message)
         text = message.text.strip()
         now = int(self._now_fn())
@@ -330,6 +352,74 @@ class EntertainmentService:
         )
         self.remember_active_topic(message)
         await self.evaluate_topic(message)
+
+    async def observe_message(self, message: Message) -> None:
+        if not self._is_eligible_memory_sender(message):
+            return
+
+        add_event = getattr(self.storage, "add_event", None)
+        get_remember_enabled = getattr(self.storage, "get_remember_enabled", None)
+        if not callable(add_event) or not callable(get_remember_enabled):
+            await self._observe_legacy_only(message)
+            return
+
+        settings = await self.storage.get_settings(message.chat.id)
+        if not settings.enabled:
+            return
+
+        user_id = int(message.from_user.id)
+        if not await get_remember_enabled(int(message.chat.id), user_id):
+            return
+
+        topic_id = self._topic_id(message)
+        now = int(self._now_fn())
+        event = classify_memory_event(
+            message,
+            chat_id=int(message.chat.id),
+            topic_id=topic_id,
+            created_at=now,
+        )
+        if event is None or self._event_looks_like_command(event):
+            return
+
+        await add_event(event)
+
+        # Keep Phase A autonomy/activity exactly on the old text gate. Emoji,
+        # stickers, photos and animations enrich memory but do not increase the
+        # current activity counters or trigger text generation yet.
+        if not self.is_eligible_learning_message(message):
+            return
+
+        text = message.text.strip()
+        await self.storage.add_message(
+            chat_id=message.chat.id,
+            topic_id=topic_id,
+            user_id=user_id,
+            text=text,
+            message_id=getattr(message, "message_id", None),
+            created_at=now,
+        )
+        self.remember_active_topic(message)
+        await self.evaluate_topic(message)
+
+    async def set_remember_me(self, message: Message, enabled: bool) -> None:
+        from_user = getattr(message, "from_user", None)
+        user_id = getattr(from_user, "id", None)
+        if user_id is None:
+            return
+        await self.storage.set_remember_enabled(int(message.chat.id), int(user_id), bool(enabled))
+
+    async def delete_my_memory(self, message: Message) -> int:
+        from_user = getattr(message, "from_user", None)
+        user_id = getattr(from_user, "id", None)
+        if user_id is None:
+            return 0
+        chat_id = int(message.chat.id)
+        canonical = await self.storage.delete_user_memory(chat_id, int(user_id))
+        legacy = await self.storage.delete_legacy_user_messages(chat_id, int(user_id))
+        for key in [key for key in self._active_topics if key[0] == chat_id]:
+            self._active_topics.pop(key, None)
+        return int(canonical) + int(legacy)
 
     @staticmethod
     def panel_keyboard(settings: EntertainmentSettings | None = None) -> InlineKeyboardMarkup:
