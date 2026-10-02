@@ -14,7 +14,7 @@
 
 - Bootstrap threshold: `ENTERTAINMENT_BOOTSTRAP_TEXT_EVENT_THRESHOLD=10000` per `chat_id + topic_id`, counted from canonical `TEXT + EMOJI` events.
 - Media repeat cooldown: `ENTERTAINMENT_MEDIA_REPEAT_COOLDOWN_SECONDS=21600` (6 hours) per `chat_id + topic_id + file_unique_id`.
-- Post-bootstrap command/other-bot generation multiplier: `0.40` of normal source weight.
+- Post-bootstrap command/other-bot generation influence: target `0.40` of comparable human-source opportunities.
 - Never learn from the Entertainment bot itself.
 - Other-bot events and commands enrich memory but never increment human activity/autonomy cadence.
 - Forwarded media is never eligible for autonomous reuse.
@@ -156,17 +156,20 @@ Commit message: `feat: learn commands and other bot culture`
 ```python
 textual_event_count: int = 0
 bootstrap_threshold: int = 10_000
+weight_seed: int = 0
 ```
 
-- Add pure helper behavior: ordinary human text keeps existing weights; before threshold human commands and other-bot text use normal base weight; at/after threshold they use exactly `0.40 * base_weight`, rounded to a minimum effective weight of 1 when material is represented by integer duplication.
-- Service obtains `MemoryCounts` once for the current topic and passes `counts.text + counts.emoji` into Culture context construction.
+- Ordinary human text keeps existing Phase B weights.
+- Before threshold, human commands and other-bot text use the same source opportunity as comparable human text.
+- At/after threshold, commands/other-bot sources remain stored and usable but enter a given generation snapshot with deterministic seeded probability `0.40`; accepted sources keep the normal recent/historical base weight. `weight_seed` changes with the service Culture seed, so no source is permanently excluded across generations.
+- Service obtains `MemoryCounts` once for the current topic and passes `counts.text + counts.emoji`, threshold, and Culture seed into context construction.
 
 - [ ] **Step 1: Write failing weighting tests**
 
 Assert:
-- at 9,999 textual events, `/spawn` and other-bot text receive normal bootstrap representation;
-- at 10,000, the same sources remain present but are reduced to 40% relative weight;
-- ordinary human text is unchanged;
+- at 9,999 textual events, `/spawn` and other-bot text are represented normally;
+- at 10,000, seeded sampling retains approximately/exactly the pinned 2-of-5 fixture sources while ordinary human text is unchanged;
+- changing `weight_seed` can make a previously omitted bot/command source usable in a later generation;
 - threshold is topic-local;
 - recent sources still outweigh historical windows.
 
@@ -175,9 +178,9 @@ Assert:
 Run: `python -m unittest tests.test_entertainment_bootstrap_weighting tests.test_entertainment_culture_generation_service -v`
 Expected: FAIL because Phase B has no provenance-aware weighting.
 
-- [ ] **Step 3: Implement exact weighting policy**
+- [ ] **Step 3: Implement deterministic bootstrap weighting**
 
-Keep weighting pure in `culture.py`; service only supplies count/threshold. Do not persist derived weights.
+Keep weighting pure in `culture.py`; do not persist derived weights or permanently mark sources suppressed.
 
 - [ ] **Step 4: Run focused tests and confirm GREEN**
 
@@ -212,7 +215,7 @@ def select_media_candidate(
     historical_windows: Sequence[Sequence[MemoryEvent]],
     *,
     context_messages: Sequence[str],
-    recent_actions: Sequence[EntertainmentActionRecord],
+    recent_media_actions: Sequence[EntertainmentActionRecord],
     now: int,
     textual_event_count: int,
     bootstrap_threshold: int,
@@ -316,7 +319,7 @@ Commit message: `refactor: share bounded Culture snapshot`
 
 **Files:**
 - Modify: `entertainment/service.py`
-- Modify: `entertainment/models.py` only if a helper/property is required; reuse `EntertainmentActionType.MEMORY_CALLBACK` rather than adding a new enum value.
+- Reuse: `EntertainmentActionType.MEMORY_CALLBACK`
 - Test: `tests/test_entertainment_media_service.py`
 - Test: `tests/test_entertainment_scheduler.py`
 - Test: `tests/test_entertainment_autonomy.py`
@@ -340,8 +343,22 @@ async def _send_media_candidate(
   - photo => `bot.send_photo(chat_id=..., photo=file_id, message_thread_id=topic_id or None)`
   - animation => `bot.send_animation(chat_id=..., animation=file_id, message_thread_id=topic_id or None)`
 - Do **not** copy original photo/animation captions.
-- Realization flow: existing autonomy decision first proves one action slot is allowed; build one snapshot; generate text fallback; rank media; if media qualifies and recent history does not end in non-direct `MEMORY_CALLBACK`, realize the same slot as `MEMORY_CALLBACK`. Otherwise send Phase B text.
-- In `PEAK`, only a decision already permitted as direct may be realized as media; non-direct media cannot bypass the existing peak guard.
+- Keep the existing 30-minute `recent_actions` query unchanged for budget/selection behavior.
+- After an action slot is allowed, load media anti-repeat history separately with:
+
+```python
+await storage.recent_actions(
+    chat_id,
+    topic_id,
+    since=now - MEDIA_REPEAT_COOLDOWN_SECONDS,
+    limit=200,
+)
+```
+
+  `200` is a hard bound and comfortably exceeds the maximum possible actions under current BehaviorMode budgets over six hours.
+- Realization flow: existing autonomy decision first proves one action slot is allowed; build one snapshot; generate text fallback; rank media against the six-hour bounded media-action history; if media qualifies and the immediately previous action was not a non-direct `MEMORY_CALLBACK`, realize the same slot as `MEMORY_CALLBACK`. Otherwise send Phase B text.
+- Store `direct: bool` in all newly recorded Entertainment action metadata. For legacy records missing the key, a previous `MEMORY_CALLBACK` is treated conservatively as non-direct.
+- In `PEAK`, only a decision where `selected.is_direct is True` may be realized as media; non-direct media cannot bypass the existing peak guard.
 - On media send exception: record no media success; if a generated text fallback exists, send exactly one text response under the original decision and record that text action; if text send also fails, record nothing and let supervisor isolation handle/log it.
 
 - [ ] **Step 1: Write failing service tests**
@@ -350,11 +367,12 @@ Cover:
 - correct `send_sticker`, `send_photo`, `send_animation` args;
 - no reused caption;
 - same action budget count as text;
-- no consecutive non-direct `MEMORY_CALLBACK`;
+- six-hour anti-repeat works even when the matching media action is older than 30 minutes;
+- no consecutive non-direct `MEMORY_CALLBACK`, while a direct realization is not blocked by that specific rule;
 - no non-direct media in PEAK;
 - no media candidate => Phase B text;
 - expired/rejected media `file_id` => at most one successful text fallback and no successful media action record;
-- safe metadata contains `media_type`, `media_file_unique_id`, `media_score_bucket`, `media_source_class`, never neighboring text.
+- safe metadata contains `direct`, `media_type`, `media_file_unique_id`, `media_score_bucket`, `media_source_class`, never neighboring text.
 
 - [ ] **Step 2: Run focused tests and confirm RED**
 
