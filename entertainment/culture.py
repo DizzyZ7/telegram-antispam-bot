@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from .models import MemoryEvent, MemoryEventType
+from .models import MemoryCounts, MemoryEvent, MemoryEventType
 
 DEFAULT_RUN_GAP_SECONDS = 8 * 60
 # A slightly wider integer scale preserves the Phase B recent/history ratio while
@@ -43,6 +43,16 @@ class CultureGenerationContext:
     recent_event_count: int = 0
     historical_event_count: int = 0
     conversation_run_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class CultureMemorySnapshot:
+    """One bounded read shared by text, emoji and media realization."""
+
+    recent_events: list[MemoryEvent]
+    historical_windows: list[list[MemoryEvent]]
+    counts: MemoryCounts
+    generation: CultureGenerationContext
 
 
 def _event_order_key(event: MemoryEvent) -> tuple[int, int, int]:
@@ -386,6 +396,7 @@ def apply_emoji_style(
 
 __all__ = [
     "CultureGenerationContext",
+    "CultureMemorySnapshot",
     "DEFAULT_RUN_GAP_SECONDS",
     "apply_emoji_style",
     "build_conversation_runs",
