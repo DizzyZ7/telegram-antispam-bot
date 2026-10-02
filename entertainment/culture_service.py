@@ -67,8 +67,6 @@ class EntertainmentService(PhaseBEntertainmentService):
         add_event = getattr(self.storage, "add_event", None)
         get_remember_enabled = getattr(self.storage, "get_remember_enabled", None)
         if not callable(add_event) or not callable(get_remember_enabled):
-            # Legacy/minimal backends intentionally retain the old human-text-only
-            # behavior. Broad learning requires canonical Culture Memory.
             await self._observe_legacy_only(message)
             return
 
@@ -81,10 +79,6 @@ class EntertainmentService(PhaseBEntertainmentService):
             return
         user_id = int(from_user.id)
         sender_is_bot = bool(getattr(from_user, "is_bot", False))
-
-        # Human privacy preferences continue to govern all human canonical
-        # events, including commands and media. Other-bot culture is chat-level
-        # context and is not tied to a human opt-out row.
         if not sender_is_bot and not await get_remember_enabled(int(message.chat.id), user_id):
             return
 
@@ -100,10 +94,6 @@ class EntertainmentService(PhaseBEntertainmentService):
             return
 
         await add_event(event)
-
-        # Keep the Phase B human activity/autonomy path exactly as-is. Commands,
-        # other-bot events and media-only events enrich memory but never create
-        # human activity or trigger an autonomy evaluation by themselves.
         if not self.is_eligible_learning_message(message):
             return
 
@@ -185,7 +175,6 @@ class EntertainmentService(PhaseBEntertainmentService):
                 trigger_text=trigger_text,
                 textual_event_count=int(counts.text) + int(counts.emoji),
                 bootstrap_threshold=BOOTSTRAP_TEXT_EVENT_THRESHOLD,
-                weight_seed=self._culture_seed(chat_id, topic_id, timestamp),
             )
             return CultureMemorySnapshot(
                 recent_events=recent,
@@ -225,7 +214,6 @@ class EntertainmentService(PhaseBEntertainmentService):
         trigger_text: str | None = None,
         now: int | None = None,
     ) -> CultureGenerationContext:
-        """Compatibility projection of the shared Phase C snapshot."""
         snapshot = await self._culture_memory_snapshot(
             chat_id,
             topic_id,
@@ -241,7 +229,6 @@ class EntertainmentService(PhaseBEntertainmentService):
         topic_id: int,
         candidate: MediaCandidate,
     ) -> None:
-        """Send one remembered Telegram media item by file_id without captions."""
         event = candidate.event
         thread_id = int(topic_id) or None
         if event.event_type is MemoryEventType.STICKER:
@@ -273,7 +260,6 @@ class EntertainmentService(PhaseBEntertainmentService):
         *,
         selected_is_direct: bool,
     ) -> bool:
-        """Prevent consecutive autonomous media callbacks unless current is direct."""
         if selected_is_direct or not recent_actions:
             return False
         previous = max(
@@ -309,7 +295,6 @@ class EntertainmentService(PhaseBEntertainmentService):
         *,
         supervisor: bool = False,
     ) -> EntertainmentActionRecord | None:
-        """Realize one existing autonomy slot as media or Phase B text."""
         chat_id = int(message.chat.id)
         topic_id = self._topic_id(message)
         now = int(self._now_fn())
@@ -326,7 +311,6 @@ class EntertainmentService(PhaseBEntertainmentService):
         if supervisor and phase not in {ConversationPhase.QUIET, ConversationPhase.COOLDOWN}:
             return None
 
-        # This query remains the unchanged 30-minute decision/budget window.
         recent_actions = tuple(
             await self.storage.recent_actions(
                 chat_id,
@@ -374,7 +358,6 @@ class EntertainmentService(PhaseBEntertainmentService):
             trigger_text=trigger_text,
             now=now,
         )
-
         recent_outputs, recent_signatures = self._recent_generation_metadata(recent_actions)
         generated, emoji_signature = self._generate_culture_text(
             snapshot.generation,
@@ -382,8 +365,6 @@ class EntertainmentService(PhaseBEntertainmentService):
             recent_signatures=recent_signatures,
         )
 
-        # Anti-repeat media history is intentionally separate from the 30-minute
-        # decision window, but remains hard-bounded.
         media_actions = tuple(
             await self.storage.recent_actions(
                 chat_id,
@@ -402,7 +383,6 @@ class EntertainmentService(PhaseBEntertainmentService):
             bootstrap_threshold=BOOTSTRAP_TEXT_EVENT_THRESHOLD,
             repeat_cooldown_seconds=MEDIA_REPEAT_COOLDOWN_SECONDS,
         )
-
         media_allowed = (
             media_candidate is not None
             and (phase is not ConversationPhase.PEAK or selected.is_direct)
@@ -456,23 +436,8 @@ class EntertainmentService(PhaseBEntertainmentService):
                     },
                 )
                 action_id = await self.storage.record_action(record)
-                stored_record = replace(record, id=action_id)
-                LOGGER.info(
-                    "ENTERTAINMENT_AUTONOMOUS_ACTION chat_id=%s topic_id=%s action=%s phase=%s mode=%s memory=%s source=%s media_type=%s direct=%s",
-                    chat_id,
-                    topic_id,
-                    EntertainmentActionType.MEMORY_CALLBACK.value,
-                    phase.value,
-                    settings.behavior_mode.value,
-                    memory_count,
-                    record.metadata["source"],
-                    event.event_type.value,
-                    int(selected.is_direct),
-                )
-                return stored_record
+                return replace(record, id=action_id)
 
-        # No usable media, blocked consecutive media, or Telegram media failure:
-        # fall back once to the text realization of the same already-approved slot.
         if generated is None:
             return None
         await self._send_text_fallback(
@@ -482,7 +447,6 @@ class EntertainmentService(PhaseBEntertainmentService):
             supervisor=supervisor,
             generated=generated,
         )
-
         record = EntertainmentActionRecord(
             id=None,
             chat_id=chat_id,
@@ -508,21 +472,7 @@ class EntertainmentService(PhaseBEntertainmentService):
             },
         )
         action_id = await self.storage.record_action(record)
-        stored_record = replace(record, id=action_id)
-        LOGGER.info(
-            "ENTERTAINMENT_AUTONOMOUS_ACTION chat_id=%s topic_id=%s action=%s phase=%s mode=%s memory=%s source=%s direct=%s culture_recent=%s culture_historical=%s",
-            chat_id,
-            topic_id,
-            selected.action_type.value,
-            phase.value,
-            settings.behavior_mode.value,
-            memory_count,
-            record.metadata["source"],
-            int(selected.is_direct),
-            snapshot.generation.recent_event_count,
-            snapshot.generation.historical_event_count,
-        )
-        return stored_record
+        return replace(record, id=action_id)
 
 
 __all__ = ["EntertainmentService"]
