@@ -11,12 +11,15 @@ from dataclasses import dataclass, field
 from .models import MemoryEvent, MemoryEventType
 
 DEFAULT_RUN_GAP_SECONDS = 8 * 60
-_RECENT_SOURCE_WEIGHT = 3
-_HISTORICAL_SOURCE_WEIGHT = 1
+# A slightly wider integer scale preserves the Phase B recent/history ratio while
+# allowing Phase C's exact 0.40 mature-corpus multiplier to remain observable.
+_RECENT_SOURCE_WEIGHT = 10
+_HISTORICAL_SOURCE_WEIGHT = 3
 _ADJACENT_TURN_BONUS = 1
 _REPLY_TURN_BONUS = 3
 _CONTEXT_LIMIT = 50
 _EMOJI_STYLE_CHANCE = 0.55
+_POST_BOOTSTRAP_SPECIAL_WEIGHT = 0.40
 
 _EMOJI_RE = re.compile(
     "["
@@ -116,11 +119,28 @@ def _append_weighted(target: list[str], text: str, weight: int) -> None:
     target.extend([text] * max(1, int(weight)))
 
 
+def _is_reduced_source(event: MemoryEvent, *, mature_corpus: bool) -> bool:
+    return mature_corpus and (bool(event.sender_is_bot) or bool(event.is_command))
+
+
+def _event_weight(event: MemoryEvent, base_weight: int, *, mature_corpus: bool) -> int:
+    if not _is_reduced_source(event, mature_corpus=mature_corpus):
+        return max(1, int(base_weight))
+    return max(1, int(round(int(base_weight) * _POST_BOOTSTRAP_SPECIAL_WEIGHT)))
+
+
+def _relation_weight(event: MemoryEvent, bonus: int, *, mature_corpus: bool) -> int:
+    if not _is_reduced_source(event, mature_corpus=mature_corpus):
+        return max(1, int(bonus))
+    return max(1, int(round(int(bonus) * _POST_BOOTSTRAP_SPECIAL_WEIGHT)))
+
+
 def _add_run_relations(
     run: Sequence[MemoryEvent],
     source_messages: list[str],
     *,
     base_weight: int,
+    mature_corpus: bool,
 ) -> None:
     """Add phrase/turn relations without crossing author token boundaries."""
 
@@ -133,7 +153,11 @@ def _add_run_relations(
     for event in run:
         text = _event_text(event)
         if text:
-            _append_weighted(source_messages, text, base_weight)
+            _append_weighted(
+                source_messages,
+                text,
+                _event_weight(event, base_weight, mature_corpus=mature_corpus),
+            )
 
     for previous, current in zip(run, run[1:]):
         previous_text = _event_text(previous)
@@ -143,10 +167,22 @@ def _add_run_relations(
 
         if int(previous.user_id) == int(current.user_id):
             joined = f"{previous_text} {current_text}".strip()
-            _append_weighted(source_messages, joined, max(1, base_weight - 1))
+            joined_weight = min(
+                _event_weight(previous, base_weight, mature_corpus=mature_corpus),
+                _event_weight(current, base_weight, mature_corpus=mature_corpus),
+            )
+            _append_weighted(source_messages, joined, max(1, joined_weight - 1))
         else:
             # Cross-user chronology is a turn association, never token fusion.
-            _append_weighted(source_messages, current_text, _ADJACENT_TURN_BONUS)
+            _append_weighted(
+                source_messages,
+                current_text,
+                _relation_weight(
+                    current,
+                    _ADJACENT_TURN_BONUS,
+                    mature_corpus=mature_corpus,
+                ),
+            )
 
     for event in run:
         if event.reply_to_message_id is None:
@@ -157,7 +193,15 @@ def _add_run_relations(
         response_text = _event_text(event)
         target_text = _event_text(target)
         if response_text and target_text:
-            _append_weighted(source_messages, response_text, _REPLY_TURN_BONUS)
+            _append_weighted(
+                source_messages,
+                response_text,
+                _relation_weight(
+                    event,
+                    _REPLY_TURN_BONUS,
+                    mature_corpus=mature_corpus,
+                ),
+            )
 
 
 def _scope_from_inputs(
@@ -185,6 +229,8 @@ def build_culture_context(
     historical_windows: Sequence[Sequence[MemoryEvent]],
     *,
     trigger_text: str | None = None,
+    textual_event_count: int = 0,
+    bootstrap_threshold: int = 10_000,
 ) -> CultureGenerationContext:
     """Build weighted local-generation input while preserving turn semantics."""
 
@@ -202,17 +248,29 @@ def build_culture_context(
         if window
     ]
     historical = [window for window in historical if window]
+    threshold = max(1, int(bootstrap_threshold))
+    mature_corpus = int(textual_event_count) >= threshold
 
     source_messages: list[str] = []
     recent_runs = build_conversation_runs(recent)
     for run in recent_runs:
-        _add_run_relations(run, source_messages, base_weight=_RECENT_SOURCE_WEIGHT)
+        _add_run_relations(
+            run,
+            source_messages,
+            base_weight=_RECENT_SOURCE_WEIGHT,
+            mature_corpus=mature_corpus,
+        )
 
     historical_count = 0
     for window in historical:
         historical_count += len(window)
         for run in build_conversation_runs(window):
-            _add_run_relations(run, source_messages, base_weight=_HISTORICAL_SOURCE_WEIGHT)
+            _add_run_relations(
+                run,
+                source_messages,
+                base_weight=_HISTORICAL_SOURCE_WEIGHT,
+                mature_corpus=mature_corpus,
+            )
 
     context_messages = [
         text
@@ -233,17 +291,22 @@ def build_culture_context(
         emojis = _emoji_from_event(event)
         if not emojis:
             return
+        effective_weight = _event_weight(
+            event,
+            weight,
+            mature_corpus=mature_corpus,
+        )
         event_terms = _terms(_event_text(event))
         for emoji in emojis:
-            emoji_candidates.extend([emoji] * max(1, weight))
+            emoji_candidates.extend([emoji] * effective_weight)
             for term in event_terms:
-                emoji_term_scores[emoji][term] += max(1, weight)
+                emoji_term_scores[emoji][term] += effective_weight
 
     for event in recent:
-        add_emoji_culture(event, 3)
+        add_emoji_culture(event, _RECENT_SOURCE_WEIGHT)
     for window in historical:
         for event in window:
-            add_emoji_culture(event, 1)
+            add_emoji_culture(event, _HISTORICAL_SOURCE_WEIGHT)
 
     return CultureGenerationContext(
         source_messages=source_messages,
