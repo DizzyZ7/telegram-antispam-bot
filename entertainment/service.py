@@ -195,6 +195,13 @@ class EntertainmentService:
                 return generated
         return None
 
+    async def _generation_texts(self, chat_id: int, topic_id: int) -> list[str]:
+        """Read canonical Culture Memory text when the backend supports it."""
+        recent_texts = getattr(self.storage, "recent_texts", None)
+        if callable(recent_texts):
+            return await recent_texts(int(chat_id), int(topic_id))
+        return await self.storage.recent_messages(int(chat_id), int(topic_id))
+
     async def evaluate_topic(
         self,
         message: Message,
@@ -253,7 +260,7 @@ class EntertainmentService:
         if selected is None:
             return None
 
-        messages = await self.storage.recent_messages(chat_id, topic_id)
+        messages = await self._generation_texts(chat_id, topic_id)
         recent_outputs = [
             output
             for action in recent_actions
@@ -502,7 +509,7 @@ class EntertainmentService:
                 f"Нужно еще примерно <b>{missing}</b> подходящих сообщений."
             )
             return
-        messages = await self.storage.recent_messages(message.chat.id, topic_id)
+        messages = await self._generation_texts(message.chat.id, topic_id)
         recent_actions = await self.storage.recent_actions(
             message.chat.id,
             topic_id,
