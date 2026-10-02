@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import random
 import re
-from dataclasses import dataclass, field
+from collections import Counter, defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 
 from .models import MemoryEvent, MemoryEventType
 
@@ -14,9 +16,8 @@ _HISTORICAL_SOURCE_WEIGHT = 1
 _ADJACENT_TURN_BONUS = 1
 _REPLY_TURN_BONUS = 3
 _CONTEXT_LIMIT = 50
+_EMOJI_STYLE_CHANCE = 0.55
 
-# Broad Unicode ranges are intentionally local and dependency-free. This is
-# only candidate extraction; Task 3 owns final emoji ranking/style behavior.
 _EMOJI_RE = re.compile(
     "["
     "\U0001F1E6-\U0001F1FF"
@@ -25,6 +26,7 @@ _EMOJI_RE = re.compile(
     "]",
     re.UNICODE,
 )
+_WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +36,7 @@ class CultureGenerationContext:
     source_messages: list[str]
     context_messages: list[str]
     emoji_candidates: list[str] = field(default_factory=list)
+    emoji_term_scores: dict[str, dict[str, int]] = field(default_factory=dict)
     recent_event_count: int = 0
     historical_event_count: int = 0
     conversation_run_count: int = 0
@@ -67,6 +70,12 @@ def _emoji_from_event(event: MemoryEvent) -> list[str]:
     if event.sticker_emoji:
         values.extend(_EMOJI_RE.findall(event.sticker_emoji))
     return values
+
+
+def _terms(text: str | None) -> set[str]:
+    if not text:
+        return set()
+    return {match.casefold() for match in _WORD_RE.findall(text)}
 
 
 def build_conversation_runs(
@@ -133,8 +142,6 @@ def _add_run_relations(
             continue
 
         if int(previous.user_id) == int(current.user_id):
-            # Telegram users often split one sentence/thought into successive
-            # messages. Joining is allowed only within the same author's turn.
             joined = f"{previous_text} {current_text}".strip()
             _append_weighted(source_messages, joined, max(1, base_weight - 1))
         else:
@@ -153,6 +160,26 @@ def _add_run_relations(
             _append_weighted(source_messages, response_text, _REPLY_TURN_BONUS)
 
 
+def _scope_from_inputs(
+    recent_events: Sequence[MemoryEvent],
+    historical_windows: Sequence[Sequence[MemoryEvent]],
+) -> tuple[int, int] | None:
+    if recent_events:
+        first = recent_events[0]
+        return int(first.chat_id), int(first.topic_id)
+    for window in historical_windows:
+        if window:
+            first = window[0]
+            return int(first.chat_id), int(first.topic_id)
+    return None
+
+
+def _in_scope(event: MemoryEvent, scope: tuple[int, int] | None) -> bool:
+    if scope is None:
+        return True
+    return (int(event.chat_id), int(event.topic_id)) == scope
+
+
 def build_culture_context(
     recent_events: Sequence[MemoryEvent],
     historical_windows: Sequence[Sequence[MemoryEvent]],
@@ -161,12 +188,20 @@ def build_culture_context(
 ) -> CultureGenerationContext:
     """Build weighted local-generation input while preserving turn semantics."""
 
-    recent = sorted(recent_events, key=_event_order_key)
+    scope = _scope_from_inputs(recent_events, historical_windows)
+    recent = sorted(
+        (event for event in recent_events if _in_scope(event, scope)),
+        key=_event_order_key,
+    )
     historical = [
-        sorted(window, key=_event_order_key)
+        sorted(
+            (event for event in window if _in_scope(event, scope)),
+            key=_event_order_key,
+        )
         for window in historical_windows
         if window
     ]
+    historical = [window for window in historical if window]
 
     source_messages: list[str] = []
     recent_runs = build_conversation_runs(recent)
@@ -187,31 +222,109 @@ def build_culture_context(
 
     cleaned_trigger = " ".join(trigger_text.split()).strip() if isinstance(trigger_text, str) else ""
     if cleaned_trigger:
-        # Deliberate duplicate weight: Generation v2 consumes context as a flat
-        # list, so repeating the current trigger makes it the strongest anchor.
+        # Generation v2 consumes a flat list; duplicate the live trigger so it
+        # outweighs generic recent context without needing another model.
         context_messages.extend([cleaned_trigger, cleaned_trigger])
 
     emoji_candidates: list[str] = []
-    # Recent culture is intentionally stronger than sampled history.
+    emoji_term_scores: defaultdict[str, Counter[str]] = defaultdict(Counter)
+
+    def add_emoji_culture(event: MemoryEvent, weight: int) -> None:
+        emojis = _emoji_from_event(event)
+        if not emojis:
+            return
+        event_terms = _terms(_event_text(event))
+        for emoji in emojis:
+            emoji_candidates.extend([emoji] * max(1, weight))
+            for term in event_terms:
+                emoji_term_scores[emoji][term] += max(1, weight)
+
     for event in recent:
-        emoji_candidates.extend(_emoji_from_event(event) * 3)
+        add_emoji_culture(event, 3)
     for window in historical:
         for event in window:
-            emoji_candidates.extend(_emoji_from_event(event))
+            add_emoji_culture(event, 1)
 
     return CultureGenerationContext(
         source_messages=source_messages,
         context_messages=context_messages,
         emoji_candidates=emoji_candidates,
+        emoji_term_scores={emoji: dict(scores) for emoji, scores in emoji_term_scores.items()},
         recent_event_count=len(recent),
         historical_event_count=historical_count,
         conversation_run_count=len(recent_runs),
     )
 
 
+def apply_emoji_style(
+    text: str,
+    context: CultureGenerationContext,
+    *,
+    recent_signatures: set[str],
+    rng: random.Random,
+) -> tuple[str, str | None]:
+    """Optionally add 0–2 locally learned emoji without making them mandatory."""
+
+    cleaned = text.strip()
+    if not cleaned or not context.emoji_candidates:
+        return text, None
+    if rng.random() >= _EMOJI_STYLE_CHANCE:
+        return text, None
+
+    anchor_terms = _terms(cleaned)
+    for message in context.context_messages[-8:]:
+        anchor_terms.update(_terms(message))
+
+    frequencies = Counter(context.emoji_candidates)
+    scores: dict[str, int] = {}
+    for emoji, frequency in frequencies.items():
+        score = int(frequency)
+        term_scores = context.emoji_term_scores.get(emoji, {})
+        score += sum(int(term_scores.get(term, 0)) * 3 for term in anchor_terms)
+        scores[emoji] = score
+
+    recent_emojis = {
+        emoji
+        for signature in recent_signatures
+        for emoji in _EMOJI_RE.findall(signature)
+    }
+    alternatives = [emoji for emoji in scores if emoji not in recent_emojis]
+    pool = alternatives or list(scores)
+    if not pool:
+        return text, None
+
+    best_score = max(scores[emoji] for emoji in pool)
+    # Keep only close competitors; unrelated emoji from another local meme
+    # should not be appended merely because two slots are available.
+    competitive = [
+        emoji
+        for emoji in pool
+        if scores[emoji] >= max(1, int(best_score * 0.75))
+    ]
+    competitive.sort(key=lambda emoji: (-scores[emoji], emoji))
+
+    first_score = scores[competitive[0]]
+    top = [emoji for emoji in competitive if scores[emoji] == first_score]
+    first = rng.choice(top)
+    chosen = [first]
+
+    if len(competitive) > 1 and rng.random() < 0.25:
+        remaining = [emoji for emoji in competitive if emoji != first]
+        if remaining:
+            second_best = max(scores[emoji] for emoji in remaining)
+            second_pool = [emoji for emoji in remaining if scores[emoji] == second_best]
+            chosen.append(rng.choice(second_pool))
+
+    signature = "".join(chosen[:2])
+    if not signature or signature in recent_signatures:
+        return text, None
+    return f"{cleaned} {signature}", signature
+
+
 __all__ = [
     "CultureGenerationContext",
     "DEFAULT_RUN_GAP_SECONDS",
+    "apply_emoji_style",
     "build_conversation_runs",
     "build_culture_context",
 ]
