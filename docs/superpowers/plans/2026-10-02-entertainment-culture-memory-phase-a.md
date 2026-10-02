@@ -4,7 +4,7 @@
 
 **Goal:** Add a canonical chronological Culture Memory stream for text, emoji, stickers, photos and animations; backfill existing Entertainment text history; add user memory controls; and cut current text generation over to the canonical projection without changing autonomy frequency.
 
-**Architecture:** Add typed `MemoryEvent` records and new `ent_memory_events` / `ent_memory_preferences` tables in SQLite and PostgreSQL. Phase A dual-writes only qualifying legacy text for compatibility/activity parity while all supported culture events go to the canonical stream. Generation source text switches to canonical `recent_texts(...)` only after parity tests; existing action budgets, activity windows and supervisor cadence remain unchanged.
+**Architecture:** Add typed `MemoryEvent` records and new `ent_memory_events` / `ent_memory_preferences` tables in SQLite and PostgreSQL. Phase A dual-writes only qualifying legacy text for compatibility/activity parity while all supported culture events go to the canonical stream. Generation source text switches to canonical `recent_texts(...)` only after parity tests; existing action budgets, activity windows and supervisor cadence remain unchanged. Canonical-event retention extends the existing `storage/retention.py` wrapper so the current configurable buffered-prune architecture stays intact.
 
 **Tech Stack:** Python 3.12, aiogram 3.x, aiosqlite, asyncpg, unittest, PostgreSQL 17 CI.
 
@@ -14,7 +14,7 @@
 
 - Isolate all memory by chat + topic.
 - Store Telegram media ids/metadata only; no persistent media binaries.
-- Retain approximately 100,000 canonical events per topic with buffered/batch pruning.
+- Retain approximately 100,000 canonical events per topic with the existing buffered/batch pruning wrapper.
 - Keep current autonomy frequency/activity semantics unchanged in Phase A.
 - Backfill is idempotent and non-destructive; keep `entertainment_messages` for rollback.
 - Privacy checks happen before any canonical or compatibility write.
@@ -48,10 +48,12 @@
 - `entertainment/storage/base.py`
 - `entertainment/storage/sqlite.py`
 - `entertainment/storage/postgres.py`
+- `entertainment/storage/retention.py`
 - `entertainment/service.py`
 - `entertainment/router.py`
 - `entertainment/runtime.py`
 - `.github/workflows/ci.yml`
+- `README.md`
 
 ---
 
@@ -105,12 +107,11 @@
 - [ ] Add duplicate-delivery test: inserting same non-null `(chat_id, message_id)` twice yields one row and reuses/returns existing id.
 - [ ] Add preference tests: unknown defaults `True`; toggle is per chat.
 - [ ] Add deletion tests for `delete_user_memory` and `delete_legacy_user_messages`, proving other users/chats remain.
-- [ ] Add retention test using configured memory limit/buffer; oldest rows prune in batch, not every insert.
 - [ ] Run `python -m unittest tests.test_entertainment_culture_memory_sqlite -v`; expect RED.
 - [ ] Extend `EntertainmentStorage` protocol with the signatures above.
 - [ ] Create SQLite `ent_memory_events` with unique partial `(chat_id, message_id)` index for non-null message ids, scope/order indexes, user index, and `legacy_source_id` unique partial index.
 - [ ] Create SQLite `ent_memory_preferences(chat_id, user_id, remember_enabled, updated_at)` with composite primary key.
-- [ ] Implement SQLite CRUD/privacy/retention. Metadata is JSON text; unknown event types are skipped/logged during reads rather than crashing retrieval.
+- [ ] Implement SQLite CRUD/privacy methods without retention policy in the core backend. Metadata is JSON text; unknown event types are skipped/logged during reads rather than crashing retrieval.
 - [ ] Run SQLite Culture Memory tests; expect PASS.
 - [ ] Commit: `feat: add SQLite Culture Memory storage`.
 
@@ -132,22 +133,46 @@
 - [ ] Add SQLite idempotency test: second backfill returns `0`, canonical count unchanged, old table untouched.
 - [ ] Add multi-batch SQLite test proving all source rows import once.
 - [ ] Implement bounded SQLite backfill using `ent_schema_migrations` and transactions.
-- [ ] Write PostgreSQL parity tests for CRUD, privacy, duplicate delivery, deletion, text projection, retention semantics and backfill idempotency against `TEST_DATABASE_URL`.
+- [ ] Write PostgreSQL parity tests for CRUD, privacy, duplicate delivery, deletion, text projection and backfill idempotency against `TEST_DATABASE_URL`.
 - [ ] Run PostgreSQL tests before implementation; expect RED.
-- [ ] Implement PostgreSQL `ent_memory_events`/`ent_memory_preferences`, JSONB metadata, indexes, protocol methods and bounded backfill.
+- [ ] Implement PostgreSQL `ent_memory_events`/`ent_memory_preferences`, JSONB metadata, indexes, protocol methods and bounded backfill. Keep retention out of the core backend.
 - [ ] Run `python -m unittest tests.test_entertainment_culture_memory_sqlite tests.test_entertainment_culture_memory_postgres -v` in a PostgreSQL-capable environment; expect PASS.
 - [ ] Commit: `feat: add PostgreSQL Culture Memory and backfill`.
 
 ---
 
-### Task 4: Service ingestion, dual-write compatibility and privacy semantics
+### Task 4: Canonical event retention wrapper
+
+**Files:**
+- Modify: `entertainment/storage/retention.py`
+- Modify: `tests/test_entertainment_memory_limits.py`
+- Modify: `tests/test_entertainment_memory_postgres.py`
+
+**Interfaces:**
+- Consumes `add_event(event: MemoryEvent) -> int` from Tasks 2–3.
+- Produces the same method on the existing retention wrappers, applying `MEMORY_LIMIT` and `MEMORY_PRUNE_BUFFER` per `chat_id + topic_id`.
+
+- [ ] Add failing SQLite wrapper test with tiny configured values: inserts up to `memory_limit + prune_buffer` do not prune; the next insert prunes canonical rows back to exactly `memory_limit`.
+- [ ] Add strict-isolation assertion: pruning one topic does not touch another topic/chat.
+- [ ] Add regression assertion: canonical-event pruning never deletes rollback rows from `entertainment_messages`.
+- [ ] Add equivalent PostgreSQL wrapper test to the existing PostgreSQL memory test module.
+- [ ] Run `python -m unittest tests.test_entertainment_memory_limits -v`; expect RED on canonical-event retention assertions.
+- [ ] Override `add_event()` in SQLite/PostgreSQL retention wrappers. Insert once through core canonical storage, count only `ent_memory_events` in that topic, and prune only after the buffer threshold is exceeded.
+- [ ] Ensure wrapper pruning returns the original event id and does not perform a full prune delete on every insert.
+- [ ] Run SQLite retention tests; expect PASS.
+- [ ] Run PostgreSQL memory job including the new canonical retention test; expect PASS.
+- [ ] Commit: `feat: retain Culture Memory events in buffered batches`.
+
+---
+
+### Task 5: Service ingestion, dual-write compatibility and privacy semantics
 
 **Files:**
 - Modify: `entertainment/service.py`
 - Test: `tests/test_entertainment_culture_memory_service.py`
 
 **Interfaces:**
-- Consumes Task 1 classifier and Task 2/3 storage methods.
+- Consumes Task 1 classifier and Task 2–4 storage methods.
 - Produces:
   - `observe_message(message: Message) -> None`
   - `set_remember_me(message: Message, enabled: bool) -> None`
@@ -156,18 +181,18 @@
 - [ ] Write failing ingestion tests: allowed human TEXT/EMOJI/STICKER/PHOTO/ANIMATION call `add_event`; bots, unsupported chats and unsupported media do not.
 - [ ] Add compatibility regression: only text satisfying the old text-quality gate also calls legacy `add_message`; emoji-only/media do not enter legacy activity.
 - [ ] Add autonomy regression: storing media alone does not increase current generation readiness or trigger a new autonomous text action in Phase A.
-- [ ] Add opt-out test: when `get_remember_enabled` is false, neither `add_event` nor `add_message` is called.
+- [ ] Add opt-out test: when `get_remember_enabled` is false, neither `add_event` nor `add_message`, `remember_active_topic`, nor `evaluate_topic` is called.
 - [ ] Add incomplete-media/duplicate safety test: `observe_message` returns cleanly and middleware continues.
 - [ ] Run `python -m unittest tests.test_entertainment_culture_memory_service -v`; expect RED.
 - [ ] Refactor `observe_message` to: allowlist/human check -> preference check -> classify -> canonical write -> compatibility text write -> active-topic update -> existing autonomy path.
 - [ ] Implement `set_remember_me` using `set_remember_enabled`.
 - [ ] Implement `delete_my_memory` using both `delete_user_memory` and `delete_legacy_user_messages`; never issue SQL from service.
-- [ ] Run Task 4 tests; expect PASS.
+- [ ] Run Task 5 tests; expect PASS.
 - [ ] Commit: `feat: ingest chronological Culture Memory events`.
 
 ---
 
-### Task 5: Privacy commands, `/fun` counters and admin scope deletion
+### Task 6: Privacy commands, `/fun` counters and admin scope deletion
 
 **Files:**
 - Modify: `entertainment/router.py`
@@ -192,12 +217,13 @@
 
 ---
 
-### Task 6: Runtime backfill, canonical text projection and CI gate
+### Task 7: Runtime backfill, canonical text projection, docs and CI gate
 
 **Files:**
 - Modify: `entertainment/runtime.py`
 - Modify: `entertainment/service.py`
 - Modify: `.github/workflows/ci.yml`
+- Modify: `README.md`
 - Modify: `tests/test_entertainment_runtime.py`
 - Test: `tests/test_entertainment_culture_memory_service.py`
 
@@ -212,6 +238,7 @@
 - [ ] Wire backfill into runtime startup. Backfill failure fails startup instead of silently running partially migrated.
 - [ ] Switch only generation source reads to `recent_texts`; do not change `activity_snapshot`, `human_messages_since`, action budgets, behavior modes or supervisor interval.
 - [ ] Update PostgreSQL CI command to include `tests.test_entertainment_culture_memory_postgres`.
+- [ ] Update README with remembered Phase A event types, privacy commands, `file_id`-only media persistence, rollback-table retention, and the explicit note that Phase A does **not** autonomously send remembered media yet.
 - [ ] Run `python -m unittest tests.test_entertainment_memory_models tests.test_entertainment_memory_classifier tests.test_entertainment_culture_memory_sqlite tests.test_entertainment_culture_memory_service tests.test_entertainment_culture_memory_router -v`; expect PASS.
 - [ ] Run `python -m compileall -q .`; expect exit 0.
 - [ ] Run `python -m unittest discover -s tests -p "test_*.py"`; record exact pass/fail/skip counts and require no new failures outside known unrelated baseline.
@@ -234,6 +261,7 @@ Phase A ships only with fresh evidence that:
 - `/fun_forget` clears current-topic canonical + legacy memory only;
 - current generator reads canonical text projection;
 - autonomy frequency/budgets remain unchanged;
+- buffered 100k retention applies to canonical events through the existing retention wrappers;
 - PostgreSQL integration is green;
 - no new unrelated failures appear.
 
