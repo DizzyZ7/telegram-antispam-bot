@@ -197,6 +197,18 @@ class CultureMemoryServiceTests(unittest.IsolatedAsyncioTestCase):
         storage.delete_legacy_user_messages.assert_awaited_once_with(-1001, 77)
         self.assertEqual(deleted, 5)
 
+    async def test_generation_source_prefers_canonical_text_projection(self):
+        storage = make_storage()
+        storage.recent_texts = AsyncMock(return_value=["canonical one", "canonical two"])
+        storage.recent_messages = AsyncMock(return_value=["legacy one"])
+        service = self.service(storage)
+
+        result = await service._generation_texts(-1001, 10)
+
+        self.assertEqual(result, ["canonical one", "canonical two"])
+        storage.recent_texts.assert_awaited_once_with(-1001, 10)
+        storage.recent_messages.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()
