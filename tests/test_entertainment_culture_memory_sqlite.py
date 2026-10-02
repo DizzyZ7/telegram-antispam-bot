@@ -119,6 +119,52 @@ class CultureMemorySQLiteTests(unittest.IsolatedAsyncioTestCase):
         rows = await self.storage.recent_events(-1001, 10, 10)
         self.assertEqual([row.message_id for row in rows], [4, 5, 6])
 
+    async def test_backfill_preserves_legacy_fields_and_is_idempotent(self):
+        connection = self.storage._require_connection()
+        cursor = await connection.execute(
+            """
+            INSERT INTO entertainment_messages(chat_id, topic_id, message_id, user_id, text, created_at)
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (-1001, 77, 7001, 42, "старое сообщение", 555),
+        )
+        legacy_id = int(cursor.lastrowid)
+        await connection.commit()
+
+        imported = await self.storage.backfill_legacy_memory("culture_memory_v1_text_backfill")
+        self.assertEqual(imported, 1)
+        rows = await self.storage.recent_events(-1001, 77, 10)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(
+            (row.chat_id, row.topic_id, row.message_id, row.user_id, row.text, row.created_at, row.legacy_source_id),
+            (-1001, 77, 7001, 42, "старое сообщение", 555, legacy_id),
+        )
+        self.assertEqual(await self.storage.backfill_legacy_memory("culture_memory_v1_text_backfill"), 0)
+        self.assertEqual((await self.storage.memory_counts(-1001, 77)).total, 1)
+        self.assertEqual(await self.storage.message_count(-1001, 77), 1)
+
+    async def test_backfill_processes_more_than_one_batch(self):
+        connection = self.storage._require_connection()
+        rows = [(-2001, index % 3, index + 10000, index + 1, f"old-{index}", 1000 + index) for index in range(1100)]
+        await connection.executemany(
+            """
+            INSERT INTO entertainment_messages(chat_id, topic_id, message_id, user_id, text, created_at)
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        await connection.commit()
+
+        imported = await self.storage.backfill_legacy_memory("culture_memory_v1_text_backfill_batches")
+        self.assertEqual(imported, 1100)
+        async with connection.execute(
+            "SELECT COUNT(*) FROM ent_memory_events WHERE chat_id = ?",
+            (-2001,),
+        ) as cursor:
+            count_row = await cursor.fetchone()
+        self.assertEqual(int(count_row[0]), 1100)
+
 
 if __name__ == "__main__":
     unittest.main()
