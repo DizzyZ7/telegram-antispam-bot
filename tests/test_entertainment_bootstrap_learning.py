@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from entertainment.service import EntertainmentService
+from entertainment import EntertainmentService
 from entertainment.storage.retention import SQLiteEntertainmentStorage
 
 
