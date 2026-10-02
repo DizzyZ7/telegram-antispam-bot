@@ -44,7 +44,7 @@ async def open_entertainment_runtime_storage(data_dir: Path) -> EntertainmentRun
     backend = "postgres" if isinstance(storage, PostgresEntertainmentStorage) else "sqlite"
     print(
         "ENTERTAINMENT_CULTURE_MEMORY_READY "
-        f"backend={backend} backfill_events={int(culture_events_imported)}",
+        f"backfill_events={int(culture_events_imported)} backend={backend}",
         flush=True,
     )
     return EntertainmentRuntimeStorage(
