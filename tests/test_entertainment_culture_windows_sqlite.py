@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from entertainment.models import MemoryEvent, MemoryEventType
-from entertainment.storage.retention import SQLiteEntertainmentStorage
+from entertainment.storage.windows import SQLiteEntertainmentStorage
 
 
 def event(message_id: int, *, topic_id: int = 10, created_at: int = 1000) -> MemoryEvent:
