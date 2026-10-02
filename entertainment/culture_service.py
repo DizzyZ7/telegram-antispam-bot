@@ -10,10 +10,12 @@ from __future__ import annotations
 from aiogram.types import Message
 
 from .config import BOOTSTRAP_TEXT_EVENT_THRESHOLD, GENERATION_SAMPLE_LIMIT
-from .culture import CultureGenerationContext, build_culture_context
+from .culture import CultureGenerationContext, CultureMemorySnapshot, build_culture_context
 from .memory import classify_memory_event
+from .models import MemoryCounts, MemoryEvent
 from .service import (
     EntertainmentService as PhaseBEntertainmentService,
+    _CULTURE_FALLBACK_CONTEXT_LIMIT,
     _CULTURE_HISTORICAL_WINDOW_COUNT,
     _CULTURE_HISTORICAL_WINDOW_SIZE,
 )
@@ -96,6 +98,103 @@ class EntertainmentService(PhaseBEntertainmentService):
         self.remember_active_topic(message)
         await self.evaluate_topic(message)
 
+    @staticmethod
+    def _filter_scope_events(
+        events: list[MemoryEvent],
+        *,
+        chat_id: int,
+        topic_id: int,
+    ) -> list[MemoryEvent]:
+        return [
+            event
+            for event in events
+            if int(event.chat_id) == int(chat_id) and int(event.topic_id) == int(topic_id)
+        ]
+
+    async def _culture_memory_snapshot(
+        self,
+        chat_id: int,
+        topic_id: int,
+        *,
+        trigger_text: str | None = None,
+        now: int | None = None,
+    ) -> CultureMemorySnapshot:
+        """Read one bounded Culture Memory snapshot for text, emoji and media."""
+        recent_events = getattr(self.storage, "recent_events", None)
+        sample_event_windows = getattr(self.storage, "sample_event_windows", None)
+        memory_counts = getattr(self.storage, "memory_counts", None)
+
+        if callable(recent_events) and callable(sample_event_windows) and callable(memory_counts):
+            timestamp = int(self._now_fn()) if now is None else int(now)
+            raw_recent = list(
+                await recent_events(
+                    int(chat_id),
+                    int(topic_id),
+                    GENERATION_SAMPLE_LIMIT,
+                )
+            )
+            raw_historical = list(
+                await sample_event_windows(
+                    int(chat_id),
+                    int(topic_id),
+                    window_count=_CULTURE_HISTORICAL_WINDOW_COUNT,
+                    window_size=_CULTURE_HISTORICAL_WINDOW_SIZE,
+                    seed=self._culture_seed(chat_id, topic_id, timestamp),
+                )
+            )
+            counts = await memory_counts(int(chat_id), int(topic_id))
+
+            recent = self._filter_scope_events(
+                raw_recent,
+                chat_id=int(chat_id),
+                topic_id=int(topic_id),
+            )
+            historical = [
+                self._filter_scope_events(
+                    list(window),
+                    chat_id=int(chat_id),
+                    topic_id=int(topic_id),
+                )
+                for window in raw_historical
+            ]
+            historical = [window for window in historical if window]
+            generation = build_culture_context(
+                recent,
+                historical,
+                trigger_text=trigger_text,
+                textual_event_count=int(counts.text) + int(counts.emoji),
+                bootstrap_threshold=BOOTSTRAP_TEXT_EVENT_THRESHOLD,
+            )
+            return CultureMemorySnapshot(
+                recent_events=recent,
+                historical_windows=historical,
+                counts=counts,
+                generation=generation,
+            )
+
+        messages = await self._generation_texts(int(chat_id), int(topic_id))
+        context_messages = list(messages[-_CULTURE_FALLBACK_CONTEXT_LIMIT:])
+        cleaned_trigger = (
+            " ".join(trigger_text.split()).strip()
+            if isinstance(trigger_text, str)
+            else ""
+        )
+        if cleaned_trigger:
+            context_messages.extend([cleaned_trigger, cleaned_trigger])
+        generation = CultureGenerationContext(
+            source_messages=list(messages),
+            context_messages=context_messages,
+            recent_event_count=len(messages),
+            historical_event_count=0,
+            conversation_run_count=0,
+        )
+        return CultureMemorySnapshot(
+            recent_events=[],
+            historical_windows=[],
+            counts=MemoryCounts(total=len(messages), text=len(messages)),
+            generation=generation,
+        )
+
     async def _culture_generation_context(
         self,
         chat_id: int,
@@ -104,39 +203,14 @@ class EntertainmentService(PhaseBEntertainmentService):
         trigger_text: str | None = None,
         now: int | None = None,
     ) -> CultureGenerationContext:
-        """Build Phase C context with topic-local bootstrap maturity."""
-        recent_events = getattr(self.storage, "recent_events", None)
-        sample_event_windows = getattr(self.storage, "sample_event_windows", None)
-        memory_counts = getattr(self.storage, "memory_counts", None)
-        if callable(recent_events) and callable(sample_event_windows) and callable(memory_counts):
-            timestamp = int(self._now_fn()) if now is None else int(now)
-            recent = await recent_events(
-                int(chat_id),
-                int(topic_id),
-                GENERATION_SAMPLE_LIMIT,
-            )
-            historical = await sample_event_windows(
-                int(chat_id),
-                int(topic_id),
-                window_count=_CULTURE_HISTORICAL_WINDOW_COUNT,
-                window_size=_CULTURE_HISTORICAL_WINDOW_SIZE,
-                seed=self._culture_seed(chat_id, topic_id, timestamp),
-            )
-            counts = await memory_counts(int(chat_id), int(topic_id))
-            return build_culture_context(
-                recent,
-                historical,
-                trigger_text=trigger_text,
-                textual_event_count=int(counts.text) + int(counts.emoji),
-                bootstrap_threshold=BOOTSTRAP_TEXT_EVENT_THRESHOLD,
-            )
-
-        return await super()._culture_generation_context(
+        """Compatibility projection of the shared Phase C snapshot."""
+        snapshot = await self._culture_memory_snapshot(
             chat_id,
             topic_id,
             trigger_text=trigger_text,
             now=now,
         )
+        return snapshot.generation
 
 
 __all__ = ["EntertainmentService"]
