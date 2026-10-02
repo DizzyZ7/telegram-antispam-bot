@@ -1,16 +1,22 @@
 """Phase C Entertainment service with broad Culture Memory ingestion.
 
-The Phase B service remains the compatibility/base implementation.  This
-subclass widens only canonical Culture Memory learning; human activity and
-autonomy cadence stay on the existing Phase B text path.
+The Phase B service remains the compatibility/base implementation. This
+subclass widens canonical learning and carries Phase C bootstrap state while
+human activity and autonomy cadence stay on the Phase B text path.
 """
 
 from __future__ import annotations
 
 from aiogram.types import Message
 
+from .config import BOOTSTRAP_TEXT_EVENT_THRESHOLD, GENERATION_SAMPLE_LIMIT
+from .culture import CultureGenerationContext, build_culture_context
 from .memory import classify_memory_event
-from .service import EntertainmentService as PhaseBEntertainmentService
+from .service import (
+    EntertainmentService as PhaseBEntertainmentService,
+    _CULTURE_HISTORICAL_WINDOW_COUNT,
+    _CULTURE_HISTORICAL_WINDOW_SIZE,
+)
 
 
 class EntertainmentService(PhaseBEntertainmentService):
@@ -89,6 +95,48 @@ class EntertainmentService(PhaseBEntertainmentService):
         )
         self.remember_active_topic(message)
         await self.evaluate_topic(message)
+
+    async def _culture_generation_context(
+        self,
+        chat_id: int,
+        topic_id: int,
+        *,
+        trigger_text: str | None = None,
+        now: int | None = None,
+    ) -> CultureGenerationContext:
+        """Build Phase C context with topic-local bootstrap maturity."""
+        recent_events = getattr(self.storage, "recent_events", None)
+        sample_event_windows = getattr(self.storage, "sample_event_windows", None)
+        memory_counts = getattr(self.storage, "memory_counts", None)
+        if callable(recent_events) and callable(sample_event_windows) and callable(memory_counts):
+            timestamp = int(self._now_fn()) if now is None else int(now)
+            recent = await recent_events(
+                int(chat_id),
+                int(topic_id),
+                GENERATION_SAMPLE_LIMIT,
+            )
+            historical = await sample_event_windows(
+                int(chat_id),
+                int(topic_id),
+                window_count=_CULTURE_HISTORICAL_WINDOW_COUNT,
+                window_size=_CULTURE_HISTORICAL_WINDOW_SIZE,
+                seed=self._culture_seed(chat_id, topic_id, timestamp),
+            )
+            counts = await memory_counts(int(chat_id), int(topic_id))
+            return build_culture_context(
+                recent,
+                historical,
+                trigger_text=trigger_text,
+                textual_event_count=int(counts.text) + int(counts.emoji),
+                bootstrap_threshold=BOOTSTRAP_TEXT_EVENT_THRESHOLD,
+            )
+
+        return await super()._culture_generation_context(
+            chat_id,
+            topic_id,
+            trigger_text=trigger_text,
+            now=now,
+        )
 
 
 __all__ = ["EntertainmentService"]
