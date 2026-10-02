@@ -4,7 +4,7 @@ import os
 import unittest
 
 from entertainment.models import MemoryEvent, MemoryEventType
-from entertainment.storage.retention import PostgresEntertainmentStorage
+from entertainment.storage.windows import PostgresEntertainmentStorage
 
 
 def event(message_id: int, *, topic_id: int = 44, created_at: int = 1000) -> MemoryEvent:
