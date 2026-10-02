@@ -137,6 +137,7 @@ class EntertainmentService(PhaseBEntertainmentService):
 
         if callable(recent_events) and callable(sample_event_windows) and callable(memory_counts):
             timestamp = int(self._now_fn()) if now is None else int(now)
+            culture_seed = self._culture_seed(chat_id, topic_id, timestamp)
             raw_recent = list(
                 await recent_events(
                     int(chat_id),
@@ -150,7 +151,7 @@ class EntertainmentService(PhaseBEntertainmentService):
                     int(topic_id),
                     window_count=_CULTURE_HISTORICAL_WINDOW_COUNT,
                     window_size=_CULTURE_HISTORICAL_WINDOW_SIZE,
-                    seed=self._culture_seed(chat_id, topic_id, timestamp),
+                    seed=culture_seed,
                 )
             )
             counts = await memory_counts(int(chat_id), int(topic_id))
@@ -175,6 +176,7 @@ class EntertainmentService(PhaseBEntertainmentService):
                 trigger_text=trigger_text,
                 textual_event_count=int(counts.text) + int(counts.emoji),
                 bootstrap_threshold=BOOTSTRAP_TEXT_EVENT_THRESHOLD,
+                weight_seed=culture_seed,
             )
             return CultureMemorySnapshot(
                 recent_events=recent,
