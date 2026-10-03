@@ -27,6 +27,7 @@ _MIN_WORDS = 4
 _MAX_WORDS = 24
 _DEFAULT_CANDIDATES = 48
 _MAX_RAW_CANDIDATES = 160
+_WORKING_SOURCE_LIMIT = 128
 _STRUCTURED_SOURCE_LIMIT = 24
 _STRUCTURED_CANDIDATE_LIMIT = 64
 
@@ -153,6 +154,33 @@ def _source_records(messages: Iterable[str]) -> list[_SourceRecord]:
         for identity, count in counts.items()
         if len(identity.split()) >= 2
     ]
+
+
+def _working_source_records(
+    records: list[_SourceRecord],
+    anchor: TopicAnchor,
+) -> list[_SourceRecord]:
+    """Select a bounded synthesis set without weakening full-snapshot safety.
+
+    Current-topic relevance wins, Culture repetition is only a weak secondary
+    signal, and later source order breaks ties so recent material is preferred
+    when topical evidence is equal. Anti-copy validation still receives all
+    source records separately.
+    """
+
+    if len(records) <= _WORKING_SOURCE_LIMIT:
+        return records
+
+    ranked = sorted(
+        enumerate(records),
+        key=lambda item: (
+            anchor.relevance(item[1].words),
+            min(item[1].weight, 5),
+            item[0],
+        ),
+        reverse=True,
+    )
+    return [record for _index, record in ranked[:_WORKING_SOURCE_LIMIT]]
 
 
 def _bridge_pairs(left: _SourceRecord, right: _SourceRecord) -> list[tuple[int, int]]:
@@ -426,10 +454,10 @@ class GenerationV3:
         *,
         rng: random.Random,
     ) -> GenerationResult | None:
-        records = _source_records(request.source_messages)
+        all_records = _source_records(request.source_messages)
         # A single normalized source, even repeated many times by Culture
         # weighting, cannot prove composition. Fail closed.
-        if len(records) < 2:
+        if len(all_records) < 2:
             return None
 
         direct = request.mode is GenerationMode.DIRECT_REPLY
@@ -438,6 +466,7 @@ class GenerationV3:
             trigger_text=request.trigger_text,
             direct_reply=direct,
         )
+        records = _working_source_records(all_records, anchor)
         model = build_transition_model(record.identity for record in records)
         structured = self._structured_crossover_candidates(records, anchor)
         sampled = self._crossover_candidates(records, anchor, rng)
@@ -456,9 +485,12 @@ class GenerationV3:
         accepted: dict[str, tuple[float, str]] = {}
 
         for candidate in raw_candidates:
+            # Safety always sees the complete distinct source set. The bounded
+            # working set above is a performance limit for synthesis/ranking,
+            # never a relaxation of anti-copy validation.
             reason = _rejection_reason(
                 candidate,
-                records=records,
+                records=all_records,
                 recent_outputs=recent_outputs,
             )
             if reason is not None:

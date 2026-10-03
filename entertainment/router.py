@@ -72,6 +72,12 @@ def register_entertainment_handlers(app: Any, service: EntertainmentService) -> 
 
     _promote_last_message_handler(app)
 
+    @dispatcher.message(chat_filter, Command(commands=["fun_generation_status", "fun_gen_status"]))
+    async def entertainment_generation_status(message: Message) -> None:
+        await service.show_generation_status(message)
+
+    _promote_last_message_handler(app)
+
     @dispatcher.message(chat_filter, Command(commands=["fun_on"]))
     async def entertainment_on(message: Message) -> None:
         await service.set_enabled(message, True)
