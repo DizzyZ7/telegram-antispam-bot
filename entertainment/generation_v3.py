@@ -208,6 +208,13 @@ def _morphology_signal(candidate: str) -> float:
     return confident / len(words)
 
 
+def _trigger_coverage(candidate: str, anchor: TopicAnchor) -> int:
+    if not anchor.trigger_terms:
+        return 0
+    lemmas = {analyze_token(word).lemma for word in _word_tokens(candidate)}
+    return len(lemmas & anchor.trigger_terms)
+
+
 def _rejection_reason(
     candidate: str,
     *,
@@ -256,8 +263,10 @@ def _score_candidate(
 
     trigger_bonus = 0.0
     if mode is GenerationMode.DIRECT_REPLY and anchor.trigger_terms:
-        lemmas = {analyze_token(word).lemma for word in words}
-        trigger_bonus = min(len(lemmas & anchor.trigger_terms) / len(anchor.trigger_terms), 1.0)
+        trigger_bonus = min(
+            _trigger_coverage(candidate, anchor) / len(anchor.trigger_terms),
+            1.0,
+        )
 
     # Current-topic fit intentionally dominates historical phrase frequency.
     return (
@@ -413,7 +422,20 @@ class GenerationV3:
         if not accepted:
             return None
 
-        ranked = sorted(accepted.values(), key=lambda item: (-item[0], item[1]))
+        ranked_pool = list(accepted.values())
+        if direct and anchor.trigger_terms:
+            maximum_coverage = max(
+                _trigger_coverage(candidate, anchor)
+                for _score, candidate in ranked_pool
+            )
+            if maximum_coverage > 0:
+                ranked_pool = [
+                    item
+                    for item in ranked_pool
+                    if _trigger_coverage(item[1], anchor) == maximum_coverage
+                ]
+
+        ranked = sorted(ranked_pool, key=lambda item: (-item[0], item[1]))
         high_quality = ranked[: min(8, len(ranked))]
         rank_weights = [1.0 / ((index + 1) ** 0.70) for index in range(len(high_quality))]
         score, text = rng.choices(high_quality, weights=rank_weights, k=1)[0]
