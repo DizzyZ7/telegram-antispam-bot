@@ -6,7 +6,7 @@ source messages, trigger text, context messages or user identifiers.
 
 from __future__ import annotations
 
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -15,6 +15,7 @@ from .models import EntertainmentActionRecord
 
 _SCORE_BUCKETS = frozenset({"none", "low", "medium", "high", "very_high"})
 _DEFAULT_SCOPE_LIMIT = 256
+_RECENT_WINDOW_SIZE = 32
 
 
 def score_bucket(score: float) -> str:
@@ -70,6 +71,43 @@ class GenerationMetricsSnapshot:
         if self.attempts <= 0:
             return 0.0
         return self.successes / self.attempts
+
+
+def _combine_snapshots(
+    snapshots: Iterable[GenerationMetricsSnapshot],
+) -> GenerationMetricsSnapshot:
+    attempts = 0
+    successes = 0
+    no_output = 0
+    engine_counts: Counter[str] = Counter()
+    mode_counts: Counter[str] = Counter()
+    score_buckets: Counter[str] = Counter()
+    rejection_counts: Counter[str] = Counter()
+    candidate_total = 0
+    candidate_samples = 0
+
+    for snapshot in snapshots:
+        attempts += int(snapshot.attempts)
+        successes += int(snapshot.successes)
+        no_output += int(snapshot.no_output)
+        engine_counts.update(snapshot.engine_counts)
+        mode_counts.update(snapshot.mode_counts)
+        score_buckets.update(snapshot.score_buckets)
+        rejection_counts.update(snapshot.rejection_counts)
+        candidate_total += int(snapshot.candidate_total)
+        candidate_samples += int(snapshot.candidate_samples)
+
+    return GenerationMetricsSnapshot(
+        attempts=attempts,
+        successes=successes,
+        no_output=no_output,
+        engine_counts=dict(engine_counts),
+        mode_counts=dict(mode_counts),
+        score_buckets=dict(score_buckets),
+        rejection_counts=dict(rejection_counts),
+        candidate_total=candidate_total,
+        candidate_samples=candidate_samples,
+    )
 
 
 class GenerationMetrics:
@@ -163,11 +201,12 @@ class GenerationMetrics:
 class ScopedGenerationMetrics:
     """Bounded process-local metrics isolated by chat/topic scope."""
 
-    __slots__ = ("_aggregate", "_scopes", "_max_scopes")
+    __slots__ = ("_aggregate", "_scopes", "_recent", "_max_scopes")
 
     def __init__(self, *, max_scopes: int = _DEFAULT_SCOPE_LIMIT) -> None:
         self._aggregate = GenerationMetrics()
         self._scopes: OrderedDict[tuple[int, int], GenerationMetrics] = OrderedDict()
+        self._recent: dict[tuple[int, int], deque[GenerationMetricsSnapshot]] = {}
         self._max_scopes = max(1, int(max_scopes))
 
     def record(
@@ -189,19 +228,27 @@ class ScopedGenerationMetrics:
         engine: str,
         result: GenerationResult | None,
     ) -> None:
-        """Record one attempt in the aggregate and exactly one chat/topic scope."""
+        """Record one attempt in aggregate, lifetime scope and recent window."""
         key = (int(chat_id), int(topic_id))
         metrics = self._scopes.get(key)
         if metrics is None:
             metrics = GenerationMetrics()
             self._scopes[key] = metrics
+            self._recent[key] = deque(maxlen=_RECENT_WINDOW_SIZE)
             while len(self._scopes) > self._max_scopes:
-                self._scopes.popitem(last=False)
+                evicted_key, _ = self._scopes.popitem(last=False)
+                self._recent.pop(evicted_key, None)
         else:
             self._scopes.move_to_end(key)
 
         self._aggregate.record(mode=mode, engine=engine, result=result)
         metrics.record(mode=mode, engine=engine, result=result)
+
+        sample_metrics = GenerationMetrics()
+        sample_metrics.record(mode=mode, engine=engine, result=result)
+        sample = sample_metrics.snapshot()
+        if sample.attempts:
+            self._recent[key].append(sample)
 
     def snapshot(self) -> GenerationMetricsSnapshot:
         return self._aggregate.snapshot()
@@ -213,6 +260,16 @@ class ScopedGenerationMetrics:
             return GenerationMetrics().snapshot()
         self._scopes.move_to_end(key)
         return metrics.snapshot()
+
+    def recent_snapshot_for(self, chat_id: int, topic_id: int) -> GenerationMetricsSnapshot:
+        """Return privacy-safe counters for at most the last 32 scoped attempts."""
+        key = (int(chat_id), int(topic_id))
+        samples = self._recent.get(key)
+        if samples is None:
+            return GenerationMetrics().snapshot()
+        if key in self._scopes:
+            self._scopes.move_to_end(key)
+        return _combine_snapshots(samples)
 
 
 def aggregate_generation_actions(

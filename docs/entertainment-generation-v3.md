@@ -92,20 +92,24 @@ The status command exposes aggregate information only for the current `chat_id +
 - active engine (`v2` / `v3`);
 - live generation attempts, successful outputs and `no-output` count for the current topic since the current process started;
 - live engine and generation-mode counts for that topic;
-- average accepted candidate count;
-- aggregate rejection reasons;
+- average accepted candidate count and aggregate rejection reasons;
+- a rolling health view for the **last 32 generation attempts** in the same topic;
+- recent success/no-output rate, engine/mode counts, average candidates and rejection reasons;
+- recent success-rate change in percentage points relative to the topic's lifetime live rate;
 - successful generation diagnostics reconstructed from the same topic action history for the last 24 hours;
 - the explicit v2 rollback environment setting.
 
-Live counters are isolated by `(chat_id, topic_id)` and carried task-locally across concurrent `evaluate_topic` calls, so activity in one chat/topic cannot contaminate another topic's status. The process-local scope cache is LRU-bounded to 256 active scopes; evicting an inactive scope never changes the global compatibility aggregate.
+The recent-health window is intentionally descriptive only. It does not apply automatic health thresholds, disable generation, switch engines or emit alerts. This keeps operational visibility separate from policy decisions until real production data justifies a threshold.
 
-`no-output` is intentionally process-local and resets when the bot process restarts. Existing action records persist successful-generation diagnostics, but a new database table is not introduced just to persist failed attempts.
+Live counters and the rolling 32-attempt window are isolated by `(chat_id, topic_id)` and carried task-locally across concurrent `evaluate_topic` calls, so activity in one chat/topic cannot contaminate another topic's status. The process-local scope cache is LRU-bounded to 256 active scopes. Evicting an inactive scope removes its recent window too, while leaving the global compatibility aggregate unchanged.
+
+`no-output` and the rolling recent-health window are intentionally process-local and reset when the bot process restarts. Existing action records persist successful-generation diagnostics, but a new database table is not introduced just to persist failed attempts or rolling telemetry.
 
 The status command is admin-only. Hard-blocked Entertainment topic scopes return silently before an admin lookup or action-history read.
 
 ## Diagnostics and privacy
 
-The production metrics collector stores counters only and never stores generated text, source messages, trigger text, context messages or user identifiers.
+The production metrics collector stores counters only and never stores generated text, source messages, trigger text, context messages or user identifiers. The rolling recent-health deque stores one counter-only snapshot per attempt, capped at 32 entries per active scope; it does not retain `GenerationResult.text`.
 
 Persisted action aggregation reads only these safe generation fields:
 
@@ -130,8 +134,10 @@ Production-hardening tests cover:
 - slang/meme phrasing;
 - fixed 32–64 candidate-target clamping;
 - privacy-safe telemetry aggregation;
-- chat/topic isolation of live status metrics;
-- bounded 256-scope LRU behavior;
+- chat/topic isolation of lifetime and recent live status metrics;
+- 32-attempt recent-window rollover without truncating lifetime counters;
+- recent-window LRU cleanup together with the bounded 256-scope cache;
+- privacy-safe recent status rendering with no generated text leakage;
 - admin-only status behavior and hard-deny short-circuiting.
 
 ## Offline quality gate

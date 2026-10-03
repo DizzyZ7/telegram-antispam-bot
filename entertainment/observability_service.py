@@ -41,6 +41,22 @@ def _format_rejections(snapshot: GenerationMetricsSnapshot) -> str:
     )
 
 
+def _format_success_rate(snapshot: GenerationMetricsSnapshot) -> str:
+    if not snapshot.attempts:
+        return "нет данных"
+    return f"{snapshot.success_rate * 100:.1f}%"
+
+
+def _format_rate_delta(
+    recent: GenerationMetricsSnapshot,
+    live: GenerationMetricsSnapshot,
+) -> str:
+    if not recent.attempts or not live.attempts:
+        return "нет данных"
+    delta = (recent.success_rate - live.success_rate) * 100
+    return f"{delta:+.1f} п.п."
+
+
 class EntertainmentService(ScopedEntertainmentService):
     """Hard-scoped Entertainment service with privacy-safe generation telemetry."""
 
@@ -118,9 +134,12 @@ class EntertainmentService(ScopedEntertainmentService):
         )
         persisted = aggregate_generation_actions(actions)
         live = self._generation_metrics.snapshot_for(chat_id, topic_id)
+        recent = self._generation_metrics.recent_snapshot_for(chat_id, topic_id)
         engine = resolve_generation_engine()
 
-        live_rate = f"{live.success_rate * 100:.1f}%" if live.attempts else "нет данных"
+        live_rate = _format_success_rate(live)
+        recent_rate = _format_success_rate(recent)
+        rate_delta = _format_rate_delta(recent, live)
 
         text = (
             "🧪 <b>Generation v3 · status</b>\n\n"
@@ -132,6 +151,14 @@ class EntertainmentService(ScopedEntertainmentService):
             f"Режимы: {_format_counts(live.mode_counts)}\n"
             f"Среднее кандидатов: <b>{live.average_candidate_count:.1f}</b>\n"
             f"Отбраковки: {_format_rejections(live)}\n\n"
+            "<b>Последние 32 попытки</b>\n"
+            f"Попытки: <b>{recent.attempts}</b> · успешно: <b>{recent.successes}</b> · "
+            f"no-output: <b>{recent.no_output}</b> · success rate: <b>{recent_rate}</b>\n"
+            f"Изменение к live: <b>{rate_delta}</b>\n"
+            f"Движки: {_format_counts(recent.engine_counts)}\n"
+            f"Режимы: {_format_counts(recent.mode_counts)}\n"
+            f"Среднее кандидатов: <b>{recent.average_candidate_count:.1f}</b>\n"
+            f"Отбраковки: {_format_rejections(recent)}\n\n"
             "<b>История темы за 24 часа</b>\n"
             f"Сохраненных успешных генераций: <b>{persisted.successes}</b>\n"
             f"Движки: {_format_counts(persisted.engine_counts)}\n"
@@ -140,7 +167,7 @@ class EntertainmentService(ScopedEntertainmentService):
             f"Отбраковки: {_format_rejections(persisted)}\n\n"
             "Rollback: <code>ENTERTAINMENT_GENERATION_ENGINE=v2</code>\n"
             "🔒 Эта статистика не читает и не выводит исходные сообщения, контекст или триггер.\n"
-            "ℹ️ no-output доступен только live и обнуляется после рестарта процесса."
+            "ℹ️ Live и окно последних 32 попыток обнуляются после рестарта процесса."
         )
         await message.reply(text)
 
