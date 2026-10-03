@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from entertainment import EntertainmentService
 from entertainment.config import ENTERTAINMENT_BLOCKED_TOPIC_SCOPES
@@ -102,6 +102,22 @@ class TopicDenylistTests(unittest.IsolatedAsyncioTestCase):
         result = await service.evaluate_topic(FakeMessage(topic_id=292358))
         self.assertIsNone(result)
         storage.get_settings.assert_not_awaited()
+
+    async def test_all_blocked_topics_stop_before_culture_snapshot_and_generation(self) -> None:
+        culture_read = AsyncMock(side_effect=AssertionError("blocked topic read Culture Memory"))
+        with (
+            patch.object(self.service, "_culture_generation_context", culture_read),
+            patch(
+                "entertainment.service.generate_text",
+                side_effect=AssertionError("blocked topic reached generation"),
+            ) as generator,
+        ):
+            for topic_id in sorted(BLOCKED_TOPICS):
+                result = await self.service.evaluate_topic(FakeMessage(topic_id=topic_id))
+                self.assertIsNone(result)
+
+        culture_read.assert_not_awaited()
+        generator.assert_not_called()
 
     async def test_manual_generation_is_silent_in_blocked_topic(self) -> None:
         message = FakeMessage(topic_id=14637)
