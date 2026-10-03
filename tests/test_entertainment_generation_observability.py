@@ -183,6 +183,7 @@ class GenerationObservabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no-output", rendered)
         self.assertIn("24", rendered)
         self.assertIn("ENTERTAINMENT_GENERATION_ENGINE=v2", rendered)
+        self.assertNotIn("success rate по сохраненным", rendered)
         self.assertNotIn("SECRET OUTPUT", rendered)
         self.assertNotIn("SECRET TRIGGER", rendered)
 
