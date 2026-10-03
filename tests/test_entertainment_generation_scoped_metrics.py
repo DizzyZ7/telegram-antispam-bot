@@ -56,6 +56,35 @@ class ScopedGenerationMetricsTests(unittest.TestCase):
         self.assertEqual(metrics.snapshot_for(-1001, 256).attempts, 1)
         self.assertEqual(metrics.snapshot().attempts, 257)
 
+    def test_recent_snapshot_keeps_only_last_32_attempts_without_truncating_live_totals(self):
+        metrics = ScopedGenerationMetrics()
+
+        for index in range(8):
+            metrics.record_for(
+                -1001,
+                10,
+                mode="direct_reply",
+                engine="v3",
+                result=result(f"SECRET SUCCESS {index}"),
+            )
+        for _ in range(32):
+            metrics.record_for(
+                -1001,
+                10,
+                mode="autonomous",
+                engine="v3",
+                result=None,
+            )
+
+        live = metrics.snapshot_for(-1001, 10)
+        recent = metrics.recent_snapshot_for(-1001, 10)
+
+        self.assertEqual((live.attempts, live.successes, live.no_output), (40, 8, 32))
+        self.assertEqual((recent.attempts, recent.successes, recent.no_output), (32, 0, 32))
+        self.assertEqual(recent.mode_counts, {"autonomous": 32})
+        self.assertEqual(recent.engine_counts, {"v3": 32})
+        self.assertNotIn("SECRET SUCCESS", repr(metrics))
+
 
 if __name__ == "__main__":
     unittest.main()
