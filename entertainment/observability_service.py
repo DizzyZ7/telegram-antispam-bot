@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 from collections.abc import Mapping
+from contextvars import ContextVar
 from typing import Any
 
 from aiogram.types import Message
@@ -16,6 +17,10 @@ from .scoped_service import EntertainmentService as ScopedEntertainmentService
 
 _GENERATION_STATUS_WINDOW_SECONDS = 24 * 60 * 60
 _GENERATION_STATUS_ACTION_LIMIT = 200
+_CURRENT_GENERATION_SCOPE: ContextVar[tuple[int, int] | None] = ContextVar(
+    "entertainment_generation_metrics_scope",
+    default=None,
+)
 
 
 def _format_counts(counts: Mapping[str, int], *, empty: str = "нет данных") -> str:
@@ -43,6 +48,20 @@ class EntertainmentService(ScopedEntertainmentService):
         super().__init__(*args, **kwargs)
         self._generation_metrics = ScopedGenerationMetrics()
 
+    async def evaluate_topic(
+        self,
+        message: Message,
+        *,
+        supervisor: bool = False,
+    ):
+        """Keep generation telemetry scope task-local across concurrent topics."""
+        scope = (int(message.chat.id), self._topic_id(message))
+        token = _CURRENT_GENERATION_SCOPE.set(scope)
+        try:
+            return await super().evaluate_topic(message, supervisor=supervisor)
+        finally:
+            _CURRENT_GENERATION_SCOPE.reset(token)
+
     def _generate_culture_text(
         self,
         context: CultureGenerationContext,
@@ -51,8 +70,9 @@ class EntertainmentService(ScopedEntertainmentService):
         recent_signatures: set[str],
         mode: GenerationMode = GenerationMode.AUTONOMOUS,
         trigger_text: str | None = None,
+        metrics_scope: tuple[int, int] | None = None,
     ):
-        """Record one aggregate metric for one service-level generation request."""
+        """Record one metric for one generation request in its chat/topic scope."""
         outcome = super()._generate_culture_text(
             context,
             recent_outputs=recent_outputs,
@@ -62,11 +82,21 @@ class EntertainmentService(ScopedEntertainmentService):
         )
         result = getattr(outcome, "diagnostics", None)
         engine = result.engine if result is not None else resolve_generation_engine()
-        self._generation_metrics.record(
-            mode=mode.value,
-            engine=engine,
-            result=result,
-        )
+        scope = metrics_scope if metrics_scope is not None else _CURRENT_GENERATION_SCOPE.get()
+        if scope is None:
+            self._generation_metrics.record(
+                mode=mode.value,
+                engine=engine,
+                result=result,
+            )
+        else:
+            self._generation_metrics.record_for(
+                scope[0],
+                scope[1],
+                mode=mode.value,
+                engine=engine,
+                result=result,
+            )
         return outcome
 
     async def show_generation_status(self, message: Message) -> None:
