@@ -12,6 +12,8 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_LAZINESS = 92
 DEFAULT_COOLDOWN_SECONDS = 45
+DEFAULT_GENERATION_ENGINE = "v3"
+VALID_GENERATION_ENGINES = frozenset({"v2", "v3"})
 
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -85,6 +87,24 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def resolve_generation_engine(value: str | None = None) -> str:
+    """Resolve the local generation engine, failing safely to v3.
+
+    The environment is read at call time so an operator rollback does not
+    depend on module import order. No external model/provider can be selected.
+    """
+
+    raw = value if value is not None else os.getenv("ENTERTAINMENT_GENERATION_ENGINE")
+    selected = (raw or DEFAULT_GENERATION_ENGINE).strip().casefold()
+    if selected not in VALID_GENERATION_ENGINES:
+        LOGGER.warning(
+            "Ignoring invalid ENTERTAINMENT_GENERATION_ENGINE value: %r",
+            selected,
+        )
+        return DEFAULT_GENERATION_ENGINE
+    return selected
 
 
 @dataclass(frozen=True, slots=True)
