@@ -408,3 +408,34 @@ def generate_chat_text(
     # high-quality band keeps the bot varied while preserving the reranker.
     weights = [1.0 / ((index + 1) ** 0.65) for index in range(len(top))]
     return rng.choices(top, weights=weights, k=1)[0][1]
+
+
+def generate_text(
+    request: "GenerationRequest",
+    *,
+    rng: random.Random,
+    engine: str | None = None,
+) -> "GenerationResult | None":
+    """Compatibility facade for v3 with a one-release v2 rollback path."""
+
+    from .config import resolve_generation_engine
+    from .generation_v3 import GenerationResult, GenerationV3
+
+    selected = resolve_generation_engine(engine)
+    if selected == "v2":
+        generated = generate_chat_text(
+            request.source_messages,
+            rng=rng,
+            context_messages=request.context_messages,
+        )
+        if not generated:
+            return None
+        return GenerationResult(
+            text=generated,
+            engine="v2",
+            score=0.0,
+            candidate_count=1,
+            rejection_counts={},
+        )
+
+    return GenerationV3().generate(request, rng=rng)
