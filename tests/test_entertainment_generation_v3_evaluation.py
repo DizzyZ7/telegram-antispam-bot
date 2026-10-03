@@ -77,12 +77,13 @@ class GenerationV3EvaluationTests(unittest.TestCase):
         seeds = [2, 5, 13, 17, 29, 37, 41, 43]
         v2 = benchmark_engine(request(), engine="v2", seeds=seeds)
         v3 = benchmark_engine(request(), engine="v3", seeds=seeds)
+        details = f"v2={v2!r}\nv3={v3!r}"
 
-        self.assertLessEqual(v3.exact_replay_rate, v2.exact_replay_rate)
-        self.assertLessEqual(v3.unsafe_source_overlap_rate, v2.unsafe_source_overlap_rate)
-        self.assertGreaterEqual(v3.topic_anchor_overlap, v2.topic_anchor_overlap)
-        self.assertGreaterEqual(v3.supported_ngram_ratio, v2.supported_ngram_ratio)
-        self.assertLess(v3.no_output_rate, 1.0)
+        self.assertLessEqual(v3.exact_replay_rate, v2.exact_replay_rate, details)
+        self.assertLessEqual(v3.unsafe_source_overlap_rate, v2.unsafe_source_overlap_rate, details)
+        self.assertGreaterEqual(v3.topic_anchor_overlap, v2.topic_anchor_overlap, details)
+        self.assertGreaterEqual(v3.supported_ngram_ratio, v2.supported_ngram_ratio, details)
+        self.assertLess(v3.no_output_rate, 1.0, details)
 
     def test_short_single_source_corpus_fails_closed_instead_of_copying(self):
         tiny = GenerationRequest(
