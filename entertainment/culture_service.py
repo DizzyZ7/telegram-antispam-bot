@@ -1,16 +1,17 @@
 """Phase C Entertainment service with broad Culture Memory ingestion.
 
 The Phase B service remains the compatibility/base implementation. This
-subclass widens canonical learning, carries bootstrap state and can realize an
-already-approved autonomy slot as one contextually relevant remembered media
-item without changing the existing action budget.
+subclass widens canonical learning, carries bootstrap state, integrates the
+chat-only Generation v3 engine and can realize an already-approved autonomy
+slot as one contextually relevant remembered media item without changing the
+existing action budget.
 """
 
 from __future__ import annotations
 
 import html
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from aiogram.types import Message
 
@@ -21,7 +22,14 @@ from .config import (
     MEDIA_REPEAT_COOLDOWN_SECONDS,
     MIN_MESSAGES_TO_GENERATE,
 )
-from .culture import CultureGenerationContext, CultureMemorySnapshot, build_culture_context
+from .culture import (
+    CultureGenerationContext,
+    CultureMemorySnapshot,
+    apply_emoji_style,
+    build_culture_context,
+)
+from .generation import generate_text
+from .generation_v3 import GenerationMode, GenerationRequest, GenerationResult
 from .media_culture import MediaCandidate, select_media_candidate
 from .memory import classify_memory_event
 from .models import (
@@ -31,6 +39,7 @@ from .models import (
     MemoryEvent,
     MemoryEventType,
 )
+from .novelty import is_novel_generated_text
 from .service import (
     EntertainmentService as PhaseBEntertainmentService,
     _CULTURE_FALLBACK_CONTEXT_LIMIT,
@@ -40,6 +49,19 @@ from .service import (
 
 LOGGER = logging.getLogger(__name__)
 _MEDIA_ACTION_HISTORY_LIMIT = 200
+
+
+@dataclass(frozen=True, slots=True)
+class CultureGenerationOutcome:
+    """Text result compatible with old two-value unpacking plus safe diagnostics."""
+
+    text: str | None
+    emoji_signature: str | None
+    diagnostics: GenerationResult | None
+
+    def __iter__(self):
+        yield self.text
+        yield self.emoji_signature
 
 
 class EntertainmentService(PhaseBEntertainmentService):
@@ -224,6 +246,56 @@ class EntertainmentService(PhaseBEntertainmentService):
         )
         return snapshot.generation
 
+    @staticmethod
+    def _generation_score_bucket(score: float) -> str:
+        if score < 2.0:
+            return "low"
+        if score < 4.0:
+            return "medium"
+        if score < 6.0:
+            return "high"
+        return "very_high"
+
+    def _generate_culture_text(
+        self,
+        context: CultureGenerationContext,
+        *,
+        recent_outputs: list[str],
+        recent_signatures: set[str],
+        mode: GenerationMode = GenerationMode.AUTONOMOUS,
+        trigger_text: str | None = None,
+    ) -> CultureGenerationOutcome:
+        """Generate through v3/v2 facade, validate text, then apply emoji culture."""
+        if not context.source_messages:
+            return CultureGenerationOutcome(None, None, None)
+
+        request = GenerationRequest(
+            source_messages=list(context.source_messages),
+            context_messages=list(context.context_messages),
+            trigger_text=trigger_text,
+            mode=mode,
+            recent_bot_outputs=list(recent_outputs),
+        )
+        for _ in range(5):
+            result = generate_text(request, rng=self.rng)
+            if result is None:
+                continue
+            generated = result.text
+            if not is_novel_generated_text(
+                generated,
+                context.source_messages,
+                recent_outputs,
+            ):
+                continue
+            styled, signature = apply_emoji_style(
+                generated,
+                context,
+                recent_signatures=recent_signatures,
+                rng=self.rng,
+            )
+            return CultureGenerationOutcome(styled, signature, result)
+        return CultureGenerationOutcome(None, None, None)
+
     async def _send_media_candidate(
         self,
         *,
@@ -349,9 +421,14 @@ class EntertainmentService(PhaseBEntertainmentService):
         if selected is None:
             return None
 
+        generation_mode = (
+            GenerationMode.DIRECT_REPLY
+            if selected.action_type is EntertainmentActionType.CONTEXTUAL_REPLY
+            else GenerationMode.AUTONOMOUS
+        )
         trigger_text = (
             getattr(message, "text", None)
-            if selected.action_type is EntertainmentActionType.CONTEXTUAL_REPLY
+            if generation_mode is GenerationMode.DIRECT_REPLY
             else None
         )
         snapshot = await self._culture_memory_snapshot(
@@ -361,11 +438,15 @@ class EntertainmentService(PhaseBEntertainmentService):
             now=now,
         )
         recent_outputs, recent_signatures = self._recent_generation_metadata(recent_actions)
-        generated, emoji_signature = self._generate_culture_text(
+        generation_outcome = self._generate_culture_text(
             snapshot.generation,
             recent_outputs=recent_outputs,
             recent_signatures=recent_signatures,
+            mode=generation_mode,
+            trigger_text=trigger_text,
         )
+        generated, emoji_signature = generation_outcome
+        generation_result = getattr(generation_outcome, "diagnostics", None)
 
         media_actions = tuple(
             await self.storage.recent_actions(
@@ -471,10 +552,27 @@ class EntertainmentService(PhaseBEntertainmentService):
                 "culture_recent_events": snapshot.generation.recent_event_count,
                 "culture_historical_events": snapshot.generation.historical_event_count,
                 "culture_runs": snapshot.generation.conversation_run_count,
+                "generation_engine": (
+                    generation_result.engine if generation_result is not None else "unknown"
+                ),
+                "generation_mode": generation_mode.value,
+                "generation_candidate_count": (
+                    generation_result.candidate_count if generation_result is not None else 0
+                ),
+                "generation_score_bucket": (
+                    self._generation_score_bucket(generation_result.score)
+                    if generation_result is not None
+                    else "none"
+                ),
+                "generation_rejections": (
+                    dict(generation_result.rejection_counts)
+                    if generation_result is not None
+                    else {}
+                ),
             },
         )
         action_id = await self.storage.record_action(record)
         return replace(record, id=action_id)
 
 
-__all__ = ["EntertainmentService"]
+__all__ = ["CultureGenerationOutcome", "EntertainmentService"]
