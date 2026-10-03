@@ -93,6 +93,48 @@ class GenerationObservabilityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(hasattr(service._generation_metrics, "snapshot_for"))
 
+    async def test_live_metrics_are_isolated_by_chat_and_topic(self):
+        service, _store = self.service()
+        metrics = service._generation_metrics
+
+        self.assertTrue(hasattr(metrics, "record_for"))
+        if not hasattr(metrics, "record_for"):
+            return
+
+        metrics.record_for(
+            -1001,
+            10,
+            mode="direct_reply",
+            engine="v3",
+            result=generation_result(),
+        )
+        metrics.record_for(
+            -1001,
+            11,
+            mode="autonomous",
+            engine="v3",
+            result=None,
+        )
+        metrics.record_for(
+            -2002,
+            10,
+            mode="autonomous",
+            engine="v2",
+            result=generation_result("другая фраза"),
+        )
+
+        current = metrics.snapshot_for(-1001, 10)
+        other_topic = metrics.snapshot_for(-1001, 11)
+        other_chat = metrics.snapshot_for(-2002, 10)
+
+        self.assertEqual((current.attempts, current.successes, current.no_output), (1, 1, 0))
+        self.assertEqual(current.engine_counts, {"v3": 1})
+        self.assertEqual(current.mode_counts, {"direct_reply": 1})
+        self.assertEqual((other_topic.attempts, other_topic.successes, other_topic.no_output), (1, 0, 1))
+        self.assertEqual(other_topic.mode_counts, {"autonomous": 1})
+        self.assertEqual((other_chat.attempts, other_chat.successes, other_chat.no_output), (1, 1, 0))
+        self.assertEqual(other_chat.engine_counts, {"v2": 1})
+
     async def test_generation_request_records_one_live_success_not_internal_retries(self):
         service, _store = self.service()
         result = generation_result()
