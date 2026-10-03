@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from entertainment import EntertainmentService
 from entertainment.autonomy import ActionCandidate
 from entertainment.config import GENERATION_SAMPLE_LIMIT
 from entertainment.context import ActivitySnapshot
@@ -15,7 +16,6 @@ from entertainment.models import (
     MemoryEvent,
     MemoryEventType,
 )
-from entertainment.service import EntertainmentService
 
 
 def obj(**kwargs):
@@ -79,6 +79,7 @@ def storage():
         sample_event_windows=AsyncMock(
             return_value=[[event(101, "старый мем про метро", created_at=100)]]
         ),
+        memory_counts=AsyncMock(),
         recent_texts=AsyncMock(return_value=["legacy fallback text"] * 30),
         recent_messages=AsyncMock(return_value=["legacy message"] * 30),
         record_action=AsyncMock(return_value=1),
@@ -112,6 +113,7 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_culture_context_reads_only_bounded_recent_and_historical_windows(self):
         store = storage()
+        store.memory_counts.return_value = obj(total=3, text=3, emoji=0, sticker=0, photo=0, animation=0)
         service = self.service(store)
 
         context = await service._culture_generation_context(
@@ -136,7 +138,7 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         store = storage()
         service = self.service(store)
 
-        with patch("entertainment.service.select_action", return_value=None):
+        with patch("entertainment.culture_service.select_action", return_value=None):
             result = await service.evaluate_topic(message())
 
         self.assertIsNone(result)
@@ -145,6 +147,7 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_direct_reply_passes_exact_trigger_separately_to_v3(self):
         store = storage()
+        store.memory_counts.return_value = obj(total=3, text=3, emoji=0, sticker=0, photo=0, animation=0)
         service = self.service(store)
         selected = ActionCandidate(
             action_type=EntertainmentActionType.CONTEXTUAL_REPLY,
@@ -155,43 +158,44 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch("entertainment.service.select_action", return_value=selected),
-            patch.object(
-                service,
-                "_generate_culture_text",
-                return_value=("готовая фраза", None, generated_result("готовая фраза")),
-            ) as generate,
+            patch("entertainment.culture_service.select_action", return_value=selected),
+            patch("entertainment.culture_service.generate_text", return_value=generated_result("готовая фраза")) as generator,
+            patch("entertainment.culture_service.is_novel_generated_text", return_value=True),
+            patch("entertainment.culture_service.apply_emoji_style", return_value=("готовая фраза", None)),
+            patch("entertainment.culture_service.select_media_candidate", return_value=None),
         ):
             await service.evaluate_topic(message(text="где наш автобус", direct=True))
 
-        context = generate.call_args.args[0]
-        self.assertEqual(context.context_messages[-1], "где наш автобус")
-        self.assertGreaterEqual(context.context_messages.count("где наш автобус"), 2)
-        self.assertEqual(generate.call_args.kwargs["mode"], GenerationMode.DIRECT_REPLY)
-        self.assertEqual(generate.call_args.kwargs["trigger_text"], "где наш автобус")
+        request = generator.call_args.args[0]
+        self.assertEqual(request.mode, GenerationMode.DIRECT_REPLY)
+        self.assertEqual(request.trigger_text, "где наш автобус")
+        self.assertEqual(request.context_messages[-1], "где наш автобус")
+        self.assertGreaterEqual(request.context_messages.count("где наш автобус"), 2)
 
     async def test_generate_culture_text_builds_v3_request_then_applies_emoji(self):
         store = storage()
+        store.memory_counts.return_value = obj(total=3, text=3, emoji=0, sticker=0, photo=0, animation=0)
         service = self.service(store)
         context = await service._culture_generation_context(-1001, 10, trigger_text="автобус", now=5000)
         result = generated_result()
 
         with (
-            patch("entertainment.service.generate_text", return_value=result) as generator,
-            patch("entertainment.service.is_novel_generated_text", return_value=True) as novelty,
-            patch("entertainment.service.apply_emoji_style", return_value=("совсем новая фраза 😂", "😂")) as emoji,
+            patch("entertainment.culture_service.generate_text", return_value=result) as generator,
+            patch("entertainment.culture_service.is_novel_generated_text", return_value=True) as novelty,
+            patch("entertainment.culture_service.apply_emoji_style", return_value=("совсем новая фраза 😂", "😂")) as emoji,
         ):
-            generated, signature, diagnostics = service._generate_culture_text(
+            outcome = service._generate_culture_text(
                 context,
                 recent_outputs=["старый ответ"],
                 recent_signatures=set(),
                 mode=GenerationMode.DIRECT_REPLY,
                 trigger_text="автобус",
             )
+            generated, signature = outcome
 
         self.assertEqual(generated, "совсем новая фраза 😂")
         self.assertEqual(signature, "😂")
-        self.assertEqual(diagnostics, result)
+        self.assertEqual(outcome.diagnostics, result)
         request = generator.call_args.args[0]
         self.assertEqual(request.source_messages, context.source_messages)
         self.assertEqual(request.context_messages, context.context_messages)
@@ -207,6 +211,7 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_action_metadata_records_safe_generation_diagnostics_without_raw_corpus(self):
         store = storage()
+        store.memory_counts.return_value = obj(total=3, text=3, emoji=0, sticker=0, photo=0, animation=0)
         service = self.service(store)
         selected = ActionCandidate(
             action_type=EntertainmentActionType.REMIXED_PHRASE,
@@ -217,12 +222,11 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         diagnostics = generated_result("мемная фраза", score=5.25, candidate_count=9)
 
         with (
-            patch("entertainment.service.select_action", return_value=selected),
-            patch.object(
-                service,
-                "_generate_culture_text",
-                return_value=("мемная фраза 😂", "😂", diagnostics),
-            ),
+            patch("entertainment.culture_service.select_action", return_value=selected),
+            patch("entertainment.culture_service.generate_text", return_value=diagnostics),
+            patch("entertainment.culture_service.is_novel_generated_text", return_value=True),
+            patch("entertainment.culture_service.apply_emoji_style", return_value=("мемная фраза 😂", "😂")),
+            patch("entertainment.culture_service.select_media_candidate", return_value=None),
         ):
             record = await service.evaluate_topic(message())
 
@@ -245,18 +249,20 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_manual_generate_uses_autonomous_mode(self):
         store = storage()
+        store.memory_counts.return_value = obj(total=3, text=3, emoji=0, sticker=0, photo=0, animation=0)
         service = self.service(store)
         diagnostics = generated_result("готовая фраза")
 
-        with patch.object(
-            service,
-            "_generate_culture_text",
-            return_value=("готовая фраза", None, diagnostics),
-        ) as generate:
+        with (
+            patch("entertainment.culture_service.generate_text", return_value=diagnostics) as generator,
+            patch("entertainment.culture_service.is_novel_generated_text", return_value=True),
+            patch("entertainment.culture_service.apply_emoji_style", return_value=("готовая фраза", None)),
+        ):
             await service.generate_now(message())
 
-        self.assertEqual(generate.call_args.kwargs["mode"], GenerationMode.AUTONOMOUS)
-        self.assertIsNone(generate.call_args.kwargs["trigger_text"])
+        request = generator.call_args.args[0]
+        self.assertEqual(request.mode, GenerationMode.AUTONOMOUS)
+        self.assertIsNone(request.trigger_text)
 
 
 if __name__ == "__main__":
