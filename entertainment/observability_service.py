@@ -117,7 +117,7 @@ class EntertainmentService(ScopedEntertainmentService):
             limit=_GENERATION_STATUS_ACTION_LIMIT,
         )
         persisted = aggregate_generation_actions(actions)
-        live = self._generation_metrics.snapshot()
+        live = self._generation_metrics.snapshot_for(chat_id, topic_id)
         engine = resolve_generation_engine()
 
         live_rate = f"{live.success_rate * 100:.1f}%" if live.attempts else "нет данных"
@@ -125,7 +125,7 @@ class EntertainmentService(ScopedEntertainmentService):
         text = (
             "🧪 <b>Generation v3 · status</b>\n\n"
             f"Активный движок: <b>{html.escape(engine)}</b>\n"
-            "<b>Live с запуска процесса</b>\n"
+            "<b>Live этой темы с запуска процесса</b>\n"
             f"Попытки: <b>{live.attempts}</b> · успешно: <b>{live.successes}</b> · "
             f"no-output: <b>{live.no_output}</b> · success rate: <b>{live_rate}</b>\n"
             f"Движки: {_format_counts(live.engine_counts)}\n"
