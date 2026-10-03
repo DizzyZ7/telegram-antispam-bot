@@ -133,6 +133,32 @@ class GenerationV3CoreTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIn("автобус", normalize_source_text(result.text))
 
+    def test_direct_reply_reranker_prefers_candidate_covering_all_supported_trigger_terms(self):
+        sources = [
+            "автобус скоро приедет к вокзалу и заберет всех домой",
+            "метро уже закрывается на ночь и город становится тихим",
+            "автобус вечером идет через центр и люди ждут его у вокзала",
+            "трамвай сворачивает после моста и город постепенно засыпает",
+            "мы сегодня ждем автобус и потом сразу едем домой",
+            "у вокзала шумно вечером и последние автобусы еще ходят",
+        ]
+        request = GenerationRequest(
+            source_messages=sources * 5,
+            context_messages=[
+                "когда автобус будет у вокзала",
+                "автобус уже скоро должен приехать",
+            ],
+            trigger_text="где наш автобус у вокзала",
+            mode=GenerationMode.DIRECT_REPLY,
+            recent_bot_outputs=["вчера уже шутили про метро"],
+        )
+
+        result = GenerationV3().generate(request, rng=random.Random(17))
+        self.assertIsNotNone(result)
+        normalized = normalize_source_text(result.text)
+        self.assertIn("автобус", normalized)
+        self.assertIn("вокзал", normalized)
+
 
 if __name__ == "__main__":
     unittest.main()
