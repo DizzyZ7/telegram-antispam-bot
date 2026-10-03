@@ -112,6 +112,8 @@ Signals:
 - short phrase anchors observed repeatedly in the recent conversation;
 - trigger terms with the highest weight in direct mode.
 
+Phase C currently duplicates trigger text inside legacy `context_messages` to bias v2. V3 must de-duplicate that representation when building `TopicAnchor`: the exact `trigger_text` is a separate input and receives its direct-reply weight exactly once.
+
 A candidate with no meaningful lexical/lemma relation to a non-empty TopicAnchor is rejected unless the recent context contains no usable content terms.
 
 This prevents an old unrelated meme from winning merely because it is common in long-term memory.
@@ -142,8 +144,10 @@ For normal corpora, a candidate is eligible only when:
 - it is not an exact normalized source message;
 - it is not a near replay of a recent bot output;
 - its longest contiguous word overlap with any one source is bounded (target maximum 6 words and maximum 70% of candidate words, whichever is stricter for that candidate);
-- candidates of at least 6 words show composition support from at least two distinct source messages/phrase paths, or contain a genuinely synthesized supported bridge;
+- candidates of at least 6 words show composition support from at least two **distinct normalized source-text identities**, or contain a genuinely synthesized supported bridge;
 - repeated 3-grams/loops are rejected.
+
+Culture Memory represents source weighting partly by repeating source strings. Those repeated weighted entries **must not** count as separate composition sources. Source identity is based on normalized source text, not list position.
 
 Short common chat phrases are allowed, but an exact remembered sentence is not considered "new" merely because punctuation changed.
 
@@ -169,7 +173,7 @@ Positive signals:
 - recent TopicAnchor overlap;
 - supported 5/4/3-gram ratio;
 - recency/Culture support inherited from weighted `source_messages`;
-- support from more than one source path;
+- support from more than one distinct normalized source path;
 - natural length and sentence boundary;
 - chat-native vocabulary from current topic.
 
@@ -245,12 +249,13 @@ Acceptance requires v3 to be equal or better than v2 on topical relevance and su
 
 Unit tests:
 - lemma analysis + bounded cache;
-- TopicAnchor construction;
+- TopicAnchor construction and trigger de-duplication;
 - 5 -> 1 backoff;
 - supported bridge selection;
 - direct trigger weighting;
 - anti-copy longest contiguous overlap;
-- multi-source composition rule;
+- weighted duplicate sources do not fake multi-source composition;
+- genuine multi-source composition rule;
 - soft morphology penalties;
 - deterministic seeded generation.
 
