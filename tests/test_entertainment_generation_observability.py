@@ -88,6 +88,11 @@ class GenerationObservabilityTests(unittest.IsolatedAsyncioTestCase):
         )
         return service, store
 
+    async def test_service_generation_metrics_supports_scoped_snapshots(self):
+        service, _store = self.service()
+
+        self.assertTrue(hasattr(service._generation_metrics, "snapshot_for"))
+
     async def test_generation_request_records_one_live_success_not_internal_retries(self):
         service, _store = self.service()
         result = generation_result()
