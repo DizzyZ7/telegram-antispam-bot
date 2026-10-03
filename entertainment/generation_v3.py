@@ -450,6 +450,18 @@ class GenerationV3:
                 if _topic_relevance(item[1], anchor) >= topical_floor
             ]
 
+        maximum_support = max(
+            _supported_trigram_ratio(candidate, records)
+            for _score, candidate in ranked_pool
+        )
+        if maximum_support > 0.0:
+            support_floor = max(0.0, maximum_support - 0.01)
+            ranked_pool = [
+                item
+                for item in ranked_pool
+                if _supported_trigram_ratio(item[1], records) >= support_floor
+            ]
+
         ranked = sorted(ranked_pool, key=lambda item: (-item[0], item[1]))
         high_quality = ranked[: min(8, len(ranked))]
         rank_weights = [1.0 / ((index + 1) ** 0.70) for index in range(len(high_quality))]
