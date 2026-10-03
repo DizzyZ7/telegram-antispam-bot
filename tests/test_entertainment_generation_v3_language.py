@@ -24,8 +24,9 @@ class GenerationV3LanguageTests(unittest.TestCase):
         info = analyze_token.cache_info()
         self.assertEqual(info.maxsize, 4096)
 
-    def test_topic_anchor_prefers_recent_context(self):
-        context = [f"старый контекст {index}" for index in range(45)]
+    def test_topic_anchor_uses_only_latest_40_context_messages(self):
+        context = ["древнийархив отдельная тема"] * 10
+        context.extend(["ну да"] * 45)
         context.extend([
             "автобус едет к вокзалу",
             "ждем автобус на остановке",
@@ -34,7 +35,7 @@ class GenerationV3LanguageTests(unittest.TestCase):
 
         self.assertIn("автобус", anchor.lemma_weights)
         self.assertIn("вокзал", anchor.lemma_weights)
-        self.assertNotIn("старый", anchor.lemma_weights)
+        self.assertNotIn("древнийархив", anchor.lemma_weights)
         self.assertGreater(anchor.relevance(["автобусы", "вокзал"]), 0.0)
 
     def test_direct_trigger_is_weighted_once_even_when_legacy_context_duplicates_it(self):
