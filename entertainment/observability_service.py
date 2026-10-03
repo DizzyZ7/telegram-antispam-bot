@@ -91,9 +91,6 @@ class EntertainmentService(ScopedEntertainmentService):
         engine = resolve_generation_engine()
 
         live_rate = f"{live.success_rate * 100:.1f}%" if live.attempts else "нет данных"
-        persisted_rate = (
-            f"{persisted.success_rate * 100:.1f}%" if persisted.attempts else "нет данных"
-        )
 
         text = (
             "🧪 <b>Generation v3 · status</b>\n\n"
@@ -106,8 +103,7 @@ class EntertainmentService(ScopedEntertainmentService):
             f"Среднее кандидатов: <b>{live.average_candidate_count:.1f}</b>\n"
             f"Отбраковки: {_format_rejections(live)}\n\n"
             "<b>История темы за 24 часа</b>\n"
-            f"Успешных генераций: <b>{persisted.successes}</b> · "
-            f"success rate по сохраненным успехам: <b>{persisted_rate}</b>\n"
+            f"Сохраненных успешных генераций: <b>{persisted.successes}</b>\n"
             f"Движки: {_format_counts(persisted.engine_counts)}\n"
             f"Режимы: {_format_counts(persisted.mode_counts)}\n"
             f"Среднее кандидатов: <b>{persisted.average_candidate_count:.1f}</b>\n"
