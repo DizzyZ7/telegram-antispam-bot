@@ -493,17 +493,6 @@ class GenerationV3:
                     if _trigger_coverage(item[1], anchor) == maximum_coverage
                 ]
 
-            maximum_topic_relevance = max(
-                _topic_relevance(candidate, anchor)
-                for _score, candidate in ranked_pool
-            )
-            topical_floor = maximum_topic_relevance * 0.95
-            ranked_pool = [
-                item
-                for item in ranked_pool
-                if _topic_relevance(item[1], anchor) >= topical_floor
-            ]
-
             maximum_support = max(
                 _supported_trigram_ratio(candidate, records)
                 for _score, candidate in ranked_pool
@@ -515,6 +504,17 @@ class GenerationV3:
                     for item in ranked_pool
                     if _supported_trigram_ratio(item[1], records) >= support_floor
                 ]
+
+            maximum_topic_relevance = max(
+                _topic_relevance(candidate, anchor)
+                for _score, candidate in ranked_pool
+            )
+            topical_floor = maximum_topic_relevance * 0.95
+            ranked_pool = [
+                item
+                for item in ranked_pool
+                if _topic_relevance(item[1], anchor) >= topical_floor
+            ]
 
         ranked = sorted(ranked_pool, key=lambda item: (-item[0], item[1]))
         high_quality = ranked[: min(8, len(ranked))]
