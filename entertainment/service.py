@@ -15,7 +15,15 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .autonomy import ActionCandidate, ConversationPhase, DecisionContext, derive_phase, select_action
-from .config import MAX_MESSAGE_LENGTH, MEMORY_LIMIT, MIN_MESSAGE_LENGTH, MIN_MESSAGES_TO_GENERATE, URL_RE
+from .config import (
+    GENERATION_SAMPLE_LIMIT,
+    MAX_MESSAGE_LENGTH,
+    MEMORY_LIMIT,
+    MIN_MESSAGE_LENGTH,
+    MIN_MESSAGES_TO_GENERATE,
+    URL_RE,
+)
+from .culture import CultureGenerationContext, apply_emoji_style, build_culture_context
 from .generation import generate_chat_text, tokenize
 from .memory import classify_memory_event
 from .models import (
@@ -29,6 +37,10 @@ from .novelty import is_novel_generated_text
 from .storage.base import EntertainmentStorage
 
 LOGGER = logging.getLogger(__name__)
+
+_CULTURE_HISTORICAL_WINDOW_COUNT = 4
+_CULTURE_HISTORICAL_WINDOW_SIZE = 16
+_CULTURE_FALLBACK_CONTEXT_LIMIT = 50
 
 
 class EntertainmentService:
@@ -187,6 +199,7 @@ class EntertainmentService:
         messages: list[str],
         recent_outputs: list[str],
     ) -> str | None:
+        """Compatibility generation helper kept for legacy callers/tests."""
         for _ in range(5):
             generated = generate_chat_text(messages, rng=self.rng)
             if not generated:
@@ -201,6 +214,111 @@ class EntertainmentService:
         if callable(recent_texts):
             return await recent_texts(int(chat_id), int(topic_id))
         return await self.storage.recent_messages(int(chat_id), int(topic_id))
+
+    @staticmethod
+    def _culture_seed(chat_id: int, topic_id: int, now: int) -> int:
+        """Stable per-scope/time seed without Python's randomized hash()."""
+        return (
+            (abs(int(chat_id)) * 31)
+            ^ (int(topic_id) * 131)
+            ^ int(now)
+        ) & 0x7FFFFFFF
+
+    async def _culture_generation_context(
+        self,
+        chat_id: int,
+        topic_id: int,
+        *,
+        trigger_text: str | None = None,
+        now: int | None = None,
+    ) -> CultureGenerationContext:
+        """Read only bounded Culture Memory input for one generation attempt."""
+        recent_events = getattr(self.storage, "recent_events", None)
+        sample_event_windows = getattr(self.storage, "sample_event_windows", None)
+        if callable(recent_events) and callable(sample_event_windows):
+            timestamp = int(self._now_fn()) if now is None else int(now)
+            recent = await recent_events(
+                int(chat_id),
+                int(topic_id),
+                GENERATION_SAMPLE_LIMIT,
+            )
+            historical = await sample_event_windows(
+                int(chat_id),
+                int(topic_id),
+                window_count=_CULTURE_HISTORICAL_WINDOW_COUNT,
+                window_size=_CULTURE_HISTORICAL_WINDOW_SIZE,
+                seed=self._culture_seed(chat_id, topic_id, timestamp),
+            )
+            return build_culture_context(
+                recent,
+                historical,
+                trigger_text=trigger_text,
+            )
+
+        # Transitional compatibility for old/minimal storage implementations.
+        messages = await self._generation_texts(chat_id, topic_id)
+        context_messages = list(messages[-_CULTURE_FALLBACK_CONTEXT_LIMIT:])
+        cleaned_trigger = (
+            " ".join(trigger_text.split()).strip()
+            if isinstance(trigger_text, str)
+            else ""
+        )
+        if cleaned_trigger:
+            context_messages.extend([cleaned_trigger, cleaned_trigger])
+        return CultureGenerationContext(
+            source_messages=list(messages),
+            context_messages=context_messages,
+            recent_event_count=len(messages),
+            historical_event_count=0,
+            conversation_run_count=0,
+        )
+
+    def _generate_culture_text(
+        self,
+        context: CultureGenerationContext,
+        *,
+        recent_outputs: list[str],
+        recent_signatures: set[str],
+    ) -> tuple[str | None, str | None]:
+        """Generate a novel phrase, then optionally apply local emoji culture."""
+        if not context.source_messages:
+            return None, None
+        for _ in range(5):
+            generated = generate_chat_text(
+                context.source_messages,
+                rng=self.rng,
+                context_messages=context.context_messages,
+            )
+            if not generated:
+                continue
+            if not is_novel_generated_text(
+                generated,
+                context.source_messages,
+                recent_outputs,
+            ):
+                continue
+            return apply_emoji_style(
+                generated,
+                context,
+                recent_signatures=recent_signatures,
+                rng=self.rng,
+            )
+        return None, None
+
+    @staticmethod
+    def _recent_generation_metadata(
+        recent_actions: Iterable[EntertainmentActionRecord],
+    ) -> tuple[list[str], set[str]]:
+        outputs: list[str] = []
+        signatures: set[str] = set()
+        for action in recent_actions:
+            output = action.metadata.get("output")
+            if isinstance(output, str) and output:
+                outputs.append(output)
+            signature = action.metadata.get("emoji_signature")
+            if isinstance(signature, str) and signature:
+                signatures.add(signature)
+        return outputs, signatures
 
     async def evaluate_topic(
         self,
@@ -260,13 +378,23 @@ class EntertainmentService:
         if selected is None:
             return None
 
-        messages = await self._generation_texts(chat_id, topic_id)
-        recent_outputs = [
-            output
-            for action in recent_actions
-            if isinstance((output := action.metadata.get("output")), str) and output
-        ]
-        generated = self._generate_novel_text(messages, recent_outputs)
+        trigger_text = (
+            getattr(message, "text", None)
+            if selected.action_type is EntertainmentActionType.CONTEXTUAL_REPLY
+            else None
+        )
+        culture = await self._culture_generation_context(
+            chat_id,
+            topic_id,
+            trigger_text=trigger_text,
+            now=now,
+        )
+        recent_outputs, recent_signatures = self._recent_generation_metadata(recent_actions)
+        generated, emoji_signature = self._generate_culture_text(
+            culture,
+            recent_outputs=recent_outputs,
+            recent_signatures=recent_signatures,
+        )
         if generated is None:
             return None
 
@@ -297,12 +425,16 @@ class EntertainmentService:
                 "output": generated,
                 "memory_count": memory_count,
                 "source": "supervisor" if supervisor else "message",
+                "emoji_signature": emoji_signature,
+                "culture_recent_events": culture.recent_event_count,
+                "culture_historical_events": culture.historical_event_count,
+                "culture_runs": culture.conversation_run_count,
             },
         )
         action_id = await self.storage.record_action(record)
         stored_record = replace(record, id=action_id)
         LOGGER.info(
-            "ENTERTAINMENT_AUTONOMOUS_ACTION chat_id=%s topic_id=%s action=%s phase=%s mode=%s memory=%s source=%s",
+            "ENTERTAINMENT_AUTONOMOUS_ACTION chat_id=%s topic_id=%s action=%s phase=%s mode=%s memory=%s source=%s culture_recent=%s culture_historical=%s",
             chat_id,
             topic_id,
             selected.action_type.value,
@@ -310,6 +442,8 @@ class EntertainmentService:
             settings.behavior_mode.value,
             memory_count,
             record.metadata["source"],
+            culture.recent_event_count,
+            culture.historical_event_count,
         )
         return stored_record
 
@@ -387,8 +521,8 @@ class EntertainmentService:
 
         await add_event(event)
 
-        # Phase A keeps autonomy/activity on the legacy text gate. Media enriches
-        # Culture Memory without increasing current activity or response cadence.
+        # Media enriches Culture Memory without increasing current activity or
+        # autonomous-response cadence. That remains text-gated in Phase B.
         if not self.is_eligible_learning_message(message):
             return
 
@@ -500,8 +634,9 @@ class EntertainmentService:
         if not settings.enabled:
             await message.reply("🎭 Развлекательный режим сейчас выключен администратором.")
             return
+        chat_id = int(message.chat.id)
         topic_id = self._topic_id(message)
-        count = await self.storage.message_count(message.chat.id, topic_id)
+        count = await self.storage.message_count(chat_id, topic_id)
         if count < MIN_MESSAGES_TO_GENERATE:
             missing = MIN_MESSAGES_TO_GENERATE - count
             await message.reply(
@@ -509,19 +644,25 @@ class EntertainmentService:
                 f"Нужно еще примерно <b>{missing}</b> подходящих сообщений."
             )
             return
-        messages = await self._generation_texts(message.chat.id, topic_id)
-        recent_actions = await self.storage.recent_actions(
-            message.chat.id,
+
+        now = int(self._now_fn())
+        culture = await self._culture_generation_context(
+            chat_id,
             topic_id,
-            since=int(self._now_fn()) - 30 * 60,
+            now=now,
+        )
+        recent_actions = await self.storage.recent_actions(
+            chat_id,
+            topic_id,
+            since=now - 30 * 60,
             limit=20,
         )
-        recent_outputs = [
-            output
-            for action in recent_actions
-            if isinstance((output := action.metadata.get("output")), str) and output
-        ]
-        generated = self._generate_novel_text(messages, recent_outputs)
+        recent_outputs, recent_signatures = self._recent_generation_metadata(recent_actions)
+        generated, _emoji_signature = self._generate_culture_text(
+            culture,
+            recent_outputs=recent_outputs,
+            recent_signatures=recent_signatures,
+        )
         if not generated:
             await message.reply(
                 "🧠 Материал уже есть, но сейчас не получилось собрать нормальную новую фразу. "

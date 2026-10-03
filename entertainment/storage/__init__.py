@@ -6,7 +6,7 @@ from typing import Any
 
 from ..config import GENERATION_SAMPLE_LIMIT
 from .base import EntertainmentStorage as EntertainmentStorageProtocol
-from .retention import PostgresEntertainmentStorage, SQLiteEntertainmentStorage
+from .windows import PostgresEntertainmentStorage, SQLiteEntertainmentStorage
 from .factory import (
     EntertainmentDatabaseConfig,
     EntertainmentStorageConfigurationError,

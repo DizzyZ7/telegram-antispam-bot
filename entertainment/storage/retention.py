@@ -17,7 +17,8 @@ LOGGER = logging.getLogger(__name__)
 _EVENT_FIELDS = (
     "id, chat_id, topic_id, message_id, user_id, event_type, text, caption, "
     "reply_to_message_id, file_id, file_unique_id, sticker_emoji, sticker_set_name, "
-    "media_width, media_height, media_duration, is_forwarded, legacy_source_id, metadata_json, created_at"
+    "media_width, media_height, media_duration, is_forwarded, sender_is_bot, is_command, "
+    "legacy_source_id, metadata_json, created_at"
 )
 
 
@@ -52,8 +53,10 @@ def _event_from_values(values: list[object] | tuple[object, ...]) -> MemoryEvent
         media_height=int(values[14]) if values[14] is not None else None,
         media_duration=int(values[15]) if values[15] is not None else None,
         is_forwarded=bool(values[16]),
-        legacy_source_id=int(values[17]) if values[17] is not None else None,
-        metadata=_parse_metadata(values[18]), created_at=int(values[19]),
+        sender_is_bot=bool(values[17]),
+        is_command=bool(values[18]),
+        legacy_source_id=int(values[19]) if values[19] is not None else None,
+        metadata=_parse_metadata(values[20]), created_at=int(values[21]),
     )
 
 
@@ -67,7 +70,7 @@ def _event_args(event: MemoryEvent) -> tuple[object, ...]:
         int(event.media_width) if event.media_width is not None else None,
         int(event.media_height) if event.media_height is not None else None,
         int(event.media_duration) if event.media_duration is not None else None,
-        bool(event.is_forwarded),
+        bool(event.is_forwarded), bool(event.sender_is_bot), bool(event.is_command),
         int(event.legacy_source_id) if event.legacy_source_id is not None else None,
         json.dumps(event.metadata, ensure_ascii=False, separators=(",", ":")),
         int(event.created_at),
@@ -99,10 +102,21 @@ class SQLiteEntertainmentStorage(CoreSQLiteEntertainmentStorage):
                 event_type TEXT NOT NULL, text TEXT, caption TEXT, reply_to_message_id INTEGER,
                 file_id TEXT, file_unique_id TEXT, sticker_emoji TEXT, sticker_set_name TEXT,
                 media_width INTEGER, media_height INTEGER, media_duration INTEGER,
-                is_forwarded INTEGER NOT NULL DEFAULT 0, legacy_source_id INTEGER,
-                metadata_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL
+                is_forwarded INTEGER NOT NULL DEFAULT 0,
+                sender_is_bot INTEGER NOT NULL DEFAULT 0, is_command INTEGER NOT NULL DEFAULT 0,
+                legacy_source_id INTEGER, metadata_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL
             )
         """)
+        async with connection.execute("PRAGMA table_info(ent_memory_events)") as cursor:
+            columns = {str(row[1]) for row in await cursor.fetchall()}
+        if "sender_is_bot" not in columns:
+            await connection.execute(
+                "ALTER TABLE ent_memory_events ADD COLUMN sender_is_bot INTEGER NOT NULL DEFAULT 0"
+            )
+        if "is_command" not in columns:
+            await connection.execute(
+                "ALTER TABLE ent_memory_events ADD COLUMN is_command INTEGER NOT NULL DEFAULT 0"
+            )
         await connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ent_memory_chat_message ON ent_memory_events(chat_id, message_id) WHERE message_id IS NOT NULL")
         await connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ent_memory_legacy_source ON ent_memory_events(legacy_source_id) WHERE legacy_source_id IS NOT NULL")
         await connection.execute("CREATE INDEX IF NOT EXISTS idx_ent_memory_scope_order ON ent_memory_events(chat_id, topic_id, created_at DESC, message_id DESC, id DESC)")
@@ -132,13 +146,16 @@ class SQLiteEntertainmentStorage(CoreSQLiteEntertainmentStorage):
 
     async def add_event(self, event: MemoryEvent) -> int:
         connection = self._require_connection()
-        args = list(_event_args(event)); args[15] = 1 if event.is_forwarded else 0
+        args = list(_event_args(event))
+        args[15] = 1 if event.is_forwarded else 0
+        args[16] = 1 if event.sender_is_bot else 0
+        args[17] = 1 if event.is_command else 0
         cursor = await connection.execute("""
             INSERT OR IGNORE INTO ent_memory_events(
                 chat_id, topic_id, message_id, user_id, event_type, text, caption, reply_to_message_id,
                 file_id, file_unique_id, sticker_emoji, sticker_set_name, media_width, media_height,
-                media_duration, is_forwarded, legacy_source_id, metadata_json, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                media_duration, is_forwarded, sender_is_bot, is_command, legacy_source_id, metadata_json, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, tuple(args))
         event_id = int(cursor.lastrowid) if cursor.rowcount > 0 and cursor.lastrowid is not None else await self._resolve_sqlite_event_id(event)
         await self._prune_sqlite_events(event.chat_id, event.topic_id)
@@ -261,8 +278,11 @@ class PostgresEntertainmentStorage(CorePostgresEntertainmentStorage):
                         message_id BIGINT, user_id BIGINT NOT NULL, event_type TEXT NOT NULL, text TEXT, caption TEXT,
                         reply_to_message_id BIGINT, file_id TEXT, file_unique_id TEXT, sticker_emoji TEXT, sticker_set_name TEXT,
                         media_width INTEGER, media_height INTEGER, media_duration INTEGER, is_forwarded BOOLEAN NOT NULL DEFAULT FALSE,
+                        sender_is_bot BOOLEAN NOT NULL DEFAULT FALSE, is_command BOOLEAN NOT NULL DEFAULT FALSE,
                         legacy_source_id BIGINT, metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb, created_at BIGINT NOT NULL)
                 """)
+                await connection.execute("ALTER TABLE ent_memory_events ADD COLUMN IF NOT EXISTS sender_is_bot BOOLEAN NOT NULL DEFAULT FALSE")
+                await connection.execute("ALTER TABLE ent_memory_events ADD COLUMN IF NOT EXISTS is_command BOOLEAN NOT NULL DEFAULT FALSE")
                 await connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ent_memory_chat_message ON ent_memory_events(chat_id,message_id) WHERE message_id IS NOT NULL")
                 await connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ent_memory_legacy_source ON ent_memory_events(legacy_source_id) WHERE legacy_source_id IS NOT NULL")
                 await connection.execute("CREATE INDEX IF NOT EXISTS idx_ent_memory_scope_order ON ent_memory_events(chat_id,topic_id,created_at DESC,message_id DESC,id DESC)")
@@ -283,8 +303,8 @@ class PostgresEntertainmentStorage(CorePostgresEntertainmentStorage):
         async with pool.acquire() as connection:
             async with connection.transaction():
                 event_id=await connection.fetchval("""
-                    INSERT INTO ent_memory_events(chat_id,topic_id,message_id,user_id,event_type,text,caption,reply_to_message_id,file_id,file_unique_id,sticker_emoji,sticker_set_name,media_width,media_height,media_duration,is_forwarded,legacy_source_id,metadata_json,created_at)
-                    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19) ON CONFLICT DO NOTHING RETURNING id
+                    INSERT INTO ent_memory_events(chat_id,topic_id,message_id,user_id,event_type,text,caption,reply_to_message_id,file_id,file_unique_id,sticker_emoji,sticker_set_name,media_width,media_height,media_duration,is_forwarded,sender_is_bot,is_command,legacy_source_id,metadata_json,created_at)
+                    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21) ON CONFLICT DO NOTHING RETURNING id
                 """,*args)
                 if event_id is None: event_id=await self._resolve_postgres_event_id(connection,event)
                 await self._prune_postgres_events(connection,event.chat_id,event.topic_id); return int(event_id)

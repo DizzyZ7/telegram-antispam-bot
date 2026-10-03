@@ -56,6 +56,16 @@ class EntertainmentStorage(Protocol):
         limit: int = GENERATION_SAMPLE_LIMIT,
     ) -> list[str]: ...
 
+    async def sample_event_windows(
+        self,
+        chat_id: int,
+        topic_id: int,
+        *,
+        window_count: int,
+        window_size: int,
+        seed: int,
+    ) -> list[list[MemoryEvent]]: ...
+
     async def memory_counts(self, chat_id: int, topic_id: int) -> MemoryCounts: ...
 
     async def get_remember_enabled(self, chat_id: int, user_id: int) -> bool: ...

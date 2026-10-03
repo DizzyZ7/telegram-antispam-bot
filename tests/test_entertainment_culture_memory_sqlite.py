@@ -17,6 +17,8 @@ def event(
     caption=None,
     file_id=None,
     created_at=100,
+    sender_is_bot=False,
+    is_command=False,
 ):
     return MemoryEvent(
         id=None,
@@ -30,6 +32,8 @@ def event(
         caption=caption,
         file_id=file_id,
         file_unique_id=(f"u-{file_id}" if file_id else None),
+        sender_is_bot=sender_is_bot,
+        is_command=is_command,
     )
 
 
@@ -46,6 +50,34 @@ class CultureMemorySQLiteTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.storage.close()
         self.tmp.cleanup()
+
+    async def test_provenance_columns_exist_and_round_trip(self):
+        connection = self.storage._require_connection()
+        async with connection.execute("PRAGMA table_info(ent_memory_events)") as cursor:
+            columns = {str(row[1]) for row in await cursor.fetchall()}
+        self.assertIn("sender_is_bot", columns)
+        self.assertIn("is_command", columns)
+
+        await self.storage.add_event(
+            event(message_id=90, text="/spawn boss", sender_is_bot=True, is_command=True)
+        )
+        row = (await self.storage.recent_events(-1001, 10, 10))[-1]
+        self.assertTrue(row.sender_is_bot)
+        self.assertTrue(row.is_command)
+
+        await connection.execute(
+            """
+            INSERT INTO ent_memory_events(
+                chat_id, topic_id, message_id, user_id, event_type, text, metadata_json, created_at
+            ) VALUES(?, ?, ?, ?, 'text', ?, '{}', ?)
+            """,
+            (-1001, 10, 91, 8, "legacy-shaped row", 101),
+        )
+        await connection.commit()
+        rows = await self.storage.recent_events(-1001, 10, 10)
+        legacy = next(item for item in rows if item.message_id == 91)
+        self.assertFalse(legacy.sender_is_bot)
+        self.assertFalse(legacy.is_command)
 
     async def test_crud_projection_counts_and_topic_isolation(self):
         await self.storage.add_event(event(message_id=1, text="первое", created_at=101))
@@ -140,6 +172,8 @@ class CultureMemorySQLiteTests(unittest.IsolatedAsyncioTestCase):
             (row.chat_id, row.topic_id, row.message_id, row.user_id, row.text, row.created_at, row.legacy_source_id),
             (-1001, 77, 7001, 42, "старое сообщение", 555, legacy_id),
         )
+        self.assertFalse(row.sender_is_bot)
+        self.assertFalse(row.is_command)
         self.assertEqual(await self.storage.backfill_legacy_memory("culture_memory_v1_text_backfill"), 0)
         self.assertEqual((await self.storage.memory_counts(-1001, 77)).total, 1)
         self.assertEqual(await self.storage.message_count(-1001, 77), 1)
