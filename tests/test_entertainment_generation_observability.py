@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import random
 import unittest
 from types import SimpleNamespace
@@ -134,6 +135,34 @@ class GenerationObservabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(other_topic.mode_counts, {"autonomous": 1})
         self.assertEqual((other_chat.attempts, other_chat.successes, other_chat.no_output), (1, 1, 0))
         self.assertEqual(other_chat.engine_counts, {"v2": 1})
+
+    async def test_generation_request_records_into_provided_scope(self):
+        service, _store = self.service()
+        parameters = inspect.signature(service._generate_culture_text).parameters
+
+        self.assertIn("metrics_scope", parameters)
+        if "metrics_scope" not in parameters:
+            return
+
+        result = generation_result()
+        with (
+            patch("entertainment.culture_service.generate_text", return_value=result),
+            patch("entertainment.culture_service.is_novel_generated_text", return_value=True),
+            patch("entertainment.culture_service.apply_emoji_style", return_value=(result.text, None)),
+        ):
+            outcome = service._generate_culture_text(
+                context(),
+                recent_outputs=[],
+                recent_signatures=set(),
+                mode=GenerationMode.DIRECT_REPLY,
+                trigger_text="где автобус",
+                metrics_scope=(-1001, 10),
+            )
+
+        self.assertEqual(outcome.text, result.text)
+        scoped = service._generation_metrics.snapshot_for(-1001, 10)
+        self.assertEqual((scoped.attempts, scoped.successes, scoped.no_output), (1, 1, 0))
+        self.assertEqual(scoped.mode_counts, {"direct_reply": 1})
 
     async def test_generation_request_records_one_live_success_not_internal_retries(self):
         service, _store = self.service()
