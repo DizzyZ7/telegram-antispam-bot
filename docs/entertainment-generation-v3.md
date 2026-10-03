@@ -87,15 +87,17 @@ Administrators can inspect generation health in an allowed topic with:
 - `/fun_generation_status`
 - `/fun_gen_status`
 
-The status command exposes aggregate information only:
+The status command exposes aggregate information only for the current `chat_id + topic_id` scope:
 
 - active engine (`v2` / `v3`);
-- live generation attempts, successful outputs and `no-output` count since the current process started;
-- live engine and generation-mode counts;
+- live generation attempts, successful outputs and `no-output` count for the current topic since the current process started;
+- live engine and generation-mode counts for that topic;
 - average accepted candidate count;
 - aggregate rejection reasons;
-- successful generation diagnostics reconstructed from the topic action history for the last 24 hours;
+- successful generation diagnostics reconstructed from the same topic action history for the last 24 hours;
 - the explicit v2 rollback environment setting.
+
+Live counters are isolated by `(chat_id, topic_id)` and carried task-locally across concurrent `evaluate_topic` calls, so activity in one chat/topic cannot contaminate another topic's status. The process-local scope cache is LRU-bounded to 256 active scopes; evicting an inactive scope never changes the global compatibility aggregate.
 
 `no-output` is intentionally process-local and resets when the bot process restarts. Existing action records persist successful-generation diagnostics, but a new database table is not introduced just to persist failed attempts.
 
@@ -128,6 +130,8 @@ Production-hardening tests cover:
 - slang/meme phrasing;
 - fixed 32–64 candidate-target clamping;
 - privacy-safe telemetry aggregation;
+- chat/topic isolation of live status metrics;
+- bounded 256-scope LRU behavior;
 - admin-only status behavior and hard-deny short-circuiting.
 
 ## Offline quality gate

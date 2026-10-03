@@ -6,7 +6,7 @@ source messages, trigger text, context messages or user identifiers.
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -14,6 +14,7 @@ from .generation_v3 import GenerationResult
 from .models import EntertainmentActionRecord
 
 _SCORE_BUCKETS = frozenset({"none", "low", "medium", "high", "very_high"})
+_DEFAULT_SCOPE_LIMIT = 256
 
 
 def score_bucket(score: float) -> str:
@@ -159,6 +160,61 @@ class GenerationMetrics:
         )
 
 
+class ScopedGenerationMetrics:
+    """Bounded process-local metrics isolated by chat/topic scope."""
+
+    __slots__ = ("_aggregate", "_scopes", "_max_scopes")
+
+    def __init__(self, *, max_scopes: int = _DEFAULT_SCOPE_LIMIT) -> None:
+        self._aggregate = GenerationMetrics()
+        self._scopes: OrderedDict[tuple[int, int], GenerationMetrics] = OrderedDict()
+        self._max_scopes = max(1, int(max_scopes))
+
+    def record(
+        self,
+        *,
+        mode: str,
+        engine: str,
+        result: GenerationResult | None,
+    ) -> None:
+        """Record legacy/unscoped diagnostics in the aggregate only."""
+        self._aggregate.record(mode=mode, engine=engine, result=result)
+
+    def record_for(
+        self,
+        chat_id: int,
+        topic_id: int,
+        *,
+        mode: str,
+        engine: str,
+        result: GenerationResult | None,
+    ) -> None:
+        """Record one attempt in the aggregate and exactly one chat/topic scope."""
+        key = (int(chat_id), int(topic_id))
+        metrics = self._scopes.get(key)
+        if metrics is None:
+            metrics = GenerationMetrics()
+            self._scopes[key] = metrics
+            while len(self._scopes) > self._max_scopes:
+                self._scopes.popitem(last=False)
+        else:
+            self._scopes.move_to_end(key)
+
+        self._aggregate.record(mode=mode, engine=engine, result=result)
+        metrics.record(mode=mode, engine=engine, result=result)
+
+    def snapshot(self) -> GenerationMetricsSnapshot:
+        return self._aggregate.snapshot()
+
+    def snapshot_for(self, chat_id: int, topic_id: int) -> GenerationMetricsSnapshot:
+        key = (int(chat_id), int(topic_id))
+        metrics = self._scopes.get(key)
+        if metrics is None:
+            return GenerationMetrics().snapshot()
+        self._scopes.move_to_end(key)
+        return metrics.snapshot()
+
+
 def aggregate_generation_actions(
     actions: Iterable[EntertainmentActionRecord],
 ) -> GenerationMetricsSnapshot:
@@ -190,6 +246,7 @@ def aggregate_generation_actions(
 __all__ = [
     "GenerationMetrics",
     "GenerationMetricsSnapshot",
+    "ScopedGenerationMetrics",
     "aggregate_generation_actions",
     "score_bucket",
 ]

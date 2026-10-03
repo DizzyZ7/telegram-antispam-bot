@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import html
 from collections.abc import Mapping
+from contextvars import ContextVar
 from typing import Any
 
 from aiogram.types import Message
 
 from .config import resolve_generation_engine
 from .culture import CultureGenerationContext
-from .generation_metrics import GenerationMetrics, GenerationMetricsSnapshot, aggregate_generation_actions
+from .generation_metrics import GenerationMetricsSnapshot, ScopedGenerationMetrics, aggregate_generation_actions
 from .generation_v3 import GenerationMode
 from .scoped_service import EntertainmentService as ScopedEntertainmentService
 
 _GENERATION_STATUS_WINDOW_SECONDS = 24 * 60 * 60
 _GENERATION_STATUS_ACTION_LIMIT = 200
+_CURRENT_GENERATION_SCOPE: ContextVar[tuple[int, int] | None] = ContextVar(
+    "entertainment_generation_metrics_scope",
+    default=None,
+)
 
 
 def _format_counts(counts: Mapping[str, int], *, empty: str = "нет данных") -> str:
@@ -41,7 +46,21 @@ class EntertainmentService(ScopedEntertainmentService):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._generation_metrics = GenerationMetrics()
+        self._generation_metrics = ScopedGenerationMetrics()
+
+    async def evaluate_topic(
+        self,
+        message: Message,
+        *,
+        supervisor: bool = False,
+    ):
+        """Keep generation telemetry scope task-local across concurrent topics."""
+        scope = (int(message.chat.id), self._topic_id(message))
+        token = _CURRENT_GENERATION_SCOPE.set(scope)
+        try:
+            return await super().evaluate_topic(message, supervisor=supervisor)
+        finally:
+            _CURRENT_GENERATION_SCOPE.reset(token)
 
     def _generate_culture_text(
         self,
@@ -51,8 +70,9 @@ class EntertainmentService(ScopedEntertainmentService):
         recent_signatures: set[str],
         mode: GenerationMode = GenerationMode.AUTONOMOUS,
         trigger_text: str | None = None,
+        metrics_scope: tuple[int, int] | None = None,
     ):
-        """Record one aggregate metric for one service-level generation request."""
+        """Record one metric for one generation request in its chat/topic scope."""
         outcome = super()._generate_culture_text(
             context,
             recent_outputs=recent_outputs,
@@ -62,11 +82,21 @@ class EntertainmentService(ScopedEntertainmentService):
         )
         result = getattr(outcome, "diagnostics", None)
         engine = result.engine if result is not None else resolve_generation_engine()
-        self._generation_metrics.record(
-            mode=mode.value,
-            engine=engine,
-            result=result,
-        )
+        scope = metrics_scope if metrics_scope is not None else _CURRENT_GENERATION_SCOPE.get()
+        if scope is None:
+            self._generation_metrics.record(
+                mode=mode.value,
+                engine=engine,
+                result=result,
+            )
+        else:
+            self._generation_metrics.record_for(
+                scope[0],
+                scope[1],
+                mode=mode.value,
+                engine=engine,
+                result=result,
+            )
         return outcome
 
     async def show_generation_status(self, message: Message) -> None:
@@ -87,7 +117,7 @@ class EntertainmentService(ScopedEntertainmentService):
             limit=_GENERATION_STATUS_ACTION_LIMIT,
         )
         persisted = aggregate_generation_actions(actions)
-        live = self._generation_metrics.snapshot()
+        live = self._generation_metrics.snapshot_for(chat_id, topic_id)
         engine = resolve_generation_engine()
 
         live_rate = f"{live.success_rate * 100:.1f}%" if live.attempts else "нет данных"
@@ -95,7 +125,7 @@ class EntertainmentService(ScopedEntertainmentService):
         text = (
             "🧪 <b>Generation v3 · status</b>\n\n"
             f"Активный движок: <b>{html.escape(engine)}</b>\n"
-            "<b>Live с запуска процесса</b>\n"
+            "<b>Live этой темы с запуска процесса</b>\n"
             f"Попытки: <b>{live.attempts}</b> · успешно: <b>{live.successes}</b> · "
             f"no-output: <b>{live.no_output}</b> · success rate: <b>{live_rate}</b>\n"
             f"Движки: {_format_counts(live.engine_counts)}\n"
