@@ -108,7 +108,7 @@ class TopicDenylistTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(self.service, "_culture_generation_context", culture_read),
             patch(
-                "entertainment.service.generate_text",
+                "entertainment.culture_service.generate_text",
                 side_effect=AssertionError("blocked topic reached generation"),
             ) as generator,
         ):
