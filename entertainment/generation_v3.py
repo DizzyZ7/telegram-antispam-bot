@@ -215,6 +215,10 @@ def _trigger_coverage(candidate: str, anchor: TopicAnchor) -> int:
     return len(lemmas & anchor.trigger_terms)
 
 
+def _topic_relevance(candidate: str, anchor: TopicAnchor) -> float:
+    return anchor.relevance(_word_tokens(candidate))
+
+
 def _rejection_reason(
     candidate: str,
     *,
@@ -434,6 +438,17 @@ class GenerationV3:
                     for item in ranked_pool
                     if _trigger_coverage(item[1], anchor) == maximum_coverage
                 ]
+
+            maximum_topic_relevance = max(
+                _topic_relevance(candidate, anchor)
+                for _score, candidate in ranked_pool
+            )
+            topical_floor = maximum_topic_relevance * 0.95
+            ranked_pool = [
+                item
+                for item in ranked_pool
+                if _topic_relevance(item[1], anchor) >= topical_floor
+            ]
 
         ranked = sorted(ranked_pool, key=lambda item: (-item[0], item[1]))
         high_quality = ranked[: min(8, len(ranked))]
