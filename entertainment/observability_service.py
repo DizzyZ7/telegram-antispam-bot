@@ -10,7 +10,7 @@ from aiogram.types import Message
 
 from .config import resolve_generation_engine
 from .culture import CultureGenerationContext
-from .generation_metrics import GenerationMetrics, GenerationMetricsSnapshot, aggregate_generation_actions
+from .generation_metrics import GenerationMetricsSnapshot, ScopedGenerationMetrics, aggregate_generation_actions
 from .generation_v3 import GenerationMode
 from .scoped_service import EntertainmentService as ScopedEntertainmentService
 
@@ -41,7 +41,7 @@ class EntertainmentService(ScopedEntertainmentService):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._generation_metrics = GenerationMetrics()
+        self._generation_metrics = ScopedGenerationMetrics()
 
     def _generate_culture_text(
         self,
