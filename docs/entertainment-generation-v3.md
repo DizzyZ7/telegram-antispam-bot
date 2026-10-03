@@ -13,21 +13,22 @@ The engine may use only:
 
 The engine does **not** load stories, fairy tales, books, Ficbook texts, Lexicon dictionaries, internet text, neighboring forum topics, other chats, external AI APIs, downloaded language models, vector databases or GPU workers.
 
-The writers-chat topic scopes `292358`, `14637` and `42817` remain behind the existing hard Entertainment denylist. They stop before Culture Memory reads and before Generation v3 is invoked.
+The writers-chat topic scopes `292358`, `14637` and `42817` remain behind the existing hard Entertainment denylist. They stop before Culture Memory reads, generation, generation-status storage reads and admin lookups.
 
 ## Synthesis pipeline
 
 1. Build a `TopicAnchor` from at most the latest 40 context messages.
 2. In direct-reply mode, remove exact legacy copies of the trigger from context weighting and add the trigger once as the strongest explicit signal.
 3. Normalize Culture messages into distinct source identities so repeated weighting of one source cannot imitate multi-source composition.
-4. Build bounded local 5→4→3→2→1 token transition indexes.
-5. Generate candidates from:
+4. Select at most 128 distinct sources for synthesis, preferring current-topic relevance, then weak Culture weight and recent source order.
+5. Build bounded local 5→4→3→2→1 token transition indexes only from that synthesis working set.
+6. Generate candidates from:
    - deterministic bounded phrase-chunk bridges across the most topical distinct sources;
    - controlled source crossovers;
    - 5→1 transition backoff.
-6. Hard-reject unsafe candidates before final ranking.
-7. Rank accepted candidates by current topic fit, direct-trigger coverage, phrase support, source composition, soft morphology and bounded structural signals.
-8. Only after text validation succeeds, apply the existing local emoji style layer.
+7. Hard-reject unsafe candidates against the **complete distinct source set from the input snapshot**, not only the bounded synthesis set.
+8. Rank accepted candidates by current topic fit, direct-trigger coverage, phrase support, source composition, soft morphology and bounded structural signals.
+9. Only after text validation succeeds, apply the existing local emoji style layer.
 
 `pymorphy3` is a soft linguistic signal only. Commands, usernames, English tokens and slang remain valid when morphology is unavailable or uncertain. Token analysis is held in a bounded 4096-entry LRU cache.
 
@@ -41,7 +42,8 @@ Generation v3 fails closed rather than weakening copy constraints when the corpu
 - the longest contiguous overlap with any one source may not exceed 6 words;
 - the overlap with any one source may not exceed 70% of candidate words;
 - candidates of 6+ words require support from at least two distinct normalized source identities;
-- repeated weighted copies of the same source never count as independent sources.
+- repeated weighted copies of the same source never count as independent sources;
+- reducing the synthesis working set never reduces the source set used for anti-copy validation.
 
 The final direct-reply selection order is intentionally bounded and explicit: maximum supported trigger coverage first, then the strongest phrase-support band, then the strongest topical-relevance band, with controlled variation only inside that safe high-quality set.
 
@@ -49,15 +51,18 @@ The final direct-reply selection order is intentionally bounded and explicit: ma
 
 Long-term retention may hold roughly 100,000 canonical events per forum topic, but Generation v3 does not scan that entire history. It consumes the existing Phase C bounded snapshot: up to `ENTERTAINMENT_GENERATION_SAMPLE_LIMIT` recent events plus the small deterministic historical windows already used by Culture Memory.
 
-Candidate generation is also bounded:
+Candidate generation is additionally bounded:
 
+- synthesis working set: at most 128 distinct sources;
 - target candidate count: 48;
 - accepted constructor range: 32–64;
 - raw candidate processing cap: 160;
 - deterministic structured bridge source cap: 24 topical distinct sources;
 - deterministic structured candidate cap: 64.
 
-No schema migration is required for Generation v3.
+The 128-source limit bounds transition-model construction and randomized synthesis work. Anti-copy validation still sees the full distinct input snapshot, so the performance limit is not a safety relaxation.
+
+No schema migration is required for Generation v3 or its production observability.
 
 ## Rollback
 
@@ -75,17 +80,55 @@ ENTERTAINMENT_GENERATION_ENGINE=v2
 
 to route the same service call through the legacy local generator without a storage migration. Invalid selector values fail safely back to `v3`.
 
+## Production status and observability
+
+Administrators can inspect generation health in an allowed topic with:
+
+- `/fun_generation_status`
+- `/fun_gen_status`
+
+The status command exposes aggregate information only:
+
+- active engine (`v2` / `v3`);
+- live generation attempts, successful outputs and `no-output` count since the current process started;
+- live engine and generation-mode counts;
+- average accepted candidate count;
+- aggregate rejection reasons;
+- successful generation diagnostics reconstructed from the topic action history for the last 24 hours;
+- the explicit v2 rollback environment setting.
+
+`no-output` is intentionally process-local and resets when the bot process restarts. Existing action records persist successful-generation diagnostics, but a new database table is not introduced just to persist failed attempts.
+
+The status command is admin-only. Hard-blocked Entertainment topic scopes return silently before an admin lookup or action-history read.
+
 ## Diagnostics and privacy
 
-Action metadata may contain only safe generation diagnostics such as:
+The production metrics collector stores counters only and never stores generated text, source messages, trigger text, context messages or user identifiers.
 
-- engine (`v2` / `v3`);
-- mode (`autonomous` / `direct_reply`);
-- accepted candidate count;
-- score bucket;
-- aggregate rejection counts.
+Persisted action aggregation reads only these safe generation fields:
 
-Raw source messages, raw context, raw trigger text, Telegram media identifiers, database DSNs and credentials are not added to Generation v3 diagnostic metadata.
+- `generation_engine`;
+- `generation_mode`;
+- `generation_candidate_count`;
+- `generation_score_bucket`;
+- `generation_rejections`.
+
+Other metadata fields are ignored by the generation-status aggregator. Malformed diagnostic metadata is ignored rather than coerced into output.
+
+Raw source messages, raw context, raw trigger text, Telegram media identifiers, database DSNs and credentials are not added to Generation v3 diagnostics or live metrics.
+
+## Runtime regression coverage
+
+Production-hardening tests cover:
+
+- bounded synthesis on large snapshots;
+- full-snapshot anti-copy protection even for a source excluded from the synthesis working set;
+- mixed Russian/English chat language;
+- Telegram-style `/commands` and `@usernames`;
+- slang/meme phrasing;
+- fixed 32–64 candidate-target clamping;
+- privacy-safe telemetry aggregation;
+- admin-only status behavior and hard-deny short-circuiting.
 
 ## Offline quality gate
 
