@@ -27,6 +27,8 @@ _MIN_WORDS = 4
 _MAX_WORDS = 24
 _DEFAULT_CANDIDATES = 48
 _MAX_RAW_CANDIDATES = 160
+_STRUCTURED_SOURCE_LIMIT = 24
+_STRUCTURED_CANDIDATE_LIMIT = 64
 
 
 def _word_tokens(text: str) -> list[str]:
@@ -304,6 +306,53 @@ class GenerationV3:
             weights.append(1.0 + 5.0 * topical + min(record.weight, 5) * 0.08)
         return rng.choices(records, weights=weights, k=1)[0]
 
+    @staticmethod
+    def _structured_crossover_candidates(
+        records: list[_SourceRecord],
+        anchor: TopicAnchor,
+    ) -> list[str]:
+        """Enumerate bounded phrase bridges among the most topical sources.
+
+        Each side contributes at most six contiguous words. This creates a
+        deterministic high-quality floor without scanning all pairings in a
+        large Culture snapshot, and hard anti-copy validation still runs later.
+        """
+
+        ranked_records = sorted(
+            records,
+            key=lambda record: (
+                anchor.relevance(record.words),
+                min(record.weight, 5),
+                record.identity,
+            ),
+            reverse=True,
+        )[:_STRUCTURED_SOURCE_LIMIT]
+
+        output: list[str] = []
+        seen: set[str] = set()
+        for left in ranked_records:
+            for right in ranked_records:
+                if left.identity == right.identity:
+                    continue
+                for left_index, right_index in _bridge_pairs(left, right):
+                    left_start = max(0, left_index - 5)
+                    right_end = min(len(right.words), right_index + 6)
+                    words = [
+                        *left.words[left_start : left_index + 1],
+                        *right.words[right_index + 1 : right_end],
+                    ]
+                    if not (_MIN_WORDS <= len(words) <= _MAX_WORDS):
+                        continue
+                    candidate = _render(words)
+                    normalized = normalize_source_text(candidate)
+                    if not normalized or normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    output.append(candidate)
+                    if len(output) >= _STRUCTURED_CANDIDATE_LIMIT:
+                        return output
+        return output
+
     def _crossover_candidates(
         self,
         records: list[_SourceRecord],
@@ -390,8 +439,13 @@ class GenerationV3:
             direct_reply=direct,
         )
         model = build_transition_model(record.identity for record in records)
-        raw_candidates = self._crossover_candidates(records, anchor, rng)
-        raw_candidates.extend(self._backoff_candidates(records, model, anchor, rng))
+        structured = self._structured_crossover_candidates(records, anchor)
+        sampled = self._crossover_candidates(records, anchor, rng)
+        sampled.extend(self._backoff_candidates(records, model, anchor, rng))
+        raw_candidates = [
+            *structured[:_STRUCTURED_CANDIDATE_LIMIT],
+            *sampled[: max(0, _MAX_RAW_CANDIDATES - _STRUCTURED_CANDIDATE_LIMIT)],
+        ]
 
         recent_outputs = {
             normalized
@@ -401,7 +455,7 @@ class GenerationV3:
         rejections: Counter[str] = Counter()
         accepted: dict[str, tuple[float, str]] = {}
 
-        for candidate in raw_candidates[:_MAX_RAW_CANDIDATES]:
+        for candidate in raw_candidates:
             reason = _rejection_reason(
                 candidate,
                 records=records,
@@ -450,17 +504,17 @@ class GenerationV3:
                 if _topic_relevance(item[1], anchor) >= topical_floor
             ]
 
-        maximum_support = max(
-            _supported_trigram_ratio(candidate, records)
-            for _score, candidate in ranked_pool
-        )
-        if maximum_support > 0.0:
-            support_floor = max(0.0, maximum_support - 0.01)
-            ranked_pool = [
-                item
-                for item in ranked_pool
-                if _supported_trigram_ratio(item[1], records) >= support_floor
-            ]
+            maximum_support = max(
+                _supported_trigram_ratio(candidate, records)
+                for _score, candidate in ranked_pool
+            )
+            if maximum_support > 0.0:
+                support_floor = max(0.0, maximum_support - 0.01)
+                ranked_pool = [
+                    item
+                    for item in ranked_pool
+                    if _supported_trigram_ratio(item[1], records) >= support_floor
+                ]
 
         ranked = sorted(ranked_pool, key=lambda item: (-item[0], item[1]))
         high_quality = ranked[: min(8, len(ranked))]
