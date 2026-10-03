@@ -159,6 +159,31 @@ class GenerationMetrics:
         )
 
 
+class ScopedGenerationMetrics:
+    """Compatibility collector that exposes a scope snapshot API."""
+
+    __slots__ = ("_aggregate",)
+
+    def __init__(self) -> None:
+        self._aggregate = GenerationMetrics()
+
+    def record(
+        self,
+        *,
+        mode: str,
+        engine: str,
+        result: GenerationResult | None,
+    ) -> None:
+        self._aggregate.record(mode=mode, engine=engine, result=result)
+
+    def snapshot(self) -> GenerationMetricsSnapshot:
+        return self._aggregate.snapshot()
+
+    def snapshot_for(self, chat_id: int, topic_id: int) -> GenerationMetricsSnapshot:
+        _ = int(chat_id), int(topic_id)
+        return GenerationMetrics().snapshot()
+
+
 def aggregate_generation_actions(
     actions: Iterable[EntertainmentActionRecord],
 ) -> GenerationMetricsSnapshot:
@@ -190,6 +215,7 @@ def aggregate_generation_actions(
 __all__ = [
     "GenerationMetrics",
     "GenerationMetricsSnapshot",
+    "ScopedGenerationMetrics",
     "aggregate_generation_actions",
     "score_bucket",
 ]
