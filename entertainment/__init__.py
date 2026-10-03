@@ -1,17 +1,18 @@
 """Scoped entertainment package with compatibility exports for v1 callers."""
 
 from .config import (
+    BOOTSTRAP_TEXT_EVENT_THRESHOLD,
     DEFAULT_COOLDOWN_SECONDS,
     DEFAULT_LAZINESS,
     ENTERTAINMENT_CHAT_IDS,
     MEMORY_LIMIT,
     parse_chat_ids,
 )
+from .scoped_service import EntertainmentService
 from .generation import generate_chat_text
 from .models import BehaviorMode, EntertainmentSettings, normalize_topic_id
 from .router import EntertainmentChatFilter, register_entertainment_handlers
 from .scheduler import EntertainmentSupervisor
-from .service import EntertainmentService
 from .storage import LegacyCompatibleEntertainmentStorage, SQLiteEntertainmentStorage
 
 # Transitional public alias: main.py and the original tests still construct
@@ -20,6 +21,7 @@ from .storage import LegacyCompatibleEntertainmentStorage, SQLiteEntertainmentSt
 EntertainmentStorage = LegacyCompatibleEntertainmentStorage
 
 __all__ = [
+    "BOOTSTRAP_TEXT_EVENT_THRESHOLD",
     "BehaviorMode",
     "DEFAULT_COOLDOWN_SECONDS",
     "DEFAULT_LAZINESS",

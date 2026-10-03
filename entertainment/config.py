@@ -35,6 +35,14 @@ GENERATION_SAMPLE_LIMIT = min(
     MEMORY_LIMIT,
 )
 MEMORY_PRUNE_BUFFER = _env_positive_int("ENTERTAINMENT_MEMORY_PRUNE_BUFFER", 1_000)
+BOOTSTRAP_TEXT_EVENT_THRESHOLD = _env_positive_int(
+    "ENTERTAINMENT_BOOTSTRAP_TEXT_EVENT_THRESHOLD",
+    10_000,
+)
+MEDIA_REPEAT_COOLDOWN_SECONDS = _env_positive_int(
+    "ENTERTAINMENT_MEDIA_REPEAT_COOLDOWN_SECONDS",
+    21_600,
+)
 MIN_MESSAGES_TO_GENERATE = 25
 MIN_MESSAGE_LENGTH = 3
 MAX_MESSAGE_LENGTH = 600
@@ -42,6 +50,18 @@ MAX_GENERATED_TOKENS = 30
 
 URL_RE = re.compile(r"(?:https?://|www\.|t\.me/)", re.IGNORECASE)
 CHAT_ID_SPLIT_RE = re.compile(r"[\s,;]+")
+
+# Hard product-level denylist for Entertainment. These are forum topic root
+# message ids in the writers chat. The pair keeps the rule scoped to one
+# chat so a coincidentally equal topic id elsewhere is never blocked.
+WRITERS_CHAT_ID = -1002619489118
+ENTERTAINMENT_BLOCKED_TOPIC_SCOPES = frozenset(
+    {
+        (WRITERS_CHAT_ID, 292358),
+        (WRITERS_CHAT_ID, 14637),
+        (WRITERS_CHAT_ID, 42817),
+    }
+)
 
 
 def parse_chat_ids(raw_value: str | None) -> frozenset[int]:

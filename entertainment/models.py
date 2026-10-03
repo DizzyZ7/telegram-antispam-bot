@@ -35,7 +35,7 @@ def normalize_behavior_mode(value: object) -> BehaviorMode:
 
 
 class MemoryEventType(str, Enum):
-    """Supported human Telegram event kinds stored by Culture Memory."""
+    """Supported Telegram event kinds stored by Culture Memory."""
 
     TEXT = "text"
     EMOJI = "emoji"
@@ -66,6 +66,8 @@ class MemoryEvent:
     media_height: int | None = None
     media_duration: int | None = None
     is_forwarded: bool = False
+    sender_is_bot: bool = False
+    is_command: bool = False
     legacy_source_id: int | None = None
     metadata: dict[str, object] = field(default_factory=dict)
 
