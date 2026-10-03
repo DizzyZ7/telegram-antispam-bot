@@ -8,7 +8,7 @@ from .config import (
     MEMORY_LIMIT,
     parse_chat_ids,
 )
-from .culture_service import EntertainmentService
+from .scoped_service import EntertainmentService
 from .generation import generate_chat_text
 from .models import BehaviorMode, EntertainmentSettings, normalize_topic_id
 from .router import EntertainmentChatFilter, register_entertainment_handlers
