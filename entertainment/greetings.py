@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Literal
 
+from .language import analyze_token
+
 GreetingKind = Literal["morning", "night"]
 
 _NORMALIZE_RE = re.compile(r"[^a-zа-я0-9\s]+", re.IGNORECASE)
@@ -207,7 +209,14 @@ def detect_greeting(text: str | None) -> GreetingKind | None:
 
 def _tokens(messages: Iterable[str]) -> list[str]:
     value = " ".join(str(item) for item in messages if item)
-    return _normalized(value).split()
+    result: list[str] = []
+    for raw in _normalized(value).split():
+        result.append(raw)
+        analysed = analyze_token(raw)
+        lemma = (analysed.lemma or analysed.normalized).casefold()
+        if lemma and lemma != raw:
+            result.append(lemma)
+    return result
 
 
 def _context_style(context_messages: Iterable[str], rng: random.Random) -> str:
