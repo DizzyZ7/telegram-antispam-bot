@@ -58,25 +58,10 @@ class DecisionContext:
     now: int
 
 
-# Kept as the legacy/static compatibility view used by old callers and tests.
-# Runtime action selection switches to adaptive values once the storage/service
-# supplies the explicit long-horizon activity fields.
 _POLICIES = {
-    BehaviorMode.CALM: BehaviorPolicy(
-        max_actions_30m=1,
-        min_gap_seconds=900,
-        min_human_messages_between=8,
-    ),
-    BehaviorMode.ALIVE: BehaviorPolicy(
-        max_actions_30m=2,
-        min_gap_seconds=360,
-        min_human_messages_between=4,
-    ),
-    BehaviorMode.ACTIVE: BehaviorPolicy(
-        max_actions_30m=3,
-        min_gap_seconds=180,
-        min_human_messages_between=2,
-    ),
+    BehaviorMode.CALM: BehaviorPolicy(1, 900, 8),
+    BehaviorMode.ALIVE: BehaviorPolicy(2, 360, 4),
+    BehaviorMode.ACTIVE: BehaviorPolicy(3, 180, 2),
 }
 
 _ADAPTIVE_POLICIES: dict[BehaviorMode, dict[ConversationPhase, BehaviorPolicy]] = {
@@ -117,14 +102,7 @@ def adaptive_presence_policy(
     phase: ConversationPhase,
     activity: ActivitySnapshot,
 ) -> BehaviorPolicy:
-    """Return a topic-local action budget that follows real conversation tempo.
-
-    Older/minimal storage implementations do not populate 60/120-minute
-    signals. They keep the legacy policy until those explicit signals are
-    available, which makes the rollout fail-safe rather than treating missing
-    telemetry as a dead chat.
-    """
-
+    """Return a topic-local action budget that follows real conversation tempo."""
     if not _has_long_horizon(activity):
         return behavior_policy(mode)
 
@@ -182,9 +160,19 @@ def _last_action(context: DecisionContext) -> EntertainmentActionRecord | None:
     ]
     if not eligible:
         return None
-    return max(
-        eligible,
-        key=lambda action: (int(action.created_at), int(action.id or 0)),
+    return max(eligible, key=lambda action: (int(action.created_at), int(action.id or 0)))
+
+
+def _presence_since_action(context: DecisionContext) -> tuple[float | None, int | None]:
+    last_action = _last_action(context)
+    if last_action is not None:
+        return (
+            float(max(0, int(context.now) - int(last_action.created_at))),
+            int(context.human_messages_since_last_action),
+        )
+    return (
+        context.activity.seconds_since_bot_action,
+        context.activity.human_messages_since_bot_action,
     )
 
 
@@ -198,9 +186,7 @@ def select_action(
     settings = context.settings
     if not settings.enabled or not settings.autonomous_text_enabled:
         return None
-    if context.quiet_hours_active:
-        return None
-    if not candidates:
+    if context.quiet_hours_active or not candidates:
         return None
 
     policy = adaptive_presence_policy(settings.behavior_mode, context.phase, context.activity)
@@ -208,16 +194,16 @@ def select_action(
     if len(recent_30m) >= policy.max_actions_30m:
         return None
 
-    last_action = _last_action(context)
-    if last_action is not None:
-        seconds_since_action = int(context.now) - int(last_action.created_at)
+    seconds_since_action, human_messages = _presence_since_action(context)
+    if seconds_since_action is not None:
         if seconds_since_action < policy.min_gap_seconds:
             return None
-        if context.human_messages_since_last_action <= 0:
+        if human_messages is None or human_messages <= 0:
             return None
-        if context.human_messages_since_last_action < policy.min_human_messages_between:
+        if human_messages < policy.min_human_messages_between:
             return None
 
+    last_action = _last_action(context)
     dead_quiet_topic = (
         _has_long_horizon(context.activity)
         and context.phase is ConversationPhase.QUIET
