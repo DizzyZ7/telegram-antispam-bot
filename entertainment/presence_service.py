@@ -19,6 +19,12 @@ _PRESENCE_ACTION_HISTORY_LIMIT = 200
 class EntertainmentService(GreetingEntertainmentService):
     """Gate text, remembered media and greetings through one topic-local budget."""
 
+    def _presence_storage_ready(self) -> bool:
+        return all(
+            callable(getattr(self.storage, name, None))
+            for name in ("activity_snapshot", "recent_actions", "human_messages_since")
+        )
+
     async def _presence_context(
         self,
         message: Message,
@@ -75,6 +81,8 @@ class EntertainmentService(GreetingEntertainmentService):
         *,
         supervisor: bool = False,
     ) -> EntertainmentActionRecord | None:
+        if not self._presence_storage_ready():
+            return await super().evaluate_topic(message, supervisor=supervisor)
         now = int(self._now_fn())
         context = await self._presence_context(message, now=now)
         if not presence_budget_allows(context):
@@ -83,6 +91,9 @@ class EntertainmentService(GreetingEntertainmentService):
 
     async def run_supervisor_tick(self) -> None:
         """Keep recently living scopes for two hours, never resurrect dead ones."""
+        if not callable(getattr(self.storage, "human_messages_since", None)):
+            await super().run_supervisor_tick()
+            return
         now = int(self._now_fn())
         for key, message in list(self._active_topics.items()):
             chat_id, topic_id = key
