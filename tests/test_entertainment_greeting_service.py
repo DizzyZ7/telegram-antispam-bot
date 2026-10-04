@@ -128,16 +128,11 @@ class GreetingStore:
     async def message_count(self, chat_id: int, topic_id: int): return max(25, len(self.texts))
 
     async def activity_snapshot(self, chat_id: int, topic_id: int, *, now: int):
-        past = [action for action in self.actions if action.created_at <= now]
-        last = max(past, key=lambda item: item.created_at) if past else None
-        age = float(now - last.created_at) if last is not None else None
         return ActivitySnapshot(
             chat_id=chat_id, topic_id=topic_id,
             messages_1m=1, messages_5m=2, messages_previous_5m=1, messages_15m=4,
             active_users_5m=2, seconds_since_human=0.0,
             messages_60m=8, messages_120m=12, active_users_60m=4,
-            seconds_since_bot_action=age,
-            human_messages_since_bot_action=(4 if last is not None else None),
         )
 
     async def human_messages_since(self, chat_id: int, topic_id: int, *, since: int): return 4
