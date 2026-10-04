@@ -23,6 +23,7 @@ _THRESHOLDS = {
 }
 _MIN_EXACT_REPEAT_GAP_SECONDS = 300
 _RANDOM_SCORE_BAND = 0.18
+_LIVE_RANDOM_SCORE_BAND = 0.05
 _WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 _EMOJI_RE = re.compile(
     "["
@@ -199,6 +200,17 @@ def _raw_score(
     return max(0.0, min(1.0, score))
 
 
+def _live_rng(scope: tuple[int, int], now: int) -> random.Random:
+    """Return a changing but reproducible local RNG without global state."""
+    chat_id, topic_id = scope
+    seed = (
+        (abs(int(chat_id)) * 31)
+        ^ (int(topic_id) * 131)
+        ^ int(now)
+    ) & 0x7FFFFFFF
+    return random.Random(seed)
+
+
 def select_media_candidate(
     recent_events: Sequence[MemoryEvent],
     historical_windows: Sequence[Sequence[MemoryEvent]],
@@ -304,19 +316,13 @@ def select_media_candidate(
 
     ranked = list(best_by_unique.values())
     best_score = max(pair[0].score for pair in ranked)
-    band = [pair for pair in ranked if pair[0].score >= best_score - _RANDOM_SCORE_BAND]
+    score_band = _RANDOM_SCORE_BAND if rng is not None else _LIVE_RANDOM_SCORE_BAND
+    band = [pair for pair in ranked if pair[0].score >= best_score - score_band]
 
-    if rng is None or len(band) == 1:
-        return max(
-            band,
-            key=lambda pair: (
-                pair[0].score,
-                int(pair[1]),
-                int(pair[0].event.created_at),
-                int(pair[0].event.message_id or -1),
-            ),
-        )[0]
+    if len(band) == 1:
+        return band[0][0]
 
+    choice_rng = rng if rng is not None else _live_rng(scope, int(now))
     weights: list[float] = []
     for candidate, is_recent in band:
         unique_id = candidate.event.file_unique_id
@@ -327,7 +333,7 @@ def select_media_candidate(
         recency = 1.08 if is_recent else 1.0
         weights.append(max(0.01, candidate.score * reuse * recency))
 
-    return rng.choices([pair[0] for pair in band], weights=weights, k=1)[0]
+    return choice_rng.choices([pair[0] for pair in band], weights=weights, k=1)[0]
 
 
 __all__ = ["MediaCandidate", "select_media_candidate"]
