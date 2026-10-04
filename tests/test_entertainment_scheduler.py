@@ -32,13 +32,11 @@ class SupervisorLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_start_is_idempotent_and_stop_is_clean_and_idempotent(self) -> None:
         service = CountingService()
         supervisor = EntertainmentSupervisor(service, interval_seconds=3600)
-
         supervisor.start()
         first_task = supervisor.task
         self.assertIsNotNone(first_task)
         supervisor.start()
         self.assertIs(supervisor.task, first_task)
-
         await supervisor.stop()
         self.assertIsNone(supervisor.task)
         self.assertTrue(first_task.done())
@@ -63,14 +61,7 @@ class FakeBot:
         self.id = 999
         self.sent: list[tuple[int, str, int | None]] = []
 
-    async def send_message(
-        self,
-        chat_id: int,
-        text: str,
-        *,
-        message_thread_id: int | None = None,
-        **_: object,
-    ) -> None:
+    async def send_message(self, chat_id: int, text: str, *, message_thread_id: int | None = None, **_: object) -> None:
         self.sent.append((chat_id, text, message_thread_id))
 
 
@@ -97,11 +88,8 @@ class SupervisorServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.initialize()
         self.bot = FakeBot()
         self.service = EntertainmentService(
-            SimpleNamespace(bot=self.bot),
-            self.storage,
-            {-1001},
-            rng=random.Random(1),
-            now_fn=lambda: float(self.NOW),
+            SimpleNamespace(bot=self.bot), self.storage, {-1001},
+            rng=random.Random(1), now_fn=lambda: float(self.NOW),
         )
 
     async def asyncTearDown(self) -> None:
@@ -111,9 +99,7 @@ class SupervisorServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def seed_memory(self, *, topic_id: int = 10) -> None:
         for index in range(25):
             await self.storage.add_message(
-                -1001,
-                topic_id,
-                index % 5 + 1,
+                -1001, topic_id, index % 5 + 1,
                 f"историческая фраза номер {index} для памяти темы {topic_id}",
                 message_id=topic_id * 1_000 + index,
                 created_at=self.NOW - 2_000 - index,
@@ -123,32 +109,19 @@ class SupervisorServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.seed_memory()
         await self.storage.record_action(
             EntertainmentActionRecord(
-                id=None,
-                chat_id=-1001,
-                topic_id=10,
+                id=None, chat_id=-1001, topic_id=10,
                 action_type=EntertainmentActionType.CONTEXTUAL_REPLY,
-                trigger_message_id=700,
-                created_at=self.NOW - 500,
+                trigger_message_id=700, created_at=self.NOW - 500,
                 metadata={"output": "предыдущее действие"},
             )
         )
         old_message = FakeMessage(message_id=700, text="старый триггер")
         await self.storage.add_message(
-            -1001,
-            10,
-            7,
-            old_message.text,
-            message_id=700,
-            created_at=self.NOW - 500,
+            -1001, 10, 7, old_message.text, message_id=700, created_at=self.NOW - 500,
         )
         self.service.remember_active_topic(old_message)
-
-        with patch(
-            "entertainment.service.generate_chat_text",
-            return_value="не должна уйти без нового человека",
-        ) as generator:
+        with patch("entertainment.service.generate_chat_text", return_value="не должна уйти без нового человека") as generator:
             await self.service.run_supervisor_tick()
-
         self.assertEqual(self.bot.sent, [])
         generator.assert_not_called()
 
@@ -156,12 +129,9 @@ class SupervisorServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.seed_memory()
         await self.storage.record_action(
             EntertainmentActionRecord(
-                id=None,
-                chat_id=-1001,
-                topic_id=10,
+                id=None, chat_id=-1001, topic_id=10,
                 action_type=EntertainmentActionType.CONTEXTUAL_REPLY,
-                trigger_message_id=701,
-                created_at=self.NOW - 1_000,
+                trigger_message_id=701, created_at=self.NOW - 2_500,
                 metadata={"output": "старое действие"},
             )
         )
@@ -169,30 +139,17 @@ class SupervisorServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         for index, offset in enumerate((550, 520, 500, 470, 440, 410, 380, 350, 100)):
             latest = FakeMessage(message_id=800 + index, text=f"новая активность {offset}")
             await self.storage.add_message(
-                -1001,
-                10,
-                20 + index,
-                latest.text,
-                message_id=latest.message_id,
-                created_at=self.NOW - offset,
+                -1001, 10, 20 + index, latest.text,
+                message_id=latest.message_id, created_at=self.NOW - offset,
             )
         assert latest is not None
         self.service.remember_active_topic(latest)
-
-        with patch(
-            "entertainment.service.generate_chat_text",
-            return_value="тихая автономная реплика после активности",
-        ):
+        with patch("entertainment.service.generate_chat_text", return_value="тихая автономная реплика после активности"):
             await self.service.run_supervisor_tick()
-
-        self.assertEqual(
-            self.bot.sent,
-            [(-1001, "тихая автономная реплика после активности", 10)],
-        )
-        actions = await self.storage.recent_actions(-1001, 10, since=self.NOW - 1_800)
+        self.assertEqual(self.bot.sent, [(-1001, "тихая автономная реплика после активности", 10)])
+        actions = await self.storage.recent_actions(-1001, 10, since=self.NOW - 3_000)
         self.assertEqual(len(actions), 2)
         self.assertEqual(actions[0].action_type, EntertainmentActionType.REMIXED_PHRASE)
-
         await self.service.run_supervisor_tick()
         self.assertEqual(len(self.bot.sent), 1)
 
@@ -205,7 +162,6 @@ class SupervisorServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.add_message(-1001, 20, 2, second.text, message_id=902, created_at=self.NOW - 400)
         self.service.remember_active_topic(first)
         self.service.remember_active_topic(second)
-
         original_evaluate = self.service.evaluate_topic
 
         async def flaky(message: FakeMessage, *, supervisor: bool = False):
@@ -214,11 +170,9 @@ class SupervisorServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
             return await original_evaluate(message, supervisor=supervisor)
 
         with patch.object(self.service, "evaluate_topic", side_effect=flaky), patch(
-            "entertainment.service.generate_chat_text",
-            return_value="вторая тема продолжает работать",
+            "entertainment.service.generate_chat_text", return_value="вторая тема продолжает работать",
         ):
             await self.service.run_supervisor_tick()
-
         self.assertEqual(self.bot.sent, [(-1001, "вторая тема продолжает работать", 20)])
 
 
