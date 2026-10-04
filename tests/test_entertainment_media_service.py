@@ -208,19 +208,19 @@ class MediaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("автобус опоздал", repr(metadata))
         self.assertIn((NOW - 21_600, 200), store.recent_action_calls)
 
-    async def test_six_hour_history_blocks_repeat_even_outside_decision_window(self) -> None:
+    async def test_six_hour_history_is_a_soft_diversity_window_not_a_hard_block(self) -> None:
         old = callback("bus-media", created_at=NOW - 3_600)
         store = Store(recent_actions=[old])
         service, bot = self.make_service(store)
         message = FakeMessage()
 
-        with patch.object(service, "_generate_culture_text", return_value=("текст вместо повтора", None)):
+        with patch.object(service, "_generate_culture_text", return_value=("fallback text", None)):
             result = await service.evaluate_topic(message)
 
         self.assertIsNotNone(result)
-        self.assertEqual(result.action_type, EntertainmentActionType.REMIXED_PHRASE)
-        bot.send_sticker.assert_not_awaited()
-        self.assertEqual(message.replies, ["текст вместо повтора"])
+        self.assertEqual(result.action_type, EntertainmentActionType.MEMORY_CALLBACK)
+        bot.send_sticker.assert_awaited_once()
+        self.assertEqual(message.replies, [])
 
     async def test_consecutive_non_direct_media_callback_falls_back_to_text(self) -> None:
         previous = callback("other-media", created_at=NOW - 1_000, direct=False)
