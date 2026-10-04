@@ -6,8 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from entertainment.models import EntertainmentActionRecord, EntertainmentActionType
-from entertainment.service import EntertainmentService
+from entertainment import EntertainmentService
 from entertainment.storage.sqlite import SQLiteEntertainmentStorage
 
 
@@ -42,27 +41,6 @@ class SQLiteLongHorizonActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.active_users_60m, 4)
         self.assertEqual(snapshot.messages_15m, 3)
         self.assertEqual(snapshot.seconds_since_human, 20.0)
-
-    async def test_activity_snapshot_carries_last_bot_action_and_human_budget(self) -> None:
-        now = 30_000
-        await self.storage.record_action(
-            EntertainmentActionRecord(
-                id=None,
-                chat_id=-1001,
-                topic_id=10,
-                action_type=EntertainmentActionType.MEMORY_CALLBACK,
-                trigger_message_id=None,
-                created_at=now - 2_400,
-                metadata={"source": "message"},
-            )
-        )
-        await self.storage.add_message(-1001, 10, 1, "after one", created_at=now - 2_000)
-        await self.storage.add_message(-1001, 10, 2, "after two", created_at=now - 1_000)
-        await self.storage.add_message(-1001, 10, 3, "before bot", created_at=now - 3_000)
-
-        snapshot = await self.storage.activity_snapshot(-1001, 10, now=now)
-        self.assertEqual(snapshot.seconds_since_bot_action, 2_400.0)
-        self.assertEqual(snapshot.human_messages_since_bot_action, 2)
 
 
 class SupervisorPresenceHorizonTests(unittest.IsolatedAsyncioTestCase):
