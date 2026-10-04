@@ -26,8 +26,6 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
         active_users_5m: int = 0,
         active_users_60m: int = 0,
         seconds_since_human: float | None = 120.0,
-        seconds_since_bot_action: float | None = None,
-        human_messages_since_bot_action: int | None = None,
     ) -> ActivitySnapshot:
         return ActivitySnapshot(
             chat_id=-1001,
@@ -41,8 +39,6 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
             messages_60m=messages_60m,
             messages_120m=messages_120m,
             active_users_60m=active_users_60m,
-            seconds_since_bot_action=seconds_since_bot_action,
-            human_messages_since_bot_action=human_messages_since_bot_action,
         )
 
     def action(self, *, seconds_ago: int) -> EntertainmentActionRecord:
@@ -94,18 +90,14 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
         self.assertIn("messages_60m", fields)
         self.assertIn("messages_120m", fields)
         self.assertIn("active_users_60m", fields)
-        self.assertIn("seconds_since_bot_action", fields)
-        self.assertIn("human_messages_since_bot_action", fields)
 
     def test_alive_policy_gets_quieter_when_topic_is_quiet(self) -> None:
-        factory = getattr(autonomy, "adaptive_presence_policy", None)
-        self.assertTrue(callable(factory), "adaptive_presence_policy must exist")
-        quiet = factory(
+        quiet = autonomy.adaptive_presence_policy(
             BehaviorMode.ALIVE,
             autonomy.ConversationPhase.QUIET,
             self.activity(messages_60m=4, messages_120m=8, active_users_60m=2),
         )
-        active = factory(
+        active = autonomy.adaptive_presence_policy(
             BehaviorMode.ALIVE,
             autonomy.ConversationPhase.ACTIVE,
             self.activity(
@@ -123,14 +115,12 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
         self.assertLessEqual(active.min_gap_seconds, 1_200)
 
     def test_recently_busy_topic_cools_down_faster_than_truly_quiet_topic(self) -> None:
-        factory = getattr(autonomy, "adaptive_presence_policy", None)
-        self.assertTrue(callable(factory), "adaptive_presence_policy must exist")
-        quiet = factory(
+        quiet = autonomy.adaptive_presence_policy(
             BehaviorMode.ALIVE,
             autonomy.ConversationPhase.QUIET,
             self.activity(messages_60m=3, messages_120m=5, active_users_60m=2),
         )
-        recently_busy = factory(
+        recently_busy = autonomy.adaptive_presence_policy(
             BehaviorMode.ALIVE,
             autonomy.ConversationPhase.QUIET,
             self.activity(messages_60m=18, messages_120m=30, active_users_60m=6),
@@ -139,12 +129,7 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
         self.assertGreaterEqual(recently_busy.min_gap_seconds, 1_800)
 
     def test_alive_quiet_topic_needs_about_an_hour_and_human_budget(self) -> None:
-        activity = self.activity(
-            messages_60m=4,
-            messages_120m=8,
-            active_users_60m=2,
-            seconds_since_human=1_800,
-        )
+        activity = self.activity(messages_60m=4, messages_120m=8, active_users_60m=2)
         blocked_time = self.context(
             phase=autonomy.ConversationPhase.QUIET,
             activity=activity,
@@ -163,38 +148,25 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
             last_action_seconds_ago=3_600,
             human_messages=2,
         )
-        rng = random.Random(3)
-        self.assertIsNone(autonomy.select_action(blocked_time, [self.candidate()], rng=rng))
-        self.assertIsNone(autonomy.select_action(blocked_humans, [self.candidate()], rng=random.Random(3)))
-        self.assertIsNotNone(autonomy.select_action(allowed, [self.candidate()], rng=random.Random(3)))
+        self.assertFalse(autonomy.presence_budget_allows(blocked_time))
+        self.assertFalse(autonomy.presence_budget_allows(blocked_humans))
+        self.assertTrue(autonomy.presence_budget_allows(allowed))
 
     def test_bot_action_older_than_thirty_minutes_still_consumes_quiet_presence_gap(self) -> None:
         blocked = self.context(
             phase=autonomy.ConversationPhase.QUIET,
-            activity=self.activity(
-                messages_60m=5,
-                messages_120m=8,
-                active_users_60m=3,
-                seconds_since_bot_action=2_400,
-                human_messages_since_bot_action=4,
-            ),
-            last_action_seconds_ago=None,
-            human_messages=0,
+            activity=self.activity(messages_60m=5, messages_120m=8, active_users_60m=3),
+            last_action_seconds_ago=2_400,
+            human_messages=4,
         )
         allowed = self.context(
             phase=autonomy.ConversationPhase.QUIET,
-            activity=self.activity(
-                messages_60m=5,
-                messages_120m=8,
-                active_users_60m=3,
-                seconds_since_bot_action=3_600,
-                human_messages_since_bot_action=2,
-            ),
-            last_action_seconds_ago=None,
-            human_messages=0,
+            activity=self.activity(messages_60m=5, messages_120m=8, active_users_60m=3),
+            last_action_seconds_ago=3_600,
+            human_messages=2,
         )
-        self.assertIsNone(autonomy.select_action(blocked, [self.candidate()], rng=random.Random(6)))
-        self.assertIsNotNone(autonomy.select_action(allowed, [self.candidate()], rng=random.Random(6)))
+        self.assertFalse(autonomy.presence_budget_allows(blocked))
+        self.assertTrue(autonomy.presence_budget_allows(allowed))
 
     def test_active_topic_requires_many_human_messages_even_when_time_gap_passed(self) -> None:
         activity = self.activity(
@@ -232,9 +204,7 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
             last_action_seconds_ago=7_000,
             human_messages=2,
         )
-        self.assertIsNone(
-            autonomy.select_action(context, [self.candidate()], rng=random.Random(5))
-        )
+        self.assertIsNone(autonomy.select_action(context, [self.candidate()], rng=random.Random(5)))
 
 
 if __name__ == "__main__":
