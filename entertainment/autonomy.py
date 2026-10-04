@@ -163,17 +163,29 @@ def _last_action(context: DecisionContext) -> EntertainmentActionRecord | None:
     return max(eligible, key=lambda action: (int(action.created_at), int(action.id or 0)))
 
 
-def _presence_since_action(context: DecisionContext) -> tuple[float | None, int | None]:
+def presence_budget_allows(context: DecisionContext) -> bool:
+    """Apply the shared text/media/greeting presence budget for one topic."""
+    settings = context.settings
+    if not settings.enabled or not settings.autonomous_text_enabled:
+        return False
+    if context.quiet_hours_active:
+        return False
+
+    policy = adaptive_presence_policy(settings.behavior_mode, context.phase, context.activity)
+    if len(_recent_actions_30m(context)) >= policy.max_actions_30m:
+        return False
+
     last_action = _last_action(context)
-    if last_action is not None:
-        return (
-            float(max(0, int(context.now) - int(last_action.created_at))),
-            int(context.human_messages_since_last_action),
-        )
-    return (
-        context.activity.seconds_since_bot_action,
-        context.activity.human_messages_since_bot_action,
-    )
+    if last_action is None:
+        return True
+
+    seconds_since_action = max(0, int(context.now) - int(last_action.created_at))
+    if seconds_since_action < policy.min_gap_seconds:
+        return False
+    human_messages = int(context.human_messages_since_last_action)
+    if human_messages <= 0 or human_messages < policy.min_human_messages_between:
+        return False
+    return True
 
 
 def select_action(
@@ -183,25 +195,8 @@ def select_action(
     rng: random.Random,
 ) -> ActionCandidate | None:
     """Select at most one safe autonomous action for a topic evaluation."""
-    settings = context.settings
-    if not settings.enabled or not settings.autonomous_text_enabled:
+    if not candidates or not presence_budget_allows(context):
         return None
-    if context.quiet_hours_active or not candidates:
-        return None
-
-    policy = adaptive_presence_policy(settings.behavior_mode, context.phase, context.activity)
-    recent_30m = _recent_actions_30m(context)
-    if len(recent_30m) >= policy.max_actions_30m:
-        return None
-
-    seconds_since_action, human_messages = _presence_since_action(context)
-    if seconds_since_action is not None:
-        if seconds_since_action < policy.min_gap_seconds:
-            return None
-        if human_messages is None or human_messages <= 0:
-            return None
-        if human_messages < policy.min_human_messages_between:
-            return None
 
     last_action = _last_action(context)
     dead_quiet_topic = (
@@ -241,5 +236,6 @@ __all__ = [
     "adaptive_presence_policy",
     "behavior_policy",
     "derive_phase",
+    "presence_budget_allows",
     "select_action",
 ]
