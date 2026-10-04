@@ -58,6 +58,8 @@ class DecisionContext:
     now: int
 
 
+# Kept as the legacy/static compatibility view used by the admin UI/tests.
+# Runtime action selection uses adaptive_presence_policy() below.
 _POLICIES = {
     BehaviorMode.CALM: BehaviorPolicy(
         max_actions_30m=1,
@@ -76,9 +78,56 @@ _POLICIES = {
     ),
 }
 
+_ADAPTIVE_POLICIES: dict[BehaviorMode, dict[ConversationPhase, BehaviorPolicy]] = {
+    BehaviorMode.CALM: {
+        ConversationPhase.QUIET: BehaviorPolicy(1, 5_400, 3),
+        ConversationPhase.COOLDOWN: BehaviorPolicy(1, 3_600, 6),
+        ConversationPhase.WARMING_UP: BehaviorPolicy(1, 2_700, 8),
+        ConversationPhase.ACTIVE: BehaviorPolicy(1, 1_800, 14),
+        ConversationPhase.PEAK: BehaviorPolicy(1, 3_600, 20),
+    },
+    BehaviorMode.ALIVE: {
+        ConversationPhase.QUIET: BehaviorPolicy(1, 3_600, 2),
+        ConversationPhase.COOLDOWN: BehaviorPolicy(1, 2_400, 4),
+        ConversationPhase.WARMING_UP: BehaviorPolicy(1, 1_800, 6),
+        ConversationPhase.ACTIVE: BehaviorPolicy(2, 900, 10),
+        ConversationPhase.PEAK: BehaviorPolicy(1, 2_700, 16),
+    },
+    BehaviorMode.ACTIVE: {
+        ConversationPhase.QUIET: BehaviorPolicy(1, 2_700, 1),
+        ConversationPhase.COOLDOWN: BehaviorPolicy(1, 1_800, 3),
+        ConversationPhase.WARMING_UP: BehaviorPolicy(2, 1_200, 4),
+        ConversationPhase.ACTIVE: BehaviorPolicy(2, 600, 8),
+        ConversationPhase.PEAK: BehaviorPolicy(1, 1_800, 12),
+    },
+}
+
 
 def behavior_policy(mode: BehaviorMode) -> BehaviorPolicy:
     return _POLICIES.get(mode, _POLICIES[BehaviorMode.ALIVE])
+
+
+def adaptive_presence_policy(
+    mode: BehaviorMode,
+    phase: ConversationPhase,
+    activity: ActivitySnapshot,
+) -> BehaviorPolicy:
+    """Return a topic-local action budget that follows real conversation tempo.
+
+    A quiet topic is intentionally much slower than the old static policy. A
+    recently busy topic that has only just cooled off gets the cooldown profile
+    instead of the full quiet delay, so the bot can still feel present without
+    speaking on a fixed timer.
+    """
+
+    policies = _ADAPTIVE_POLICIES.get(mode, _ADAPTIVE_POLICIES[BehaviorMode.ALIVE])
+    effective_phase = phase
+    if phase is ConversationPhase.QUIET and (
+        int(activity.messages_60m) >= 12
+        or int(activity.active_users_60m) >= 4
+    ):
+        effective_phase = ConversationPhase.COOLDOWN
+    return policies[effective_phase]
 
 
 def derive_phase(snapshot: ActivitySnapshot) -> ConversationPhase:
@@ -146,7 +195,7 @@ def select_action(
     if not candidates:
         return None
 
-    policy = behavior_policy(settings.behavior_mode)
+    policy = adaptive_presence_policy(settings.behavior_mode, context.phase, context.activity)
     recent_30m = _recent_actions_30m(context)
     if len(recent_30m) >= policy.max_actions_30m:
         return None
@@ -161,8 +210,15 @@ def select_action(
         if context.human_messages_since_last_action < policy.min_human_messages_between:
             return None
 
+    dead_quiet_topic = (
+        context.phase is ConversationPhase.QUIET
+        and int(context.activity.messages_120m) <= 1
+    )
+
     scored: list[tuple[float, int, ActionCandidate]] = []
     for index, candidate in enumerate(candidates):
+        if dead_quiet_topic and not candidate.is_direct:
+            continue
         if context.phase is ConversationPhase.PEAK and not candidate.is_direct:
             continue
         if (
@@ -187,6 +243,7 @@ __all__ = [
     "BehaviorPolicy",
     "ConversationPhase",
     "DecisionContext",
+    "adaptive_presence_policy",
     "behavior_policy",
     "derive_phase",
     "select_action",
