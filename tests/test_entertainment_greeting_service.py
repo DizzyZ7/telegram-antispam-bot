@@ -40,7 +40,12 @@ class FakeMessage:
         self.message_id = 700
         self.message_thread_id = TOPIC_ID
         self.text = text
+        self.caption = None
         self.reply_to_message = None
+        self.forward_origin = None
+        self.sticker = None
+        self.photo = None
+        self.animation = None
         self.replies: list[str] = []
 
     async def reply(self, text: str, **_: object) -> None:
@@ -114,10 +119,17 @@ class GreetingStore:
         self.events = list(events or [])
         self.texts = list(texts or ["редактор дочитал главу", "рукопись почти готова"])
         self.recorded: list[EntertainmentActionRecord] = []
+        self.observed: list[MemoryEvent] = []
         self.recent_action_calls: list[tuple[int, int, int, int]] = []
 
     async def get_settings(self, chat_id: int):
         return self.settings
+
+    async def get_remember_enabled(self, chat_id: int, user_id: int):
+        return True
+
+    async def add_event(self, event: MemoryEvent):
+        self.observed.append(event)
 
     async def recent_actions(self, chat_id: int, topic_id: int, *, since: int, limit: int = 20):
         self.recent_action_calls.append((chat_id, topic_id, since, limit))
@@ -127,16 +139,17 @@ class GreetingStore:
         return list(self.texts)
 
     async def recent_events(self, chat_id: int, topic_id: int, limit: int):
-        return list(self.events)
+        return [*self.events, *self.observed][-limit:]
 
     async def sample_event_windows(self, chat_id: int, topic_id: int, **_: object):
         return []
 
     async def memory_counts(self, chat_id: int, topic_id: int):
+        combined = [*self.events, *self.observed]
         return MemoryCounts(
-            total=len(self.events) + len(self.texts),
-            text=len(self.texts) + sum(event.event_type is MemoryEventType.TEXT for event in self.events),
-            sticker=sum(event.event_type is MemoryEventType.STICKER for event in self.events),
+            total=len(combined) + len(self.texts),
+            text=len(self.texts) + sum(event.event_type is MemoryEventType.TEXT for event in combined),
+            sticker=sum(event.event_type is MemoryEventType.STICKER for event in combined),
         )
 
     async def record_action(self, record: EntertainmentActionRecord):
@@ -223,6 +236,18 @@ class GreetingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["greeting_kind"], "night")
         self.assertEqual(metadata["media_file_unique_id"], "sleep-sticker")
         self.assertNotIn("спокойной ночи", repr(metadata))
+
+    async def test_single_token_greeting_is_evaluated_from_observe_message(self) -> None:
+        store = GreetingStore()
+        service, _ = self.service(store, ScriptedRandom(0.0, 0.99))
+        message = FakeMessage("споки")
+
+        await service.observe_message(message)
+
+        self.assertEqual(len(store.observed), 1)
+        self.assertEqual(store.observed[0].text, "споки")
+        self.assertEqual(len(message.replies), 1)
+        self.assertEqual(store.recorded[0].metadata["greeting_kind"], "night")
 
 
 if __name__ == "__main__":
