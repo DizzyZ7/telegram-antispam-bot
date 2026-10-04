@@ -30,7 +30,13 @@ def text_event(message_id: int, text: str, created_at: int) -> MemoryEvent:
     )
 
 
-def sticker(message_id: int, unique: str, created_at: int) -> MemoryEvent:
+def sticker(
+    message_id: int,
+    unique: str,
+    created_at: int,
+    *,
+    caption: str = "редактор закончил главу рукописи",
+) -> MemoryEvent:
     return MemoryEvent(
         id=message_id,
         chat_id=CHAT_ID,
@@ -39,7 +45,7 @@ def sticker(message_id: int, unique: str, created_at: int) -> MemoryEvent:
         user_id=7,
         event_type=MemoryEventType.STICKER,
         created_at=created_at,
-        caption="редактор закончил главу рукописи",
+        caption=caption,
         file_id=f"file-{unique}",
         file_unique_id=unique,
     )
@@ -117,6 +123,22 @@ class MediaVarietyTests(unittest.TestCase):
         }
 
         self.assertEqual(picked, {"sticker-a", "sticker-b"})
+
+    def test_inflected_context_still_matches_remembered_media(self) -> None:
+        candidate = select_media_candidate(
+            [sticker(1, "art", 1000, caption="иллюстрация")],
+            (),
+            context_messages=("обсуждаем иллюстрации",),
+            recent_actions=(),
+            now=NOW,
+            textual_event_count=100,
+            bootstrap_threshold=10_000,
+            repeat_cooldown_seconds=21_600,
+            rng=random.Random(3),
+        )
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.event.file_unique_id, "art")
 
     def test_sticker_used_an_hour_ago_is_reusable_instead_of_hard_blocked_for_six_hours(self) -> None:
         events = [
