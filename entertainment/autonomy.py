@@ -58,8 +58,9 @@ class DecisionContext:
     now: int
 
 
-# Kept as the legacy/static compatibility view used by the admin UI/tests.
-# Runtime action selection uses adaptive_presence_policy() below.
+# Kept as the legacy/static compatibility view used by old callers and tests.
+# Runtime action selection switches to adaptive values once the storage/service
+# supplies the explicit long-horizon activity fields.
 _POLICIES = {
     BehaviorMode.CALM: BehaviorPolicy(
         max_actions_30m=1,
@@ -107,6 +108,10 @@ def behavior_policy(mode: BehaviorMode) -> BehaviorPolicy:
     return _POLICIES.get(mode, _POLICIES[BehaviorMode.ALIVE])
 
 
+def _has_long_horizon(activity: ActivitySnapshot) -> bool:
+    return activity.messages_60m is not None and activity.messages_120m is not None
+
+
 def adaptive_presence_policy(
     mode: BehaviorMode,
     phase: ConversationPhase,
@@ -114,17 +119,20 @@ def adaptive_presence_policy(
 ) -> BehaviorPolicy:
     """Return a topic-local action budget that follows real conversation tempo.
 
-    A quiet topic is intentionally much slower than the old static policy. A
-    recently busy topic that has only just cooled off gets the cooldown profile
-    instead of the full quiet delay, so the bot can still feel present without
-    speaking on a fixed timer.
+    Older/minimal storage implementations do not populate 60/120-minute
+    signals. They keep the legacy policy until those explicit signals are
+    available, which makes the rollout fail-safe rather than treating missing
+    telemetry as a dead chat.
     """
+
+    if not _has_long_horizon(activity):
+        return behavior_policy(mode)
 
     policies = _ADAPTIVE_POLICIES.get(mode, _ADAPTIVE_POLICIES[BehaviorMode.ALIVE])
     effective_phase = phase
     if phase is ConversationPhase.QUIET and (
-        int(activity.messages_60m) >= 12
-        or int(activity.active_users_60m) >= 4
+        int(activity.messages_60m or 0) >= 12
+        or int(activity.active_users_60m or 0) >= 4
     ):
         effective_phase = ConversationPhase.COOLDOWN
     return policies[effective_phase]
@@ -211,8 +219,9 @@ def select_action(
             return None
 
     dead_quiet_topic = (
-        context.phase is ConversationPhase.QUIET
-        and int(context.activity.messages_120m) <= 1
+        _has_long_horizon(context.activity)
+        and context.phase is ConversationPhase.QUIET
+        and int(context.activity.messages_120m or 0) <= 1
     )
 
     scored: list[tuple[float, int, ActionCandidate]] = []
