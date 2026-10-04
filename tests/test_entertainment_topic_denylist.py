@@ -77,6 +77,14 @@ class TopicDenylistTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await self.storage.message_count(WRITERS_CHAT_ID, topic_id), 0)
             self.assertNotIn((WRITERS_CHAT_ID, topic_id), self.service._active_topics)
 
+    async def test_blocked_short_greeting_is_not_learned_or_answered(self) -> None:
+        message = FakeMessage(topic_id=292358, text="споки")
+
+        await self.service.observe_message(message)
+
+        self.assertEqual((await self.storage.memory_counts(WRITERS_CHAT_ID, 292358)).total, 0)
+        self.assertEqual(message.replies, [])
+
     async def test_same_topic_id_in_other_chat_is_not_globally_blocked(self) -> None:
         other_chat = -1009999999999
         service = EntertainmentService(
@@ -100,6 +108,24 @@ class TopicDenylistTests(unittest.IsolatedAsyncioTestCase):
             now_fn=lambda: 123456.0,
         )
         result = await service.evaluate_topic(FakeMessage(topic_id=292358))
+        self.assertIsNone(result)
+        storage.get_settings.assert_not_awaited()
+
+    async def test_blocked_greeting_returns_before_greeting_runtime_storage_reads(self) -> None:
+        storage = SimpleNamespace(
+            get_settings=AsyncMock(side_effect=AssertionError("blocked greeting must not evaluate")),
+        )
+        service = EntertainmentService(
+            SimpleNamespace(bot=self.bot),
+            storage,
+            {WRITERS_CHAT_ID},
+            now_fn=lambda: 123456.0,
+        )
+
+        result = await service.evaluate_topic(
+            FakeMessage(topic_id=14637, text="спокойной ночи")
+        )
+
         self.assertIsNone(result)
         storage.get_settings.assert_not_awaited()
 

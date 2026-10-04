@@ -64,6 +64,35 @@ The 128-source limit bounds transition-model construction and randomized synthes
 
 No schema migration is required for Generation v3 or its production observability.
 
+## Contextual remembered media and greetings
+
+Culture Memory media remains reusable inside the exact `chat_id + topic_id` scope instead of behaving like one-shot echo memory. Stickers, photos and animations still require a valid Telegram `file_id`, are never borrowed from another topic/chat, and forwarded media remains excluded from callback selection.
+
+Media selection now preserves contextual ranking while adding controlled variety:
+
+- candidates are scored against the latest bounded same-topic context;
+- Russian word forms are matched through the existing fail-soft `pymorphy3` analysis while surface forms remain available for English, slang, usernames and meme vocabulary;
+- a clearly stronger contextual candidate continues to win;
+- near-equal high-quality candidates are selected with weighted variation, so one sticker does not permanently dominate the pool;
+- an exact media item used during the last 5 minutes is temporarily suppressed;
+- the existing 6-hour media window is a **soft diversity window**, not a hard ban: previously used media gradually regains weight and can be reused long before six hours when the pool/context makes it appropriate;
+- the existing rule preventing consecutive non-direct media callbacks remains in place, so variety does not become media spam.
+
+Explicit morning/night greetings have a separate bounded social-reaction path. It recognizes short intentional forms such as `доброе утро`, `утро`, `спокойной ночи`, `споки` and `гн`, while ordinary sentences that merely mention morning/night are not treated as greetings.
+
+Greeting behavior is intentionally restrained:
+
+- response probability: 40%;
+- per-topic greeting cooldown: 20 minutes;
+- if a context-relevant remembered media candidate exists, it may replace text with a 28% media chance;
+- otherwise the response comes from curated non-offensive meme families: literary, reader, art, engineering, technical, science, absurd and neutral;
+- style is selected from recent same-topic conversation context, never from a stored profession/profile of a specific user;
+- recent bot greeting replies are avoided when another variant is available;
+- normal Generation v3 is not invoked for a recognized greeting, including when the greeting intentionally receives no reply;
+- one-token forms such as `споки` and `гн` are evaluated after broad Culture Memory ingestion even though they are below the legacy two-token text-generation threshold.
+
+Greeting action metadata stores only bounded operational fields such as greeting kind/style and safe media diagnostics. It does not persist raw greeting text, raw context or a derived user profile. The outer hard topic denylist remains authoritative: blocked writer-chat topics stop before greeting settings/history reads, learning or replies.
+
 ## Rollback
 
 Generation v3 is the default. The previous v2 generator remains available for one-release rollback:
@@ -138,6 +167,14 @@ Production-hardening tests cover:
 - 32-attempt recent-window rollover without truncating lifetime counters;
 - recent-window LRU cleanup together with the bounded 256-scope cache;
 - privacy-safe recent status rendering with no generated text leakage;
+- reusable weighted media selection with a 5-minute exact-repeat guard and soft six-hour diversity penalty;
+- production media variety among near-equal contextual candidates;
+- morphology-aware media matching for inflected Russian context;
+- morning/night greeting detection without false positives on ordinary sentences;
+- 40% greeting response gating, 20-minute per-topic cooldown and optional contextual media substitution;
+- one-token greeting routing, curated-response anti-repeat and non-offensive corpus checks;
+- morphology-aware greeting style selection without individual-user profiling;
+- greeting privacy metadata and hard-deny short-circuiting;
 - admin-only status behavior and hard-deny short-circuiting.
 
 ## Offline quality gate

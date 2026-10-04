@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import random
 import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .culture import build_conversation_runs
+from .language import analyze_token
 from .models import EntertainmentActionRecord, EntertainmentActionType, MemoryEvent, MemoryEventType
 
 _SUPPORTED_MEDIA = {
@@ -20,6 +22,9 @@ _THRESHOLDS = {
     MemoryEventType.ANIMATION: 0.62,
     MemoryEventType.PHOTO: 0.78,
 }
+_MIN_EXACT_REPEAT_GAP_SECONDS = 300
+_RANDOM_SCORE_BAND = 0.18
+_LIVE_RANDOM_SCORE_BAND = 0.05
 _WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 _EMOJI_RE = re.compile(
     "["
@@ -42,7 +47,15 @@ class MediaCandidate:
 def _terms(value: str | None) -> set[str]:
     if not value:
         return set()
-    return {match.casefold() for match in _WORD_RE.findall(value)}
+    terms: set[str] = set()
+    for match in _WORD_RE.findall(value):
+        surface = match.casefold()
+        terms.add(surface)
+        analysed = analyze_token(surface)
+        lemma = (analysed.lemma or analysed.normalized).casefold()
+        if lemma:
+            terms.add(lemma)
+    return terms
 
 
 def _event_text(event: MemoryEvent) -> str | None:
@@ -74,14 +87,21 @@ def _same_scope(event: MemoryEvent, scope: tuple[int, int] | None) -> bool:
     return (int(event.chat_id), int(event.topic_id)) == scope
 
 
-def _blocked_media_ids(
+def _media_usage_ages(
     actions: Sequence[EntertainmentActionRecord],
     *,
     now: int,
     repeat_cooldown_seconds: int,
-) -> set[str]:
+) -> dict[str, int]:
+    """Return youngest in-window use age for each remembered media id.
+
+    The historical cooldown is now a soft diversity window. Only a very recent
+    exact repeat is hard-blocked; older uses remain selectable with a temporary
+    weight penalty so a small sticker pool never becomes unusable for hours.
+    """
+
     cutoff = max(0, int(repeat_cooldown_seconds))
-    blocked: set[str] = set()
+    ages: dict[str, int] = {}
     for action in actions:
         if action.action_type is not EntertainmentActionType.MEMORY_CALLBACK:
             continue
@@ -89,9 +109,22 @@ def _blocked_media_ids(
         if age < 0 or age > cutoff:
             continue
         value = action.metadata.get("media_file_unique_id")
-        if isinstance(value, str) and value:
-            blocked.add(value)
-    return blocked
+        if not isinstance(value, str) or not value:
+            continue
+        previous = ages.get(value)
+        if previous is None or age < previous:
+            ages[value] = age
+    return ages
+
+
+def _reuse_weight(age: int | None, repeat_cooldown_seconds: int) -> float:
+    if age is None:
+        return 1.0
+    if age < _MIN_EXACT_REPEAT_GAP_SECONDS:
+        return 0.0
+    cooldown = max(_MIN_EXACT_REPEAT_GAP_SECONDS + 1, int(repeat_cooldown_seconds))
+    progress = min(1.0, max(0.0, age / cooldown))
+    return 0.35 + 0.65 * progress
 
 
 def _candidate_context_terms(
@@ -176,6 +209,17 @@ def _raw_score(
     return max(0.0, min(1.0, score))
 
 
+def _live_rng(scope: tuple[int, int], now: int) -> random.Random:
+    """Return a changing but reproducible local RNG without global state."""
+    chat_id, topic_id = scope
+    seed = (
+        (abs(int(chat_id)) * 31)
+        ^ (int(topic_id) * 131)
+        ^ int(now)
+    ) & 0x7FFFFFFF
+    return random.Random(seed)
+
+
 def select_media_candidate(
     recent_events: Sequence[MemoryEvent],
     historical_windows: Sequence[Sequence[MemoryEvent]],
@@ -186,8 +230,9 @@ def select_media_candidate(
     textual_event_count: int,
     bootstrap_threshold: int,
     repeat_cooldown_seconds: int,
+    rng: random.Random | None = None,
 ) -> MediaCandidate | None:
-    """Select one contextually relevant remembered media item from bounded inputs."""
+    """Select one relevant remembered media item with bounded weighted variety."""
 
     scope = _scope(recent_events, historical_windows)
     if scope is None:
@@ -198,7 +243,7 @@ def select_media_candidate(
     if not anchor_terms:
         return None
 
-    blocked_ids = _blocked_media_ids(
+    usage_ages = _media_usage_ages(
         recent_actions,
         now=int(now),
         repeat_cooldown_seconds=int(repeat_cooldown_seconds),
@@ -230,7 +275,10 @@ def select_media_candidate(
                 continue
             if item.is_forwarded or not item.file_id or not item.file_unique_id:
                 continue
-            if item.file_unique_id in blocked_ids:
+            if _reuse_weight(
+                usage_ages.get(item.file_unique_id),
+                int(repeat_cooldown_seconds),
+            ) <= 0.0:
                 continue
 
             candidate_terms, explicit_reply = _candidate_context_terms(item, run)
@@ -275,15 +323,26 @@ def select_media_candidate(
     if not best_by_unique:
         return None
 
-    return max(
-        best_by_unique.values(),
-        key=lambda pair: (
-            pair[0].score,
-            int(pair[1]),
-            int(pair[0].event.created_at),
-            int(pair[0].event.message_id or -1),
-        ),
-    )[0]
+    ranked = list(best_by_unique.values())
+    best_score = max(pair[0].score for pair in ranked)
+    score_band = _RANDOM_SCORE_BAND if rng is not None else _LIVE_RANDOM_SCORE_BAND
+    band = [pair for pair in ranked if pair[0].score >= best_score - score_band]
+
+    if len(band) == 1:
+        return band[0][0]
+
+    choice_rng = rng if rng is not None else _live_rng(scope, int(now))
+    weights: list[float] = []
+    for candidate, is_recent in band:
+        unique_id = candidate.event.file_unique_id
+        reuse = _reuse_weight(
+            usage_ages.get(unique_id or ""),
+            int(repeat_cooldown_seconds),
+        )
+        recency = 1.08 if is_recent else 1.0
+        weights.append(max(0.01, candidate.score * reuse * recency))
+
+    return choice_rng.choices([pair[0] for pair in band], weights=weights, k=1)[0]
 
 
 __all__ = ["MediaCandidate", "select_media_candidate"]
