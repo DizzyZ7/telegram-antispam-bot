@@ -46,6 +46,18 @@ class GreetingBehaviorTests(unittest.TestCase):
         self.assertTrue(technical.text)
         self.assertNotEqual(literary.text, technical.text)
 
+    def test_inflected_context_words_still_select_the_right_style(self) -> None:
+        mod = self.module()
+
+        reply = mod.choose_greeting_reply(
+            "morning",
+            context_messages=("художники рисуют иллюстрации для новых глав",),
+            recent_replies=(),
+            rng=random.Random(2),
+        )
+
+        self.assertEqual(reply.style, "art")
+
     def test_recent_reply_is_not_repeated_when_an_alternative_exists(self) -> None:
         mod = self.module()
         first = mod.choose_greeting_reply(
