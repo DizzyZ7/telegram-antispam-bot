@@ -71,6 +71,19 @@ def select(events, *, rng: random.Random, actions=()):
     )
 
 
+def select_live(events, *, now: int):
+    return select_media_candidate(
+        events,
+        (),
+        context_messages=("редактор закончил главу рукописи",),
+        recent_actions=(),
+        now=now,
+        textual_event_count=100,
+        bootstrap_threshold=10_000,
+        repeat_cooldown_seconds=21_600,
+    )
+
+
 class MediaVarietyTests(unittest.TestCase):
     def test_different_rng_seeds_can_pick_different_relevant_stickers(self) -> None:
         events = [
@@ -89,6 +102,21 @@ class MediaVarietyTests(unittest.TestCase):
             {first.event.file_unique_id, second.event.file_unique_id},
             {"sticker-a", "sticker-b"},
         )
+
+    def test_live_selection_varies_over_time_for_equally_relevant_stickers(self) -> None:
+        events = [
+            text_event(1, "редактор закончил главу рукописи", 1000),
+            sticker(2, "sticker-a", 1010),
+            text_event(3, "редактор закончил главу рукописи", 1020),
+            sticker(4, "sticker-b", 1030),
+        ]
+
+        picked = {
+            select_live(events, now=NOW + offset).event.file_unique_id
+            for offset in range(16)
+        }
+
+        self.assertEqual(picked, {"sticker-a", "sticker-b"})
 
     def test_sticker_used_an_hour_ago_is_reusable_instead_of_hard_blocked_for_six_hours(self) -> None:
         events = [
