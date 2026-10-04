@@ -89,6 +89,10 @@ class PostgresEntertainmentStorageTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.add_message(-990001, 30, 3, "previous", created_at=19_699)
         await self.storage.add_message(-990001, 30, 4, "previous older", created_at=19_450)
         await self.storage.add_message(-990001, 30, 5, "fifteen edge", created_at=19_100)
+        await self.storage.add_message(-990001, 30, 6, "sixty edge", created_at=16_400)
+        await self.storage.add_message(-990001, 30, 7, "older than sixty", created_at=16_399)
+        await self.storage.add_message(-990001, 30, 8, "one twenty edge", created_at=12_800)
+        await self.storage.add_message(-990001, 30, 9, "too old", created_at=12_799)
         await self.storage.add_message(-990001, 40, 99, "sibling", created_at=19_990)
 
         snapshot = await self.storage.activity_snapshot(-990001, 30, now=now)
@@ -96,7 +100,10 @@ class PostgresEntertainmentStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.messages_5m, 3)
         self.assertEqual(snapshot.messages_previous_5m, 2)
         self.assertEqual(snapshot.messages_15m, 6)
+        self.assertEqual(snapshot.messages_60m, 7)
+        self.assertEqual(snapshot.messages_120m, 9)
         self.assertEqual(snapshot.active_users_5m, 2)
+        self.assertEqual(snapshot.active_users_60m, 6)
         self.assertEqual(snapshot.seconds_since_human, 20.0)
 
     async def test_action_history_matches_sqlite_contract(self) -> None:
