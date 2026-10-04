@@ -26,6 +26,8 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
         active_users_5m: int = 0,
         active_users_60m: int = 0,
         seconds_since_human: float | None = 120.0,
+        seconds_since_bot_action: float | None = None,
+        human_messages_since_bot_action: int | None = None,
     ) -> ActivitySnapshot:
         return ActivitySnapshot(
             chat_id=-1001,
@@ -39,6 +41,8 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
             messages_60m=messages_60m,
             messages_120m=messages_120m,
             active_users_60m=active_users_60m,
+            seconds_since_bot_action=seconds_since_bot_action,
+            human_messages_since_bot_action=human_messages_since_bot_action,
         )
 
     def action(self, *, seconds_ago: int) -> EntertainmentActionRecord:
@@ -57,7 +61,7 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
         *,
         phase: autonomy.ConversationPhase,
         activity: ActivitySnapshot,
-        last_action_seconds_ago: int,
+        last_action_seconds_ago: int | None,
         human_messages: int,
         mode: BehaviorMode = BehaviorMode.ALIVE,
     ) -> autonomy.DecisionContext:
@@ -65,7 +69,11 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
             settings=EntertainmentSettings(behavior_mode=mode),
             phase=phase,
             activity=activity,
-            recent_actions=(self.action(seconds_ago=last_action_seconds_ago),),
+            recent_actions=(
+                (self.action(seconds_ago=last_action_seconds_ago),)
+                if last_action_seconds_ago is not None
+                else ()
+            ),
             human_messages_since_last_action=human_messages,
             memory_count=10_000,
             quiet_hours_active=False,
@@ -86,6 +94,8 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
         self.assertIn("messages_60m", fields)
         self.assertIn("messages_120m", fields)
         self.assertIn("active_users_60m", fields)
+        self.assertIn("seconds_since_bot_action", fields)
+        self.assertIn("human_messages_since_bot_action", fields)
 
     def test_alive_policy_gets_quieter_when_topic_is_quiet(self) -> None:
         factory = getattr(autonomy, "adaptive_presence_policy", None)
@@ -157,6 +167,34 @@ class AdaptivePresencePolicyTests(unittest.TestCase):
         self.assertIsNone(autonomy.select_action(blocked_time, [self.candidate()], rng=rng))
         self.assertIsNone(autonomy.select_action(blocked_humans, [self.candidate()], rng=random.Random(3)))
         self.assertIsNotNone(autonomy.select_action(allowed, [self.candidate()], rng=random.Random(3)))
+
+    def test_bot_action_older_than_thirty_minutes_still_consumes_quiet_presence_gap(self) -> None:
+        blocked = self.context(
+            phase=autonomy.ConversationPhase.QUIET,
+            activity=self.activity(
+                messages_60m=5,
+                messages_120m=8,
+                active_users_60m=3,
+                seconds_since_bot_action=2_400,
+                human_messages_since_bot_action=4,
+            ),
+            last_action_seconds_ago=None,
+            human_messages=0,
+        )
+        allowed = self.context(
+            phase=autonomy.ConversationPhase.QUIET,
+            activity=self.activity(
+                messages_60m=5,
+                messages_120m=8,
+                active_users_60m=3,
+                seconds_since_bot_action=3_600,
+                human_messages_since_bot_action=2,
+            ),
+            last_action_seconds_ago=None,
+            human_messages=0,
+        )
+        self.assertIsNone(autonomy.select_action(blocked, [self.candidate()], rng=random.Random(6)))
+        self.assertIsNotNone(autonomy.select_action(allowed, [self.candidate()], rng=random.Random(6)))
 
     def test_active_topic_requires_many_human_messages_even_when_time_gap_passed(self) -> None:
         activity = self.activity(
