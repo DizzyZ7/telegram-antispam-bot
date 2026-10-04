@@ -18,6 +18,8 @@ class ActivitySnapshot:
     messages_60m: int | None = None
     messages_120m: int | None = None
     active_users_60m: int | None = None
+    seconds_since_bot_action: float | None = None
+    human_messages_since_bot_action: int | None = None
 
 
 __all__ = ["ActivitySnapshot"]
