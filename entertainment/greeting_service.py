@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import logging
+import random
 from dataclasses import replace
 
 from aiogram.types import Message
@@ -54,6 +55,10 @@ class EntertainmentService(PhaseCEntertainmentService):
             str,
         )
 
+    def _fork_rng(self) -> random.Random:
+        """Keep chance rolls independent from random wording/media selection."""
+        return random.Random(self.rng.getrandbits(64))
+
     async def _handle_greeting(
         self,
         message: Message,
@@ -94,7 +99,7 @@ class EntertainmentService(PhaseCEntertainmentService):
             kind,
             context_messages=context_messages[-20:],
             recent_replies=recent_replies,
-            rng=self.rng,
+            rng=self._fork_rng(),
         )
 
         snapshot = await self._culture_memory_snapshot(
@@ -120,7 +125,7 @@ class EntertainmentService(PhaseCEntertainmentService):
             textual_event_count=int(snapshot.counts.text) + int(snapshot.counts.emoji),
             bootstrap_threshold=BOOTSTRAP_TEXT_EVENT_THRESHOLD,
             repeat_cooldown_seconds=MEDIA_REPEAT_COOLDOWN_SECONDS,
-            rng=self.rng,
+            rng=self._fork_rng(),
         )
 
         if media_candidate is not None and self.rng.random() < _GREETING_MEDIA_CHANCE:
