@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .culture import build_conversation_runs
+from .language import analyze_token
 from .models import EntertainmentActionRecord, EntertainmentActionType, MemoryEvent, MemoryEventType
 
 _SUPPORTED_MEDIA = {
@@ -46,7 +47,15 @@ class MediaCandidate:
 def _terms(value: str | None) -> set[str]:
     if not value:
         return set()
-    return {match.casefold() for match in _WORD_RE.findall(value)}
+    terms: set[str] = set()
+    for match in _WORD_RE.findall(value):
+        surface = match.casefold()
+        terms.add(surface)
+        analysed = analyze_token(surface)
+        lemma = (analysed.lemma or analysed.normalized).casefold()
+        if lemma:
+            terms.add(lemma)
+    return terms
 
 
 def _event_text(event: MemoryEvent) -> str | None:
