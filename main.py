@@ -195,6 +195,15 @@ from lexicon_game_scope import (
 from lexicon_learning_unpin import LearningLexiconService, register_lexicon_learning_handlers
 from minigames import MiniGameStorage, register_minigame_handlers
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
+from zero_trust.config import ZeroTrustConfig
+from zero_trust.handlers import register_zero_trust_handlers
+from zero_trust.runtime import (
+    disable_legacy_captcha_ownership,
+    log_startup_diagnostics,
+    require_database_url,
+)
+from zero_trust.service import ZeroTrustService
+from zero_trust.storage import PostgresZeroTrustStorage
 
 
 async def main() -> None:
@@ -202,14 +211,42 @@ async def main() -> None:
     # chats, including the writers chat with topics, remain untouched.
     enforce_lexicon_only_isolation(app, LEXICON_ONLY_CHAT_IDS)
 
+    zero_trust_config = ZeroTrustConfig.from_env()
+    log_startup_diagnostics(zero_trust_config, app.ALLOWED_CHATS)
+    zero_trust_database_url = require_database_url(
+        zero_trust_config,
+        os.getenv("DATABASE_URL"),
+    )
+    legacy_disable = disable_legacy_captcha_ownership(app)
+    print(
+        "ZERO_TRUST_LEGACY_CAPTCHA_DISABLED "
+        f"chat_member_handlers={legacy_disable.removed_chat_member_handlers} "
+        f"callback_handlers={legacy_disable.removed_callback_handlers}",
+        flush=True,
+    )
+
     accurate_storage = AccurateStatsStorage(RUNTIME_DATA_DIR / "accurate_stats.db")
     minigame_storage = MiniGameStorage(RUNTIME_DATA_DIR / "minigames.db")
     entertainment_storage = None
     entertainment_supervisor: EntertainmentSupervisor | None = None
+    zero_trust_storage: PostgresZeroTrustStorage | None = None
+    zero_trust_service: ZeroTrustService | None = None
     accurate_initialized = False
     minigame_initialized = False
 
     try:
+        if zero_trust_database_url is not None:
+            zero_trust_storage = PostgresZeroTrustStorage(zero_trust_database_url)
+            await zero_trust_storage.initialize()
+            zero_trust_service = ZeroTrustService(zero_trust_storage, zero_trust_config)
+            expired = await zero_trust_service.start()
+            print(
+                "ZERO_TRUST_STORAGE_READY "
+                f"backend=postgres protected_chats={len(zero_trust_config.chat_ids)} "
+                f"expired_pending={expired}",
+                flush=True,
+            )
+
         await accurate_storage.initialize()
         accurate_initialized = True
         await minigame_storage.initialize()
@@ -241,6 +278,17 @@ async def main() -> None:
             app,
             on_message_deleted=entertainment_storage.delete_message_memory,
         )
+        await scope.resolve(app.bot)
+        if scope.chat_id is not None and scope.chat_id not in app.ALLOWED_CHATS:
+            app.ALLOWED_CHATS.append(scope.chat_id)
+
+        if zero_trust_service is not None:
+            register_zero_trust_handlers(
+                app,
+                zero_trust_service,
+                writers_scope=scope,
+            )
+
         register_accurate_stats_handlers(app, accurate_stats)
         register_entertainment_handlers(app, entertainment)
 
@@ -250,10 +298,6 @@ async def main() -> None:
         register_lexicon_only_guard(app, LEXICON_ONLY_CHAT_IDS)
         register_minigame_handlers(app, minigames)
         register_lexicon_learning_handlers(app, minigames)
-        await scope.resolve(app.bot)
-
-        if scope.chat_id is not None and scope.chat_id not in app.ALLOWED_CHATS:
-            app.ALLOWED_CHATS.append(scope.chat_id)
 
         print(
             "LEXICON_ONLY_SCOPE_READY "
@@ -278,6 +322,8 @@ async def main() -> None:
             await minigame_storage.close()
         if accurate_initialized:
             await accurate_storage.close()
+        if zero_trust_storage is not None:
+            await zero_trust_storage.close()
 
 
 if __name__ == "__main__":
