@@ -56,6 +56,19 @@ class WritersModerationMemoryPurgeTests(unittest.IsolatedAsyncioTestCase):
         purge.assert_not_awaited()
         app.bot.send_message.assert_not_awaited()
 
+    async def test_purge_failure_does_not_break_moderation_warning(self):
+        app = module()
+        purge = AsyncMock(side_effect=RuntimeError("database unavailable"))
+        register_writers_chat_handlers(app, on_message_deleted=purge)
+        handler = app.dp.message.handlers[0].callback
+        target = message()
+
+        await handler(target)
+
+        target.delete.assert_awaited_once()
+        purge.assert_awaited_once_with(-1002619489118, 555)
+        app.bot.send_message.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()
