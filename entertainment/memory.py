@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from aiogram.types import Message
+from writers_moderation import contains_prohibited_language
 
 from .models import MemoryEvent, MemoryEventType
 
@@ -30,6 +31,11 @@ def _clean_text(value: object) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _is_prohibited_text(value: object) -> bool:
+    cleaned = _clean_text(value)
+    return bool(cleaned and contains_prohibited_language(cleaned))
 
 
 def _is_emoji_only(text: str) -> bool:
@@ -96,7 +102,8 @@ def classify_memory_event(
     """Convert one supported Telegram message into a canonical event.
 
     The classifier is intentionally metadata-only for media: it never downloads
-    files and never copies surrounding chat text into another event.
+    files and never copies surrounding chat text into another event. Prohibited
+    text/captions are rejected before they can enter Culture Memory.
     """
 
     sticker = _value(message, "sticker")
@@ -124,6 +131,8 @@ def classify_memory_event(
 
     photos = _value(message, "photo")
     if photos:
+        if _is_prohibited_text(_value(message, "caption")):
+            return None
         valid = [item for item in photos if _clean_text(_value(item, "file_id"))]
         if not valid:
             return None
@@ -149,6 +158,8 @@ def classify_memory_event(
 
     animation = _value(message, "animation")
     if animation is not None:
+        if _is_prohibited_text(_value(message, "caption")):
+            return None
         file_id = _clean_text(_value(animation, "file_id"))
         if file_id is None:
             return None
@@ -167,7 +178,7 @@ def classify_memory_event(
         )
 
     text = _clean_text(_value(message, "text"))
-    if text is None:
+    if text is None or contains_prohibited_language(text):
         return None
     event_type = MemoryEventType.EMOJI if _is_emoji_only(text) else MemoryEventType.TEXT
     return _base_event(
