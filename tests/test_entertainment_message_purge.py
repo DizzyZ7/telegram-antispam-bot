@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from entertainment.models import MemoryEvent, MemoryEventType
-from entertainment.storage.retention import (
+from entertainment.storage.windows import (
     PostgresEntertainmentStorage,
     SQLiteEntertainmentStorage,
 )
