@@ -237,7 +237,10 @@ async def main() -> None:
         lexicon_app = LexiconGameAppScope(app, LEXICON_ONLY_CHAT_IDS)
         minigames = LearningLexiconService(lexicon_app, minigame_storage)
 
-        scope = register_writers_chat_handlers(app)
+        scope = register_writers_chat_handlers(
+            app,
+            on_message_deleted=entertainment_storage.delete_message_memory,
+        )
         register_accurate_stats_handlers(app, accurate_stats)
         register_entertainment_handlers(app, entertainment)
 
