@@ -8,6 +8,7 @@ import os
 import re
 import time
 import unicodedata
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ WRITERS_RULES_URL = os.getenv(
 WARNING_COOLDOWN_SECONDS = max(10, int(os.getenv("WRITERS_WARNING_COOLDOWN_SECONDS", "60")))
 RULES_LINK_PREVIEW_OPTIONS = LinkPreviewOptions(is_disabled=True)
 LEXICON_PATH = Path(__file__).resolve().parent / "data" / "moderation_lexicon.json"
+MessageDeletedHook = Callable[[int, int], Awaitable[object]]
 
 EXTRA_BLOCKED_TERMS_RAW = tuple(
     item.strip()
@@ -370,7 +372,11 @@ class ProhibitedLanguageFilter(BaseFilter):
         )
 
 
-def register_writers_chat_handlers(module: Any) -> WritersChatScope:
+def register_writers_chat_handlers(
+    module: Any,
+    *,
+    on_message_deleted: MessageDeletedHook | None = None,
+) -> WritersChatScope:
     scope = WritersChatScope()
     chat_filter = WritersChatFilter(scope, module.ALLOWED_CHATS)
     captcha_filter = WritersCaptchaFilter(scope)
@@ -465,6 +471,15 @@ def register_writers_chat_handlers(module: Any) -> WritersChatScope:
         except Exception as exc:
             LOGGER.warning("Could not delete prohibited message: %s", exc)
             return
+
+        if on_message_deleted is not None:
+            try:
+                await on_message_deleted(int(message.chat.id), int(message.message_id))
+            except Exception as exc:
+                LOGGER.warning(
+                    "Could not purge deleted prohibited message from Entertainment memory: %s",
+                    exc,
+                )
 
         key = (message.chat.id, message.from_user.id)
         now = time.monotonic()
