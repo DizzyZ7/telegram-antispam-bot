@@ -9,6 +9,8 @@ from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from writers_moderation import contains_prohibited_language
+
 from .models import MemoryCounts, MemoryEvent, MemoryEventType
 
 DEFAULT_RUN_GAP_SECONDS = 8 * 60
@@ -71,7 +73,9 @@ def _event_text(event: MemoryEvent) -> str | None:
     if not isinstance(value, str):
         return None
     cleaned = " ".join(value.split()).strip()
-    return cleaned or None
+    if not cleaned or contains_prohibited_language(cleaned):
+        return None
+    return cleaned
 
 
 def _emoji_from_event(event: MemoryEvent) -> list[str]:
@@ -291,7 +295,7 @@ def build_culture_context(
     ][-_CONTEXT_LIMIT:]
 
     cleaned_trigger = " ".join(trigger_text.split()).strip() if isinstance(trigger_text, str) else ""
-    if cleaned_trigger:
+    if cleaned_trigger and not contains_prohibited_language(cleaned_trigger):
         context_messages.extend([cleaned_trigger, cleaned_trigger])
 
     emoji_candidates: list[str] = []
