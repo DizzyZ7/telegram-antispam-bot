@@ -1,6 +1,10 @@
 import json
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from aiogram import Dispatcher
 
 import writers_moderation as moderation
 from writers_moderation import (
@@ -11,6 +15,7 @@ from writers_moderation import (
     build_captcha_success_text,
     contains_prohibited_language,
     detect_prohibited_language,
+    register_writers_chat_handlers,
 )
 
 EVALUATION_PATH = Path(__file__).parents[1] / "data" / "writers_moderation_eval.json"
@@ -84,6 +89,18 @@ class ProhibitedLanguageTests(unittest.TestCase):
 
     def test_rules_link_preview_is_disabled(self):
         self.assertTrue(RULES_LINK_PREVIEW_OPTIONS.is_disabled)
+
+    def test_writers_module_owns_only_moderation_not_captcha_handlers(self):
+        app = SimpleNamespace(
+            dp=Dispatcher(),
+            ALLOWED_CHATS=[],
+            bot=SimpleNamespace(send_message=AsyncMock()),
+        )
+        register_writers_chat_handlers(app)
+
+        self.assertEqual(len(app.dp.chat_member.handlers), 0)
+        self.assertEqual(len(app.dp.callback_query.handlers), 0)
+        self.assertEqual(len(app.dp.message.handlers), 1)
 
 
 if __name__ == "__main__":
