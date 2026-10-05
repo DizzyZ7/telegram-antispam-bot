@@ -9,6 +9,7 @@ from .retention import (
     PostgresEntertainmentStorage as RetentionPostgresEntertainmentStorage,
     SQLiteEntertainmentStorage as RetentionSQLiteEntertainmentStorage,
     _EVENT_FIELDS,
+    _delete_count,
     _event_from_values,
 )
 
@@ -28,6 +29,26 @@ def _window_starts(total: int, window_count: int, window_size: int, seed: int) -
 
 class SQLiteEntertainmentStorage(RetentionSQLiteEntertainmentStorage):
     """Retention SQLite backend plus deterministic bounded historical windows."""
+
+    async def delete_message_memory(self, chat_id: int, message_id: int) -> int:
+        """Atomically forget one Telegram message from both text projections."""
+        connection = self._require_connection()
+        await connection.execute("BEGIN IMMEDIATE")
+        try:
+            event_cursor = await connection.execute(
+                "DELETE FROM ent_memory_events WHERE chat_id = ? AND message_id = ?",
+                (int(chat_id), int(message_id)),
+            )
+            legacy_cursor = await connection.execute(
+                "DELETE FROM entertainment_messages WHERE chat_id = ? AND message_id = ?",
+                (int(chat_id), int(message_id)),
+            )
+            deleted = max(0, int(event_cursor.rowcount)) + max(0, int(legacy_cursor.rowcount))
+            await connection.commit()
+            return deleted
+        except Exception:
+            await connection.rollback()
+            raise
 
     async def sample_event_windows(
         self,
@@ -67,6 +88,23 @@ class SQLiteEntertainmentStorage(RetentionSQLiteEntertainmentStorage):
 
 class PostgresEntertainmentStorage(RetentionPostgresEntertainmentStorage):
     """Retention PostgreSQL backend plus deterministic bounded historical windows."""
+
+    async def delete_message_memory(self, chat_id: int, message_id: int) -> int:
+        """Atomically forget one Telegram message from both text projections."""
+        pool = self._require_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                event_status = await connection.execute(
+                    "DELETE FROM ent_memory_events WHERE chat_id=$1 AND message_id=$2",
+                    int(chat_id),
+                    int(message_id),
+                )
+                legacy_status = await connection.execute(
+                    "DELETE FROM entertainment_messages WHERE chat_id=$1 AND message_id=$2",
+                    int(chat_id),
+                    int(message_id),
+                )
+        return _delete_count(event_status) + _delete_count(legacy_status)
 
     async def sample_event_windows(
         self,
