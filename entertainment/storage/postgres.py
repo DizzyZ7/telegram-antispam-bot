@@ -295,8 +295,11 @@ class PostgresEntertainmentStorage:
                 COUNT(*) FILTER (WHERE created_at >= $3) AS messages_1m,
                 COUNT(*) FILTER (WHERE created_at >= $4) AS messages_5m,
                 COUNT(*) FILTER (WHERE created_at >= $5 AND created_at < $4) AS messages_previous_5m,
-                COUNT(*) AS messages_15m,
+                COUNT(*) FILTER (WHERE created_at >= $7) AS messages_15m,
                 COUNT(DISTINCT user_id) FILTER (WHERE created_at >= $4) AS active_users_5m,
+                COUNT(*) FILTER (WHERE created_at >= $8) AS messages_60m,
+                COUNT(*) AS messages_120m,
+                COUNT(DISTINCT user_id) FILTER (WHERE created_at >= $8) AS active_users_60m,
                 (
                     SELECT created_at
                     FROM entertainment_messages latest
@@ -306,9 +309,17 @@ class PostgresEntertainmentStorage:
                 ) AS last_human_at
             FROM entertainment_messages
             WHERE chat_id = $1 AND topic_id = $2
-              AND created_at >= $7 AND created_at <= $6
+              AND created_at >= $9 AND created_at <= $6
             """,
-            int(chat_id), int(topic_id), now_i - 60, now_i - 300, now_i - 600, now_i, now_i - 900,
+            int(chat_id),
+            int(topic_id),
+            now_i - 60,
+            now_i - 300,
+            now_i - 600,
+            now_i,
+            now_i - 900,
+            now_i - 3_600,
+            now_i - 7_200,
         )
         assert row is not None
         last_human_at = row["last_human_at"]
@@ -323,6 +334,9 @@ class PostgresEntertainmentStorage:
             seconds_since_human=(
                 float(max(0, now_i - int(last_human_at))) if last_human_at is not None else None
             ),
+            messages_60m=int(row["messages_60m"] or 0),
+            messages_120m=int(row["messages_120m"] or 0),
+            active_users_60m=int(row["active_users_60m"] or 0),
         )
 
     async def record_action(self, record: EntertainmentActionRecord) -> int:

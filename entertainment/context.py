@@ -15,6 +15,9 @@ class ActivitySnapshot:
     messages_15m: int
     active_users_5m: int
     seconds_since_human: float | None
+    messages_60m: int | None = None
+    messages_120m: int | None = None
+    active_users_60m: int | None = None
 
 
 __all__ = ["ActivitySnapshot"]

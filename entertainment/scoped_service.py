@@ -8,8 +8,8 @@ from typing import Any
 from aiogram.types import CallbackQuery, Message
 
 from .config import ENTERTAINMENT_BLOCKED_TOPIC_SCOPES
-from .greeting_service import EntertainmentService as PhaseCEntertainmentService
 from .models import BehaviorMode, EntertainmentActionRecord
+from .presence_service import EntertainmentService as PhaseCEntertainmentService
 from .storage.base import EntertainmentStorage
 
 

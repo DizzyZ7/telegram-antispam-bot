@@ -327,6 +327,9 @@ class SQLiteEntertainmentStorage:
                 COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0),
+                COUNT(DISTINCT CASE WHEN created_at >= ? THEN user_id END),
+                COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0),
                 COUNT(*),
                 COUNT(DISTINCT CASE WHEN created_at >= ? THEN user_id END),
                 (
@@ -345,19 +348,22 @@ class SQLiteEntertainmentStorage:
                 now_i - 300,
                 now_i - 600,
                 now_i - 300,
+                now_i - 900,
                 now_i - 300,
+                now_i - 3_600,
+                now_i - 3_600,
                 int(chat_id),
                 int(topic_id),
                 now_i,
                 int(chat_id),
                 int(topic_id),
-                now_i - 900,
+                now_i - 7_200,
                 now_i,
             ),
         ) as cursor:
             row = await cursor.fetchone()
         assert row is not None
-        last_human_at = row[5]
+        last_human_at = row[8]
         return ActivitySnapshot(
             chat_id=int(chat_id),
             topic_id=int(topic_id),
@@ -369,6 +375,9 @@ class SQLiteEntertainmentStorage:
             seconds_since_human=(
                 float(max(0, now_i - int(last_human_at))) if last_human_at is not None else None
             ),
+            messages_60m=int(row[5]),
+            messages_120m=int(row[6]),
+            active_users_60m=int(row[7]),
         )
 
     async def record_action(self, record: EntertainmentActionRecord) -> int:

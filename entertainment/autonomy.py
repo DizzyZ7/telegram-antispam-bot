@@ -59,26 +59,61 @@ class DecisionContext:
 
 
 _POLICIES = {
-    BehaviorMode.CALM: BehaviorPolicy(
-        max_actions_30m=1,
-        min_gap_seconds=900,
-        min_human_messages_between=8,
-    ),
-    BehaviorMode.ALIVE: BehaviorPolicy(
-        max_actions_30m=2,
-        min_gap_seconds=360,
-        min_human_messages_between=4,
-    ),
-    BehaviorMode.ACTIVE: BehaviorPolicy(
-        max_actions_30m=3,
-        min_gap_seconds=180,
-        min_human_messages_between=2,
-    ),
+    BehaviorMode.CALM: BehaviorPolicy(1, 900, 8),
+    BehaviorMode.ALIVE: BehaviorPolicy(2, 360, 4),
+    BehaviorMode.ACTIVE: BehaviorPolicy(3, 180, 2),
+}
+
+_ADAPTIVE_POLICIES: dict[BehaviorMode, dict[ConversationPhase, BehaviorPolicy]] = {
+    BehaviorMode.CALM: {
+        ConversationPhase.QUIET: BehaviorPolicy(1, 5_400, 3),
+        ConversationPhase.COOLDOWN: BehaviorPolicy(1, 3_600, 6),
+        ConversationPhase.WARMING_UP: BehaviorPolicy(1, 2_700, 8),
+        ConversationPhase.ACTIVE: BehaviorPolicy(1, 1_800, 14),
+        ConversationPhase.PEAK: BehaviorPolicy(1, 3_600, 20),
+    },
+    BehaviorMode.ALIVE: {
+        ConversationPhase.QUIET: BehaviorPolicy(1, 3_600, 2),
+        ConversationPhase.COOLDOWN: BehaviorPolicy(1, 2_400, 4),
+        ConversationPhase.WARMING_UP: BehaviorPolicy(1, 1_800, 6),
+        ConversationPhase.ACTIVE: BehaviorPolicy(2, 900, 10),
+        ConversationPhase.PEAK: BehaviorPolicy(1, 2_700, 16),
+    },
+    BehaviorMode.ACTIVE: {
+        ConversationPhase.QUIET: BehaviorPolicy(1, 2_700, 1),
+        ConversationPhase.COOLDOWN: BehaviorPolicy(1, 1_800, 3),
+        ConversationPhase.WARMING_UP: BehaviorPolicy(2, 1_200, 4),
+        ConversationPhase.ACTIVE: BehaviorPolicy(2, 600, 8),
+        ConversationPhase.PEAK: BehaviorPolicy(1, 1_800, 12),
+    },
 }
 
 
 def behavior_policy(mode: BehaviorMode) -> BehaviorPolicy:
     return _POLICIES.get(mode, _POLICIES[BehaviorMode.ALIVE])
+
+
+def _has_long_horizon(activity: ActivitySnapshot) -> bool:
+    return activity.messages_60m is not None and activity.messages_120m is not None
+
+
+def adaptive_presence_policy(
+    mode: BehaviorMode,
+    phase: ConversationPhase,
+    activity: ActivitySnapshot,
+) -> BehaviorPolicy:
+    """Return a topic-local action budget that follows real conversation tempo."""
+    if not _has_long_horizon(activity):
+        return behavior_policy(mode)
+
+    policies = _ADAPTIVE_POLICIES.get(mode, _ADAPTIVE_POLICIES[BehaviorMode.ALIVE])
+    effective_phase = phase
+    if phase is ConversationPhase.QUIET and (
+        int(activity.messages_60m or 0) >= 12
+        or int(activity.active_users_60m or 0) >= 4
+    ):
+        effective_phase = ConversationPhase.COOLDOWN
+    return policies[effective_phase]
 
 
 def derive_phase(snapshot: ActivitySnapshot) -> ConversationPhase:
@@ -125,10 +160,32 @@ def _last_action(context: DecisionContext) -> EntertainmentActionRecord | None:
     ]
     if not eligible:
         return None
-    return max(
-        eligible,
-        key=lambda action: (int(action.created_at), int(action.id or 0)),
-    )
+    return max(eligible, key=lambda action: (int(action.created_at), int(action.id or 0)))
+
+
+def presence_budget_allows(context: DecisionContext) -> bool:
+    """Apply the shared text/media/greeting presence budget for one topic."""
+    settings = context.settings
+    if not settings.enabled or not settings.autonomous_text_enabled:
+        return False
+    if context.quiet_hours_active:
+        return False
+
+    policy = adaptive_presence_policy(settings.behavior_mode, context.phase, context.activity)
+    if len(_recent_actions_30m(context)) >= policy.max_actions_30m:
+        return False
+
+    last_action = _last_action(context)
+    if last_action is None:
+        return True
+
+    seconds_since_action = max(0, int(context.now) - int(last_action.created_at))
+    if seconds_since_action < policy.min_gap_seconds:
+        return False
+    human_messages = int(context.human_messages_since_last_action)
+    if human_messages <= 0 or human_messages < policy.min_human_messages_between:
+        return False
+    return True
 
 
 def select_action(
@@ -138,31 +195,20 @@ def select_action(
     rng: random.Random,
 ) -> ActionCandidate | None:
     """Select at most one safe autonomous action for a topic evaluation."""
-    settings = context.settings
-    if not settings.enabled or not settings.autonomous_text_enabled:
-        return None
-    if context.quiet_hours_active:
-        return None
-    if not candidates:
-        return None
-
-    policy = behavior_policy(settings.behavior_mode)
-    recent_30m = _recent_actions_30m(context)
-    if len(recent_30m) >= policy.max_actions_30m:
+    if not candidates or not presence_budget_allows(context):
         return None
 
     last_action = _last_action(context)
-    if last_action is not None:
-        seconds_since_action = int(context.now) - int(last_action.created_at)
-        if seconds_since_action < policy.min_gap_seconds:
-            return None
-        if context.human_messages_since_last_action <= 0:
-            return None
-        if context.human_messages_since_last_action < policy.min_human_messages_between:
-            return None
+    dead_quiet_topic = (
+        _has_long_horizon(context.activity)
+        and context.phase is ConversationPhase.QUIET
+        and int(context.activity.messages_120m or 0) <= 1
+    )
 
     scored: list[tuple[float, int, ActionCandidate]] = []
     for index, candidate in enumerate(candidates):
+        if dead_quiet_topic and not candidate.is_direct:
+            continue
         if context.phase is ConversationPhase.PEAK and not candidate.is_direct:
             continue
         if (
@@ -187,7 +233,9 @@ __all__ = [
     "BehaviorPolicy",
     "ConversationPhase",
     "DecisionContext",
+    "adaptive_presence_policy",
     "behavior_policy",
     "derive_phase",
+    "presence_budget_allows",
     "select_action",
 ]
