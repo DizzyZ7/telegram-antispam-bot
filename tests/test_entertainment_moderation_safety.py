@@ -5,8 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from entertainment import EntertainmentService
 from entertainment.culture import CultureGenerationContext
-from entertainment.culture_service import EntertainmentService
 from entertainment.generation_v3 import GenerationResult
 from entertainment.models import EntertainmentSettings, MemoryCounts, MemoryEvent, MemoryEventType
 from writers_moderation import contains_prohibited_language
@@ -67,6 +67,7 @@ class EntertainmentModerationSafetyTests(unittest.IsolatedAsyncioTestCase):
             obj(bot=obj(id=999)),
             storage,
             {-1001},
+            blocked_topic_scopes=(),
             rng=random.Random(1),
             now_fn=lambda: 12_345.0,
         )
