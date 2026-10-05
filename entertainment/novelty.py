@@ -1,8 +1,10 @@
-"""Local no-copy protection for generated entertainment text."""
+"""Local no-copy and moderation protection for generated entertainment text."""
 
 from __future__ import annotations
 
 import re
+
+from writers_moderation import contains_prohibited_language
 
 _WORD_RE = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*", re.UNICODE)
 
@@ -22,7 +24,10 @@ def is_novel_generated_text(
     sources: list[str],
     recent_outputs: list[str],
 ) -> bool:
-    """Reject source replay, recent bot replay, and excessive source overlap."""
+    """Reject prohibited text, replay, recent bot replay, and excessive source overlap."""
+    if contains_prohibited_language(candidate):
+        return False
+
     candidate_words = _normalized_words(candidate)
     if not candidate_words:
         return False
