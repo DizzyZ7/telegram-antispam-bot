@@ -13,16 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from aiogram import F
-from aiogram.filters import BaseFilter, ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
-from aiogram.types import (
-    CallbackQuery,
-    Chat,
-    ChatMemberUpdated,
-    ChatPermissions,
-    LinkPreviewOptions,
-    Message,
-)
+from aiogram.filters import BaseFilter
+from aiogram.types import Chat, ChatMemberUpdated, LinkPreviewOptions, Message
 
 LOGGER = logging.getLogger(__name__)
 WRITERS_CHAT_USERNAME = os.getenv("WRITERS_CHAT_USERNAME", "chat_ikf").lstrip("@").lower()
@@ -352,14 +344,6 @@ class WritersChatFilter(BaseFilter):
         return True
 
 
-class WritersCaptchaFilter(BaseFilter):
-    def __init__(self, scope: WritersChatScope) -> None:
-        self.scope = scope
-
-    async def __call__(self, callback: CallbackQuery) -> bool:
-        return bool(callback.message and self.scope.matches(callback.message.chat))
-
-
 class ProhibitedLanguageFilter(BaseFilter):
     async def __call__(self, message: Message) -> bool:
         content = message.text or message.caption or ""
@@ -377,92 +361,10 @@ def register_writers_chat_handlers(
     *,
     on_message_deleted: MessageDeletedHook | None = None,
 ) -> WritersChatScope:
+    """Register only writers-chat moderation; Zero Trust owns all captcha flow."""
     scope = WritersChatScope()
     chat_filter = WritersChatFilter(scope, module.ALLOWED_CHATS)
-    captcha_filter = WritersCaptchaFilter(scope)
     last_warning_at: dict[tuple[int, int], float] = {}
-
-    @module.dp.chat_member(
-        chat_filter,
-        ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER),
-    )
-    async def on_writers_chat_join(event: ChatMemberUpdated) -> None:
-        user = event.new_chat_member.user
-        if user.is_bot or user.id in module.passed_users:
-            return
-
-        question, answer, keyboard = module.build_captcha(user.id)
-        module.pending_users[user.id] = answer
-        await module.bot.restrict_chat_member(
-            event.chat.id,
-            user.id,
-            ChatPermissions(can_send_messages=False),
-        )
-        name = module.safe_output_text(user.full_name or str(user.id))
-        await module.bot.send_message(
-            event.chat.id,
-            build_welcome_text(name, question),
-            reply_markup=keyboard,
-            link_preview_options=RULES_LINK_PREVIEW_OPTIONS,
-        )
-
-    @module.dp.callback_query(F.data.startswith("captcha:"), captcha_filter)
-    async def writers_captcha_handler(callback: CallbackQuery) -> None:
-        if callback.message is None or callback.data is None:
-            return
-
-        try:
-            _, target_user_id_raw, value_raw = callback.data.split(":", maxsplit=2)
-            target_user_id = int(target_user_id_raw)
-            value = int(value_raw)
-        except (TypeError, ValueError):
-            await callback.answer("Некорректная проверка", show_alert=True)
-            return
-
-        if callback.from_user.id != target_user_id:
-            await callback.answer("Это не твоя проверка", show_alert=True)
-            return
-
-        if target_user_id not in module.pending_users:
-            await callback.answer("Проверка уже завершена")
-            return
-
-        if value != module.pending_users[target_user_id]:
-            module.failed_users.add(target_user_id)
-            await callback.answer("❌ Неверно", show_alert=True)
-            return
-
-        module.pending_users.pop(target_user_id, None)
-        module.passed_users.add(target_user_id)
-        module.failed_users.discard(target_user_id)
-
-        chat_id = callback.message.chat.id
-        await module.bot.restrict_chat_member(
-            chat_id,
-            target_user_id,
-            ChatPermissions(
-                can_send_messages=True,
-                can_send_media_messages=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True,
-            ),
-        )
-
-        message_thread_id = callback.message.message_thread_id
-        try:
-            await callback.message.delete()
-        except Exception as exc:
-            LOGGER.warning("Could not delete completed captcha: %s", exc)
-
-        params: dict[str, Any] = {
-            "chat_id": chat_id,
-            "text": build_captcha_success_text(module.user_tag(callback.from_user)),
-            "link_preview_options": RULES_LINK_PREVIEW_OPTIONS,
-        }
-        if message_thread_id is not None:
-            params["message_thread_id"] = message_thread_id
-        await module.bot.send_message(**params)
-        await callback.answer("Испытание пройдено")
 
     @module.dp.message(chat_filter, ProhibitedLanguageFilter())
     async def remove_prohibited_language(message: Message) -> None:
@@ -500,7 +402,5 @@ def register_writers_chat_handlers(
         except Exception as exc:
             LOGGER.warning("Could not send moderation warning: %s", exc)
 
-    module.dp.chat_member.handlers.insert(0, module.dp.chat_member.handlers.pop())
-    module.dp.callback_query.handlers.insert(0, module.dp.callback_query.handlers.pop())
     module.dp.message.handlers.insert(0, module.dp.message.handlers.pop())
     return scope
