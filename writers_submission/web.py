@@ -267,15 +267,7 @@ def create_writers_web_app(
         window_seconds=int(config.rate_limit_window_seconds),
     )
 
-    @web.middleware
-    async def security_headers(
-        request: web.Request,
-        handler: Callable[[web.Request], Any],
-    ) -> web.StreamResponse:
-        try:
-            response = await handler(request)
-        except web.HTTPException as exc:
-            response = exc
+    def apply_security_headers(response: web.StreamResponse) -> None:
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "script-src 'self' https://telegram.org; "
@@ -289,6 +281,18 @@ def create_writers_web_app(
         response.headers["Permissions-Policy"] = (
             "camera=(), microphone=(), geolocation=(), payment=()"
         )
+
+    @web.middleware
+    async def security_headers(
+        request: web.Request,
+        handler: Callable[[web.Request], Any],
+    ) -> web.StreamResponse:
+        try:
+            response = await handler(request)
+        except web.HTTPException as exc:
+            apply_security_headers(exc)
+            raise
+        apply_security_headers(response)
         return response
 
     @web.middleware
