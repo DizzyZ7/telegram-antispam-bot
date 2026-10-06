@@ -415,6 +415,8 @@ class PostgresWritersSubmissionStorage:
                 lease_until BIGINT,
                 worker_id TEXT,
                 last_error_code TEXT,
+                delivery_chat_id BIGINT,
+                delivery_message_ids_json TEXT NOT NULL DEFAULT '[]',
                 payload_json TEXT NOT NULL DEFAULT '{}',
                 dedupe_key TEXT UNIQUE,
                 created_at BIGINT NOT NULL,
@@ -434,6 +436,18 @@ class PostgresWritersSubmissionStorage:
                 CONSTRAINT writers_submission_outbox_attempt_check
                     CHECK (attempt_count >= 0)
             )
+            """
+        )
+        await connection.execute(
+            """
+            ALTER TABLE writers_submission_outbox
+            ADD COLUMN IF NOT EXISTS delivery_chat_id BIGINT
+            """
+        )
+        await connection.execute(
+            """
+            ALTER TABLE writers_submission_outbox
+            ADD COLUMN IF NOT EXISTS delivery_message_ids_json TEXT NOT NULL DEFAULT '[]'
             """
         )
         await connection.execute(
@@ -967,6 +981,38 @@ class PostgresWritersSubmissionStorage:
                     author_user_id,
                     now,
                 )
+                if revision_id is not None:
+                    await connection.execute(
+                        """
+                        INSERT INTO writers_submission_outbox(
+                            id,
+                            submission_id,
+                            revision_id,
+                            event_type,
+                            state,
+                            attempt_count,
+                            next_attempt_at,
+                            payload_json,
+                            dedupe_key,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES(
+                            $1, $2, $3, 'AUTHOR_NOTIFICATION', 'PENDING',
+                            0, $4, $5, $6, $4, $4
+                        )
+                        ON CONFLICT (dedupe_key) DO NOTHING
+                        """,
+                        uuid4(),
+                        submission_id,
+                        revision_id,
+                        now,
+                        json.dumps(
+                            {"kind": "WITHDRAWN"},
+                            separators=(",", ":"),
+                        ),
+                        f"author:{submission_id}:{revision_id}:WITHDRAWN",
+                    )
                 await self._record_idempotency(
                     connection,
                     actor_user_id=author_user_id,
@@ -1703,6 +1749,37 @@ class PostgresWritersSubmissionStorage:
                     now,
                     dedupe_key,
                 )
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_outbox(
+                        id,
+                        submission_id,
+                        revision_id,
+                        event_type,
+                        state,
+                        attempt_count,
+                        next_attempt_at,
+                        payload_json,
+                        dedupe_key,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES(
+                        $1, $2, $3, 'AUTHOR_NOTIFICATION', 'PENDING',
+                        0, $4, $5, $6, $4, $4
+                    )
+                    ON CONFLICT (dedupe_key) DO NOTHING
+                    """,
+                    uuid4(),
+                    submission_id,
+                    revision_id,
+                    now,
+                    json.dumps(
+                        {"kind": "SUBMISSION_ACCEPTED"},
+                        separators=(",", ":"),
+                    ),
+                    f"author:{submission_id}:{revision_id}:SUBMISSION_ACCEPTED",
+                )
                 await self._record_idempotency(
                     connection,
                     actor_user_id=author_user_id,
@@ -2180,37 +2257,102 @@ class PostgresWritersSubmissionStorage:
         *,
         submission_id: UUID,
         revision_id: UUID,
+        notification_kind: str | None = None,
     ) -> AuthorNotificationContext:
-        row = await self._require_pool().fetchrow(
-            """
-            SELECT
-                s.author_user_id,
-                r.title,
-                review.action,
-                review.comment
-            FROM writers_submissions AS s
-            JOIN writers_submission_revisions AS r
-              ON r.submission_id = s.id
-            JOIN LATERAL (
-                SELECT action, comment
-                FROM writers_submission_reviews
-                WHERE submission_id = s.id
-                  AND revision_id = r.id
-                  AND action IN ('APPROVE', 'REQUEST_CHANGES', 'REJECT')
-                ORDER BY created_at DESC, id DESC
+        pool = self._require_pool()
+        kind = str(notification_kind).strip() if notification_kind else None
+
+        if kind in {"SUBMISSION_ACCEPTED", "WITHDRAWN"}:
+            row = await pool.fetchrow(
+                """
+                SELECT
+                    s.author_user_id,
+                    r.title
+                FROM writers_submissions AS s
+                JOIN writers_submission_revisions AS r
+                  ON r.submission_id = s.id
+                WHERE s.id = $1 AND r.id = $2
+                """,
+                submission_id,
+                revision_id,
+            )
+            if row is None:
+                raise NotFoundError("Author notification context was not found")
+            return AuthorNotificationContext(
+                author_user_id=int(row["author_user_id"]),
+                title=str(row["title"]),
+                action=kind,
+                comment=None,
+            )
+
+        action_map = {
+            "APPROVED": "APPROVE",
+            "APPROVE": "APPROVE",
+            "CHANGES_REQUESTED": "REQUEST_CHANGES",
+            "REQUEST_CHANGES": "REQUEST_CHANGES",
+            "REJECTED": "REJECT",
+            "REJECT": "REJECT",
+        }
+        review_action = action_map.get(kind) if kind else None
+        if review_action is None:
+            row = await pool.fetchrow(
+                """
+                SELECT
+                    s.author_user_id,
+                    r.title,
+                    review.action,
+                    review.comment
+                FROM writers_submissions AS s
+                JOIN writers_submission_revisions AS r
+                  ON r.submission_id = s.id
+                JOIN LATERAL (
+                    SELECT action, comment
+                    FROM writers_submission_reviews
+                    WHERE submission_id = s.id
+                      AND revision_id = r.id
+                      AND action IN ('APPROVE', 'REQUEST_CHANGES', 'REJECT')
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                ) AS review ON TRUE
+                WHERE s.id = $1 AND r.id = $2
+                """,
+                submission_id,
+                revision_id,
+            )
+            if row is None:
+                raise NotFoundError("Author notification context was not found")
+            action: ReviewAction | str = ReviewAction(str(row["action"]))
+        else:
+            row = await pool.fetchrow(
+                """
+                SELECT
+                    s.author_user_id,
+                    r.title,
+                    review.action,
+                    review.comment
+                FROM writers_submissions AS s
+                JOIN writers_submission_revisions AS r
+                  ON r.submission_id = s.id
+                JOIN writers_submission_reviews AS review
+                  ON review.submission_id = s.id
+                 AND review.revision_id = r.id
+                 AND review.action = $3
+                WHERE s.id = $1 AND r.id = $2
+                ORDER BY review.created_at DESC, review.id DESC
                 LIMIT 1
-            ) AS review ON TRUE
-            WHERE s.id = $1 AND r.id = $2
-            """,
-            submission_id,
-            revision_id,
-        )
-        if row is None:
-            raise NotFoundError("Author notification context was not found")
+                """,
+                submission_id,
+                revision_id,
+                review_action,
+            )
+            if row is None:
+                raise NotFoundError("Author notification context was not found")
+            action = kind or ReviewAction(str(row["action"]))
+
         return AuthorNotificationContext(
             author_user_id=int(row["author_user_id"]),
             title=str(row["title"]),
-            action=ReviewAction(str(row["action"])),
+            action=action,
             comment=(
                 str(row["comment"]) if row["comment"] is not None else None
             ),
@@ -2273,6 +2415,8 @@ class PostgresWritersSubmissionStorage:
         outbox_id: UUID,
         worker_id: str,
         now: int,
+        delivery_chat_id: int | None = None,
+        delivery_message_ids: tuple[int, ...] = (),
     ) -> OutboxRecord:
         row = await self._require_pool().fetchrow(
             """
@@ -2281,6 +2425,8 @@ class PostgresWritersSubmissionStorage:
                 lease_until = NULL,
                 worker_id = NULL,
                 last_error_code = NULL,
+                delivery_chat_id = $4,
+                delivery_message_ids_json = $5,
                 updated_at = $3
             WHERE id = $1
               AND state = 'IN_FLIGHT'
@@ -2290,6 +2436,15 @@ class PostgresWritersSubmissionStorage:
             outbox_id,
             str(worker_id),
             int(now),
+            (
+                int(delivery_chat_id)
+                if delivery_chat_id is not None
+                else None
+            ),
+            json.dumps(
+                [int(value) for value in delivery_message_ids],
+                separators=(",", ":"),
+            ),
         )
         if row is None:
             raise ConflictError("Outbox item is not leased by this worker")
