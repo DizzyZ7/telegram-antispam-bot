@@ -6,12 +6,16 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from .models import (
+    AuthorNotificationContext,
     ConflictError,
     DraftFileContext,
+    ModerationDeliveryContext,
+    ModerationResult,
     NotFoundError,
     OutboxEventType,
     OutboxRecord,
     OutboxState,
+    ReviewAction,
     RevisionState,
     SubmissionBundle,
     SubmissionFile,
@@ -1641,6 +1645,407 @@ class PostgresWritersSubmissionStorage:
                 )
         assert bundle is not None
         return bundle
+
+    async def claim_submission(
+        self,
+        *,
+        submission_id: UUID,
+        revision_id: UUID,
+        reviewer_user_id: int,
+        now: int,
+    ) -> ModerationResult:
+        pool = self._require_pool()
+        reviewer_user_id = int(reviewer_user_id)
+        now = int(now)
+
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                submission = await connection.fetchrow(
+                    """
+                    SELECT *
+                    FROM writers_submissions
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    submission_id,
+                )
+                if (
+                    submission is None
+                    or _uuid(submission["current_submitted_revision_id"]) != revision_id
+                ):
+                    raise NotFoundError("Submission revision was not found")
+
+                status = SubmissionStatus(str(submission["status"]))
+                claimed_by = (
+                    int(submission["claimed_by_user_id"])
+                    if submission["claimed_by_user_id"] is not None
+                    else None
+                )
+                if status is SubmissionStatus.IN_REVIEW and claimed_by == reviewer_user_id:
+                    bundle = await self._bundle_on_connection(
+                        connection,
+                        submission_id=submission_id,
+                        author_user_id=int(submission["author_user_id"]),
+                    )
+                    assert bundle is not None
+                    return ModerationResult(
+                        submission=bundle,
+                        action=ReviewAction.CLAIM,
+                        reviewer_user_id=reviewer_user_id,
+                        applied=False,
+                        comment=None,
+                    )
+                if status is not SubmissionStatus.SUBMITTED:
+                    raise ConflictError("Submission is not available for claim")
+
+                updated = await connection.execute(
+                    """
+                    UPDATE writers_submissions
+                    SET status = 'IN_REVIEW',
+                        claimed_by_user_id = $3,
+                        claimed_at = $4,
+                        updated_at = $4,
+                        version = version + 1
+                    WHERE id = $1
+                      AND current_submitted_revision_id = $2
+                      AND status = 'SUBMITTED'
+                    """,
+                    submission_id,
+                    revision_id,
+                    reviewer_user_id,
+                    now,
+                )
+                if updated != "UPDATE 1":
+                    raise ConflictError("Submission was claimed concurrently")
+
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_reviews(
+                        id,
+                        submission_id,
+                        revision_id,
+                        reviewer_user_id,
+                        action,
+                        comment,
+                        created_at
+                    )
+                    VALUES($1, $2, $3, $4, 'CLAIM', NULL, $5)
+                    """,
+                    uuid4(),
+                    submission_id,
+                    revision_id,
+                    reviewer_user_id,
+                    now,
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_events(
+                        submission_id,
+                        revision_id,
+                        actor_user_id,
+                        event_type,
+                        metadata_json,
+                        created_at
+                    )
+                    VALUES($1, $2, $3, 'REVIEW_CLAIMED', '{}', $4)
+                    """,
+                    submission_id,
+                    revision_id,
+                    reviewer_user_id,
+                    now,
+                )
+                bundle = await self._bundle_on_connection(
+                    connection,
+                    submission_id=submission_id,
+                    author_user_id=int(submission["author_user_id"]),
+                )
+        assert bundle is not None
+        return ModerationResult(
+            submission=bundle,
+            action=ReviewAction.CLAIM,
+            reviewer_user_id=reviewer_user_id,
+            applied=True,
+            comment=None,
+        )
+
+    async def decide_submission(
+        self,
+        *,
+        submission_id: UUID,
+        revision_id: UUID,
+        reviewer_user_id: int,
+        action: ReviewAction,
+        comment: str | None,
+        now: int,
+    ) -> ModerationResult:
+        action = ReviewAction(action)
+        if action is ReviewAction.CLAIM:
+            raise ValueError("CLAIM is not a decision action")
+        target_status = {
+            ReviewAction.APPROVE: SubmissionStatus.APPROVED,
+            ReviewAction.REQUEST_CHANGES: SubmissionStatus.CHANGES_REQUESTED,
+            ReviewAction.REJECT: SubmissionStatus.REJECTED,
+        }[action]
+        reviewer_user_id = int(reviewer_user_id)
+        now = int(now)
+        pool = self._require_pool()
+
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                submission = await connection.fetchrow(
+                    """
+                    SELECT *
+                    FROM writers_submissions
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    submission_id,
+                )
+                if (
+                    submission is None
+                    or _uuid(submission["current_submitted_revision_id"]) != revision_id
+                ):
+                    raise NotFoundError("Submission revision was not found")
+
+                previous = await connection.fetchrow(
+                    """
+                    SELECT action, comment
+                    FROM writers_submission_reviews
+                    WHERE submission_id = $1
+                      AND revision_id = $2
+                      AND reviewer_user_id = $3
+                      AND action = $4
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    submission_id,
+                    revision_id,
+                    reviewer_user_id,
+                    action.value,
+                )
+                if (
+                    previous is not None
+                    and str(submission["status"]) == target_status.value
+                ):
+                    bundle = await self._bundle_on_connection(
+                        connection,
+                        submission_id=submission_id,
+                        author_user_id=int(submission["author_user_id"]),
+                    )
+                    assert bundle is not None
+                    return ModerationResult(
+                        submission=bundle,
+                        action=action,
+                        reviewer_user_id=reviewer_user_id,
+                        applied=False,
+                        comment=(
+                            str(previous["comment"])
+                            if previous["comment"] is not None
+                            else None
+                        ),
+                    )
+
+                if str(submission["status"]) != SubmissionStatus.IN_REVIEW.value:
+                    raise ConflictError("Submission is not in review")
+                if int(submission["claimed_by_user_id"] or 0) != reviewer_user_id:
+                    raise ConflictError("Only the claimant can decide this submission")
+
+                updated = await connection.execute(
+                    """
+                    UPDATE writers_submissions
+                    SET status = $3,
+                        updated_at = $4,
+                        version = version + 1
+                    WHERE id = $1
+                      AND current_submitted_revision_id = $2
+                      AND status = 'IN_REVIEW'
+                      AND claimed_by_user_id = $5
+                    """,
+                    submission_id,
+                    revision_id,
+                    target_status.value,
+                    now,
+                    reviewer_user_id,
+                )
+                if updated != "UPDATE 1":
+                    raise ConflictError("Submission changed during moderation")
+
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_reviews(
+                        id,
+                        submission_id,
+                        revision_id,
+                        reviewer_user_id,
+                        action,
+                        comment,
+                        created_at
+                    )
+                    VALUES($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    uuid4(),
+                    submission_id,
+                    revision_id,
+                    reviewer_user_id,
+                    action.value,
+                    comment,
+                    now,
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_events(
+                        submission_id,
+                        revision_id,
+                        actor_user_id,
+                        event_type,
+                        metadata_json,
+                        created_at
+                    )
+                    VALUES($1, $2, $3, 'REVIEW_DECIDED', $4, $5)
+                    """,
+                    submission_id,
+                    revision_id,
+                    reviewer_user_id,
+                    json.dumps({"action": action.value}, separators=(",", ":")),
+                    now,
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_outbox(
+                        id,
+                        submission_id,
+                        revision_id,
+                        event_type,
+                        state,
+                        attempt_count,
+                        next_attempt_at,
+                        payload_json,
+                        dedupe_key,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES(
+                        $1, $2, $3, 'AUTHOR_NOTIFICATION', 'PENDING',
+                        0, $4, $5, $6, $4, $4
+                    )
+                    ON CONFLICT (dedupe_key) DO NOTHING
+                    """,
+                    uuid4(),
+                    submission_id,
+                    revision_id,
+                    now,
+                    json.dumps(
+                        {"action": action.value},
+                        separators=(",", ":"),
+                    ),
+                    f"author:{submission_id}:{revision_id}:{action.value}",
+                )
+                bundle = await self._bundle_on_connection(
+                    connection,
+                    submission_id=submission_id,
+                    author_user_id=int(submission["author_user_id"]),
+                )
+        assert bundle is not None
+        return ModerationResult(
+            submission=bundle,
+            action=action,
+            reviewer_user_id=reviewer_user_id,
+            applied=True,
+            comment=comment,
+        )
+
+    async def get_moderation_delivery_context(
+        self,
+        *,
+        submission_id: UUID,
+        revision_id: UUID,
+    ) -> ModerationDeliveryContext:
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            """
+            SELECT
+                s.author_user_id,
+                r.title,
+                r.work_type,
+                r.genre,
+                r.description,
+                r.body_text,
+                r.external_url
+            FROM writers_submissions AS s
+            JOIN writers_submission_revisions AS r
+              ON r.submission_id = s.id
+            WHERE s.id = $1 AND r.id = $2
+            """,
+            submission_id,
+            revision_id,
+        )
+        if row is None:
+            raise NotFoundError("Submission revision was not found")
+        file_rows = await pool.fetch(
+            """
+            SELECT *
+            FROM writers_submission_files
+            WHERE submission_id = $1 AND revision_id = $2
+            ORDER BY created_at, id
+            """,
+            submission_id,
+            revision_id,
+        )
+        return ModerationDeliveryContext(
+            author_user_id=int(row["author_user_id"]),
+            title=str(row["title"]),
+            work_type=str(row["work_type"]),
+            genre=str(row["genre"]),
+            description=str(row["description"]),
+            body_text=str(row["body_text"]),
+            external_url=(
+                str(row["external_url"])
+                if row["external_url"] is not None
+                else None
+            ),
+            files=tuple(_file_from_row(item) for item in file_rows),
+        )
+
+    async def get_author_notification_context(
+        self,
+        *,
+        submission_id: UUID,
+        revision_id: UUID,
+    ) -> AuthorNotificationContext:
+        row = await self._require_pool().fetchrow(
+            """
+            SELECT
+                s.author_user_id,
+                r.title,
+                review.action,
+                review.comment
+            FROM writers_submissions AS s
+            JOIN writers_submission_revisions AS r
+              ON r.submission_id = s.id
+            JOIN LATERAL (
+                SELECT action, comment
+                FROM writers_submission_reviews
+                WHERE submission_id = s.id
+                  AND revision_id = r.id
+                  AND action IN ('APPROVE', 'REQUEST_CHANGES', 'REJECT')
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            ) AS review ON TRUE
+            WHERE s.id = $1 AND r.id = $2
+            """,
+            submission_id,
+            revision_id,
+        )
+        if row is None:
+            raise NotFoundError("Author notification context was not found")
+        return AuthorNotificationContext(
+            author_user_id=int(row["author_user_id"]),
+            title=str(row["title"]),
+            action=ReviewAction(str(row["action"])),
+            comment=(
+                str(row["comment"]) if row["comment"] is not None else None
+            ),
+        )
 
     async def claim_due_outbox(
         self,
