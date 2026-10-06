@@ -1,7 +1,7 @@
 # Writers Submission v1 — Design
 
 Date: 2026-10-06
-Status: conversational design approved; written spec pending final user review
+Status: approved written spec
 Branch: `design/writers-submission-v1`
 
 ## 1. Purpose
