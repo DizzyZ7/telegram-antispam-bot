@@ -9,6 +9,9 @@ from .models import (
     ConflictError,
     DraftFileContext,
     NotFoundError,
+    OutboxEventType,
+    OutboxRecord,
+    OutboxState,
     RevisionState,
     SubmissionBundle,
     SubmissionFile,
@@ -24,6 +27,40 @@ def _uuid(value: object | None) -> UUID | None:
     if value is None:
         return None
     return value if isinstance(value, UUID) else UUID(str(value))
+
+
+def _outbox_from_row(row: asyncpg.Record) -> OutboxRecord:
+    raw_payload = row["payload_json"]
+    try:
+        payload = json.loads(str(raw_payload or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return OutboxRecord(
+        id=_uuid(row["id"]),
+        submission_id=_uuid(row["submission_id"]),
+        revision_id=_uuid(row["revision_id"]),
+        event_type=OutboxEventType(str(row["event_type"])),
+        state=OutboxState(str(row["state"])),
+        attempt_count=int(row["attempt_count"]),
+        next_attempt_at=int(row["next_attempt_at"]),
+        lease_until=(
+            int(row["lease_until"]) if row["lease_until"] is not None else None
+        ),
+        worker_id=str(row["worker_id"]) if row["worker_id"] is not None else None,
+        last_error_code=(
+            str(row["last_error_code"])
+            if row["last_error_code"] is not None
+            else None
+        ),
+        payload=payload,
+        dedupe_key=(
+            str(row["dedupe_key"]) if row["dedupe_key"] is not None else None
+        ),
+        created_at=int(row["created_at"]),
+        updated_at=int(row["updated_at"]),
+    )
 
 
 def _file_from_row(row: asyncpg.Record) -> SubmissionFile:
@@ -1392,3 +1429,360 @@ class PostgresWritersSubmissionStorage:
             submission_id,
         )
         return [_file_from_row(row) for row in rows]
+
+
+    async def seal_and_submit(
+        self,
+        *,
+        submission_id: UUID,
+        author_user_id: int,
+        expected_version: int,
+        idempotency_key: str,
+        now: int,
+    ) -> SubmissionBundle:
+        pool = self._require_pool()
+        author_user_id = int(author_user_id)
+        expected_version = int(expected_version)
+        now = int(now)
+        client_key = str(idempotency_key).strip()
+        if not client_key:
+            raise ValueError("idempotency_key is required")
+
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                await self._lock_idempotency(
+                    connection,
+                    actor_user_id=author_user_id,
+                    operation="submit",
+                    client_key=client_key,
+                )
+                existing = await self._idempotent_result(
+                    connection,
+                    actor_user_id=author_user_id,
+                    operation="submit",
+                    client_key=client_key,
+                    now=now,
+                )
+                if existing is not None:
+                    bundle = await self._bundle_on_connection(
+                        connection,
+                        submission_id=_uuid(existing["result_submission_id"]),
+                        author_user_id=author_user_id,
+                    )
+                    if bundle is None:
+                        raise ConflictError(
+                            "Idempotency record points to a missing submission"
+                        )
+                    return bundle
+
+                submission = await connection.fetchrow(
+                    """
+                    SELECT *
+                    FROM writers_submissions
+                    WHERE id = $1 AND author_user_id = $2
+                    FOR UPDATE
+                    """,
+                    submission_id,
+                    author_user_id,
+                )
+                if submission is None:
+                    raise NotFoundError("Submission was not found")
+                if str(submission["status"]) != SubmissionStatus.DRAFT.value:
+                    raise ConflictError("Submission is not an editable draft")
+                if int(submission["version"]) != expected_version:
+                    raise ConflictError("Submission version is stale")
+
+                revision_id = _uuid(submission["current_draft_revision_id"])
+                if revision_id is None:
+                    raise ConflictError("Submission has no current draft revision")
+                revision = await connection.fetchrow(
+                    """
+                    SELECT *
+                    FROM writers_submission_revisions
+                    WHERE id = $1
+                      AND submission_id = $2
+                    FOR UPDATE
+                    """,
+                    revision_id,
+                    submission_id,
+                )
+                if revision is None:
+                    raise ConflictError("Draft revision is unavailable")
+                if str(revision["state"]) != RevisionState.DRAFT.value:
+                    raise ConflictError("Draft revision is already sealed")
+
+                file_stats = await connection.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) AS file_count,
+                        COUNT(*) FILTER (
+                            WHERE NULLIF(BTRIM(telegram_file_id), '') IS NULL
+                        ) AS invalid_file_count
+                    FROM writers_submission_files
+                    WHERE submission_id = $1 AND revision_id = $2
+                    """,
+                    submission_id,
+                    revision_id,
+                )
+                file_count = int(file_stats["file_count"] or 0)
+                invalid_file_count = int(file_stats["invalid_file_count"] or 0)
+                if invalid_file_count:
+                    raise ValidationError("Submission has an incomplete attachment")
+                if not str(revision["body_text"]).strip() and file_count == 0:
+                    raise ValidationError(
+                        "Submission requires body text or at least one ready file"
+                    )
+
+                sealed = await connection.execute(
+                    """
+                    UPDATE writers_submission_revisions
+                    SET state = 'SEALED',
+                        sealed_at = $3,
+                        updated_at = $3
+                    WHERE id = $1
+                      AND submission_id = $2
+                      AND state = 'DRAFT'
+                    """,
+                    revision_id,
+                    submission_id,
+                    now,
+                )
+                if sealed != "UPDATE 1":
+                    raise ConflictError("Draft revision changed during submit")
+
+                updated = await connection.execute(
+                    """
+                    UPDATE writers_submissions
+                    SET status = 'SUBMITTED',
+                        current_submitted_revision_id = $3,
+                        current_draft_revision_id = NULL,
+                        claimed_by_user_id = NULL,
+                        claimed_at = NULL,
+                        updated_at = $4,
+                        version = version + 1
+                    WHERE id = $1
+                      AND author_user_id = $2
+                      AND status = 'DRAFT'
+                      AND version = $5
+                    """,
+                    submission_id,
+                    author_user_id,
+                    revision_id,
+                    now,
+                    expected_version,
+                )
+                if updated != "UPDATE 1":
+                    raise ConflictError("Submission changed during submit")
+
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_events(
+                        submission_id,
+                        revision_id,
+                        actor_user_id,
+                        event_type,
+                        metadata_json,
+                        created_at
+                    )
+                    VALUES($1, $2, $3, 'SUBMITTED', $4, $5)
+                    """,
+                    submission_id,
+                    revision_id,
+                    author_user_id,
+                    json.dumps(
+                        {"revision_number": int(revision["revision_number"])},
+                        separators=(",", ":"),
+                    ),
+                    now,
+                )
+
+                outbox_id = uuid4()
+                dedupe_key = f"moderation:{submission_id}:{revision_id}"
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_outbox(
+                        id,
+                        submission_id,
+                        revision_id,
+                        event_type,
+                        state,
+                        attempt_count,
+                        next_attempt_at,
+                        payload_json,
+                        dedupe_key,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES(
+                        $1, $2, $3, 'MODERATION_CARD', 'PENDING',
+                        0, $4, '{}', $5, $4, $4
+                    )
+                    ON CONFLICT (dedupe_key) DO NOTHING
+                    """,
+                    outbox_id,
+                    submission_id,
+                    revision_id,
+                    now,
+                    dedupe_key,
+                )
+                await self._record_idempotency(
+                    connection,
+                    actor_user_id=author_user_id,
+                    operation="submit",
+                    client_key=client_key,
+                    submission_id=submission_id,
+                    revision_id=revision_id,
+                    now=now,
+                )
+                bundle = await self._bundle_on_connection(
+                    connection,
+                    submission_id=submission_id,
+                    author_user_id=author_user_id,
+                )
+        assert bundle is not None
+        return bundle
+
+    async def claim_due_outbox(
+        self,
+        *,
+        worker_id: str,
+        now: int,
+        lease_seconds: int,
+        limit: int,
+    ) -> list[OutboxRecord]:
+        worker_id = str(worker_id).strip()
+        if not worker_id:
+            raise ValueError("worker_id is required")
+        lease_seconds = int(lease_seconds)
+        limit = int(limit)
+        if lease_seconds <= 0 or limit <= 0:
+            raise ValueError("lease_seconds and limit must be positive")
+        now = int(now)
+        rows = await self._require_pool().fetch(
+            """
+            WITH candidates AS (
+                SELECT id
+                FROM writers_submission_outbox
+                WHERE (
+                    state IN ('PENDING', 'RETRYABLE_FAILED')
+                    AND next_attempt_at <= $1
+                ) OR (
+                    state = 'IN_FLIGHT'
+                    AND lease_until IS NOT NULL
+                    AND lease_until <= $1
+                )
+                ORDER BY next_attempt_at, created_at, id
+                FOR UPDATE SKIP LOCKED
+                LIMIT $2
+            )
+            UPDATE writers_submission_outbox AS o
+            SET state = 'IN_FLIGHT',
+                worker_id = $3,
+                lease_until = $1 + $4,
+                attempt_count = o.attempt_count + 1,
+                last_error_code = NULL,
+                updated_at = $1
+            FROM candidates
+            WHERE o.id = candidates.id
+            RETURNING o.*
+            """,
+            now,
+            limit,
+            worker_id,
+            lease_seconds,
+        )
+        return [_outbox_from_row(row) for row in rows]
+
+    async def mark_outbox_delivered(
+        self,
+        *,
+        outbox_id: UUID,
+        worker_id: str,
+        now: int,
+    ) -> OutboxRecord:
+        row = await self._require_pool().fetchrow(
+            """
+            UPDATE writers_submission_outbox
+            SET state = 'DELIVERED',
+                lease_until = NULL,
+                worker_id = NULL,
+                last_error_code = NULL,
+                updated_at = $4
+            WHERE id = $1
+              AND state = 'IN_FLIGHT'
+              AND worker_id = $2
+            RETURNING *
+            """,
+            outbox_id,
+            str(worker_id),
+            OutboxState.IN_FLIGHT.value,
+            int(now),
+        )
+        if row is None:
+            raise ConflictError("Outbox item is not leased by this worker")
+        return _outbox_from_row(row)
+
+    async def mark_outbox_retryable(
+        self,
+        *,
+        outbox_id: UUID,
+        worker_id: str,
+        now: int,
+        next_attempt_at: int,
+        error_code: str,
+    ) -> OutboxRecord:
+        row = await self._require_pool().fetchrow(
+            """
+            UPDATE writers_submission_outbox
+            SET state = 'RETRYABLE_FAILED',
+                next_attempt_at = $4,
+                lease_until = NULL,
+                worker_id = NULL,
+                last_error_code = $5,
+                updated_at = $6
+            WHERE id = $1
+              AND state = 'IN_FLIGHT'
+              AND worker_id = $2
+            RETURNING *
+            """,
+            outbox_id,
+            str(worker_id),
+            OutboxState.IN_FLIGHT.value,
+            int(next_attempt_at),
+            str(error_code)[:120],
+            int(now),
+        )
+        if row is None:
+            raise ConflictError("Outbox item is not leased by this worker")
+        return _outbox_from_row(row)
+
+    async def mark_outbox_permanent_failure(
+        self,
+        *,
+        outbox_id: UUID,
+        worker_id: str,
+        now: int,
+        error_code: str,
+    ) -> OutboxRecord:
+        row = await self._require_pool().fetchrow(
+            """
+            UPDATE writers_submission_outbox
+            SET state = 'PERMANENT_FAILED',
+                lease_until = NULL,
+                worker_id = NULL,
+                last_error_code = $4,
+                updated_at = $5
+            WHERE id = $1
+              AND state = 'IN_FLIGHT'
+              AND worker_id = $2
+            RETURNING *
+            """,
+            outbox_id,
+            str(worker_id),
+            OutboxState.IN_FLIGHT.value,
+            str(error_code)[:120],
+            int(now),
+        )
+        if row is None:
+            raise ConflictError("Outbox item is not leased by this worker")
+        return _outbox_from_row(row)
