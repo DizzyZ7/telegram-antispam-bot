@@ -429,7 +429,7 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(body)["error"], "invalid_json")
 
     async def test_oversized_json_is_rejected_before_service_call(self):
-        payload = json.dumps({"title": "x" * 300_000})
+        payload = json.dumps({"title": "x" * 2_600_000})
         response = await self.client.post(
             "/api/writers/submissions",
             data=payload,
