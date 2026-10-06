@@ -6,6 +6,7 @@ import logging
 from contextlib import suppress
 from typing import Any
 
+from .handlers import build_moderation_keyboard
 from .models import OutboxEventType, ReviewAction
 
 LOGGER = logging.getLogger(__name__)
@@ -154,7 +155,7 @@ class WritersDeliveryWorker:
         )
         for item in items:
             try:
-                await self._deliver(item)
+                await self._deliver(item, now=int(now))
             except Exception as exc:
                 if _is_permanent_telegram_error(exc):
                     await self.storage.mark_outbox_permanent_failure(
@@ -185,17 +186,22 @@ class WritersDeliveryWorker:
             )
         return len(items)
 
-    async def _deliver(self, item: Any) -> None:
+    async def _deliver(self, item: Any, *, now: int) -> None:
         event_type = OutboxEventType(item.event_type)
         if event_type is OutboxEventType.MODERATION_CARD:
-            await self._deliver_moderation_card(item)
+            await self._deliver_moderation_card(item, now=now)
             return
         if event_type is OutboxEventType.AUTHOR_NOTIFICATION:
             await self._deliver_author_notification(item)
             return
         raise RuntimeError("unsupported outbox event type")
 
-    async def _deliver_moderation_card(self, item: Any) -> None:
+    async def _deliver_moderation_card(self, item: Any, *, now: int) -> None:
+        token = await self.storage.get_or_create_moderation_token(
+            submission_id=item.submission_id,
+            revision_id=item.revision_id,
+            now=int(now),
+        )
         context = await self.storage.get_moderation_delivery_context(
             submission_id=item.submission_id,
             revision_id=item.revision_id,
@@ -212,6 +218,7 @@ class WritersDeliveryWorker:
             chat_id=moderation_chat_id,
             text=_moderation_text(context),
             parse_mode="HTML",
+            reply_markup=build_moderation_keyboard(token),
         )
 
     async def _deliver_author_notification(self, item: Any) -> None:
