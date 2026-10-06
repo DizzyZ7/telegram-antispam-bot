@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import unittest
 
@@ -508,6 +509,342 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
                 file_id=stored.id,
                 now=105,
             )
+
+
+    async def test_submit_seals_revision_and_creates_one_moderation_outbox_atomically(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Готовая работа"),
+            now=100,
+            idempotency_key="create-submit-atomic",
+        )
+
+        submitted = await self.storage.seal_and_submit(
+            submission_id=created.id,
+            author_user_id=77,
+            expected_version=1,
+            idempotency_key="submit-atomic",
+            now=110,
+        )
+        duplicate = await self.storage.seal_and_submit(
+            submission_id=created.id,
+            author_user_id=77,
+            expected_version=1,
+            idempotency_key="submit-atomic",
+            now=111,
+        )
+
+        self.assertEqual(submitted.status, SubmissionStatus.SUBMITTED)
+        self.assertEqual(submitted.revision.state.value, "SEALED")
+        self.assertIsNone(submitted.current_draft_revision_id)
+        self.assertEqual(
+            submitted.current_submitted_revision_id,
+            submitted.revision.id,
+        )
+        self.assertEqual(duplicate.id, submitted.id)
+        self.assertEqual(duplicate.revision.id, submitted.revision.id)
+
+        assert self.storage.pool is not None
+        outbox = await self.storage.pool.fetch(
+            """
+            SELECT event_type, state, submission_id, revision_id, dedupe_key
+            FROM writers_submission_outbox
+            WHERE submission_id = $1
+            """,
+            created.id,
+        )
+        self.assertEqual(len(outbox), 1)
+        self.assertEqual(outbox[0]["event_type"], "MODERATION_CARD")
+        self.assertEqual(outbox[0]["state"], "PENDING")
+        self.assertEqual(outbox[0]["revision_id"], submitted.revision.id)
+        self.assertEqual(
+            outbox[0]["dedupe_key"],
+            f"moderation:{created.id}:{submitted.revision.id}",
+        )
+
+    async def test_submit_rejects_empty_work_without_ready_file(self):
+        empty = NormalizedSubmissionFields(
+            title="Метаданные без работы",
+            work_type="Рассказ",
+            genre="Драма",
+            description="Описание",
+            body_text="",
+            external_url=None,
+        )
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=empty,
+            now=100,
+            idempotency_key="create-empty-work",
+        )
+
+        with self.assertRaises(ValidationError):
+            await self.storage.seal_and_submit(
+                submission_id=created.id,
+                author_user_id=77,
+                expected_version=1,
+                idempotency_key="submit-empty-work",
+                now=110,
+            )
+
+        loaded = await self.storage.get_for_author(created.id, 77)
+        self.assertEqual(loaded.status, SubmissionStatus.DRAFT)
+        self.assertEqual(loaded.revision.state.value, "DRAFT")
+
+    async def test_file_only_work_can_submit_when_attachment_is_ready(self):
+        empty = NormalizedSubmissionFields(
+            title="Работа файлом",
+            work_type="Роман",
+            genre="Фантастика",
+            description="Описание",
+            body_text="",
+            external_url=None,
+        )
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=empty,
+            now=100,
+            idempotency_key="create-file-only",
+        )
+        context = await self.storage.get_draft_file_context(
+            submission_id=created.id,
+            author_user_id=77,
+        )
+        upload = ValidatedUpload(
+            safe_filename="novel.pdf",
+            file_class="pdf",
+            declared_mime="application/pdf",
+            byte_size=100,
+            sha256="d" * 64,
+        )
+        await self.storage.add_ready_file(
+            submission_id=created.id,
+            author_user_id=77,
+            revision_id=context.revision_id,
+            upload=upload,
+            telegram_file_id="ready-file-id",
+            telegram_file_unique_id="ready-unique-id",
+            storage_chat_id=-100222,
+            storage_message_id=11,
+            max_files=3,
+            now=101,
+        )
+        current = await self.storage.get_for_author(created.id, 77)
+
+        submitted = await self.storage.seal_and_submit(
+            submission_id=created.id,
+            author_user_id=77,
+            expected_version=current.version,
+            idempotency_key="submit-file-only",
+            now=110,
+        )
+
+        self.assertEqual(submitted.status, SubmissionStatus.SUBMITTED)
+
+    async def test_submit_rejects_corrupt_attachment_without_telegram_file_id(self):
+        empty = NormalizedSubmissionFields(
+            title="Поврежденное вложение",
+            work_type="Рассказ",
+            genre="Драма",
+            description="Описание",
+            body_text="",
+            external_url=None,
+        )
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=empty,
+            now=100,
+            idempotency_key="create-corrupt-file",
+        )
+        assert self.storage.pool is not None
+        await self.storage.pool.execute(
+            """
+            INSERT INTO writers_submission_files(
+                id, submission_id, revision_id, safe_filename, declared_mime,
+                detected_file_class, byte_size, sha256, telegram_file_id,
+                created_at
+            )
+            VALUES(
+                gen_random_uuid(), $1, $2, 'broken.txt', 'text/plain',
+                'txt', 5, $3, '', 101
+            )
+            """,
+            created.id,
+            created.revision.id,
+            "e" * 64,
+        )
+
+        with self.assertRaises(ValidationError):
+            await self.storage.seal_and_submit(
+                submission_id=created.id,
+                author_user_id=77,
+                expected_version=1,
+                idempotency_key="submit-corrupt-file",
+                now=110,
+            )
+
+    async def test_submitted_revision_and_files_are_immutable(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields(),
+            now=100,
+            idempotency_key="create-immutable-submit",
+        )
+        context = await self.storage.get_draft_file_context(
+            submission_id=created.id,
+            author_user_id=77,
+        )
+        upload = ValidatedUpload(
+            safe_filename="story.txt",
+            file_class="txt",
+            declared_mime="text/plain",
+            byte_size=12,
+            sha256="f" * 64,
+        )
+        stored_file = await self.storage.add_ready_file(
+            submission_id=created.id,
+            author_user_id=77,
+            revision_id=context.revision_id,
+            upload=upload,
+            telegram_file_id="immutable-file",
+            telegram_file_unique_id=None,
+            storage_chat_id=-100222,
+            storage_message_id=12,
+            max_files=3,
+            now=101,
+        )
+        current = await self.storage.get_for_author(created.id, 77)
+        submitted = await self.storage.seal_and_submit(
+            submission_id=created.id,
+            author_user_id=77,
+            expected_version=current.version,
+            idempotency_key="submit-immutable",
+            now=110,
+        )
+
+        with self.assertRaises(ConflictError):
+            await self.storage.update_draft(
+                submission_id=created.id,
+                author_user_id=77,
+                expected_version=submitted.version,
+                fields=fields("Запрещенная правка"),
+                now=111,
+            )
+        with self.assertRaises(ConflictError):
+            await self.storage.delete_ready_file(
+                submission_id=created.id,
+                author_user_id=77,
+                file_id=stored_file.id,
+                now=112,
+            )
+
+    async def test_concurrent_duplicate_submit_creates_one_outbox_row(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields(),
+            now=100,
+            idempotency_key="create-concurrent-submit",
+        )
+
+        first, second = await asyncio.gather(
+            self.storage.seal_and_submit(
+                submission_id=created.id,
+                author_user_id=77,
+                expected_version=1,
+                idempotency_key="same-submit-key",
+                now=110,
+            ),
+            self.storage.seal_and_submit(
+                submission_id=created.id,
+                author_user_id=77,
+                expected_version=1,
+                idempotency_key="same-submit-key",
+                now=110,
+            ),
+        )
+
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(first.revision.id, second.revision.id)
+        assert self.storage.pool is not None
+        count = await self.storage.pool.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM writers_submission_outbox
+            WHERE submission_id = $1 AND event_type = 'MODERATION_CARD'
+            """,
+            created.id,
+        )
+        self.assertEqual(count, 1)
+
+    async def test_outbox_claim_and_result_transitions_are_restart_safe(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields(),
+            now=100,
+            idempotency_key="create-outbox-api",
+        )
+        await self.storage.seal_and_submit(
+            submission_id=created.id,
+            author_user_id=77,
+            expected_version=1,
+            idempotency_key="submit-outbox-api",
+            now=110,
+        )
+
+        claimed = await self.storage.claim_due_outbox(
+            worker_id="worker-a",
+            now=111,
+            lease_seconds=60,
+            limit=10,
+        )
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(claimed[0].state.value, "IN_FLIGHT")
+        self.assertEqual(claimed[0].worker_id, "worker-a")
+
+        await self.storage.mark_outbox_retryable(
+            outbox_id=claimed[0].id,
+            worker_id="worker-a",
+            now=112,
+            next_attempt_at=120,
+            error_code="telegram_retry",
+        )
+        self.assertEqual(
+            await self.storage.claim_due_outbox(
+                worker_id="worker-b",
+                now=119,
+                lease_seconds=60,
+                limit=10,
+            ),
+            [],
+        )
+        retried = await self.storage.claim_due_outbox(
+            worker_id="worker-b",
+            now=120,
+            lease_seconds=60,
+            limit=10,
+        )
+        self.assertEqual(len(retried), 1)
+        await self.storage.mark_outbox_delivered(
+            outbox_id=retried[0].id,
+            worker_id="worker-b",
+            now=121,
+        )
+        self.assertEqual(
+            await self.storage.claim_due_outbox(
+                worker_id="worker-c",
+                now=1000,
+                lease_seconds=60,
+                limit=10,
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":
