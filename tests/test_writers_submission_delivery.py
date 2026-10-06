@@ -22,10 +22,11 @@ def moderation_item(*, attempt_count: int = 1):
         state=OutboxState.IN_FLIGHT,
         attempt_count=attempt_count,
         worker_id="worker-test",
+        payload={},
     )
 
 
-def author_item(*, attempt_count: int = 1):
+def author_item(*, attempt_count: int = 1, kind: str = "APPROVED"):
     return SimpleNamespace(
         id=uuid4(),
         submission_id=uuid4(),
@@ -34,6 +35,7 @@ def author_item(*, attempt_count: int = 1):
         state=OutboxState.IN_FLIGHT,
         attempt_count=attempt_count,
         worker_id="worker-test",
+        payload={"kind": kind},
     )
 
 
@@ -60,11 +62,15 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
                 )
             ),
             get_author_notification_context=AsyncMock(
-                return_value=SimpleNamespace(
+                side_effect=lambda **kwargs: SimpleNamespace(
                     author_user_id=77,
                     title="<b>Название</b>",
-                    action="APPROVE",
-                    comment=None,
+                    action=kwargs.get("notification_kind") or "APPROVED",
+                    comment=(
+                        "Нужно поправить"
+                        if kwargs.get("notification_kind") == "CHANGES_REQUESTED"
+                        else None
+                    ),
                 )
             ),
             mark_outbox_delivered=AsyncMock(),
@@ -107,6 +113,8 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             outbox_id=item.id,
             worker_id="worker-test",
             now=100,
+            delivery_chat_id=-100111,
+            delivery_message_ids=(11, 10),
         )
         self.storage.mark_outbox_retryable.assert_not_awaited()
         self.storage.mark_outbox_permanent_failure.assert_not_awaited()
@@ -184,11 +192,43 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["chat_id"], 77)
         self.assertIn("одобр", kwargs["text"].casefold())
         self.assertNotIn("<b>Название</b>", kwargs["text"])
+        self.storage.get_author_notification_context.assert_awaited_once_with(
+            submission_id=item.submission_id,
+            revision_id=item.revision_id,
+            notification_kind="APPROVED",
+        )
         self.storage.mark_outbox_delivered.assert_awaited_once_with(
             outbox_id=item.id,
             worker_id="worker-test",
             now=400,
+            delivery_chat_id=77,
+            delivery_message_ids=(10,),
         )
+
+
+    async def test_submission_accepted_and_withdrawn_notifications_are_rendered(self):
+        cases = (
+            ("SUBMISSION_ACCEPTED", "принят"),
+            ("WITHDRAWN", "отозван"),
+        )
+        for kind, expected in cases:
+            with self.subTest(kind=kind):
+                self.bot.send_message.reset_mock()
+                self.storage.get_author_notification_context.reset_mock()
+                self.storage.mark_outbox_delivered.reset_mock()
+                item = author_item(kind=kind)
+                self.storage.claim_due_outbox.return_value = [item]
+
+                await self.worker.run_once(now=450)
+
+                kwargs = self.bot.send_message.await_args.kwargs
+                self.assertEqual(kwargs["chat_id"], 77)
+                self.assertIn(expected, kwargs["text"].casefold())
+                self.storage.get_author_notification_context.assert_awaited_once_with(
+                    submission_id=item.submission_id,
+                    revision_id=item.revision_id,
+                    notification_kind=kind,
+                )
 
 
     async def test_background_loop_uses_restart_stable_epoch_clock(self):
