@@ -360,6 +360,15 @@ def create_writers_web_app(
             content_type="text/html",
         )
 
+    async def static_asset(request: web.Request) -> web.StreamResponse:
+        name = request.match_info["asset"]
+        if name not in {"app.js", "app.css"}:
+            raise web.HTTPNotFound()
+        path = Path(__file__).resolve().parent / "static" / name
+        if not path.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(path)
+
     async def create_session(request: web.Request) -> web.Response:
         require_origin(request)
         payload = await _bounded_json(request)
@@ -590,6 +599,7 @@ def create_writers_web_app(
         return _json_response({"items": items})
 
     app.router.add_get("/writers/", mini_app)
+    app.router.add_get("/writers/{asset:app\\.(?:js|css)}", static_asset)
     app.router.add_post("/api/writers/session", create_session)
     app.router.add_delete("/api/writers/session", delete_session)
     app.router.add_get("/api/writers/submissions", list_submissions)
