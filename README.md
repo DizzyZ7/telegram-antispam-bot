@@ -4,22 +4,44 @@
 
 ## 🧩 Механика защиты
 
-Challenge-Response слой работает по принципу Zero Trust:
+Challenge-Response слой работает по принципу Zero Trust v2:
 
-1. **Intercept** — перехват нового участника.
-2. **Quarantine** — временное ограничение отправки контента.
-3. **Challenge** — арифметическая проверка с TTL.
-4. **Verification** — успешный пользователь получает права обратно, проваленная проверка завершается удалением/баном согласно текущей логике бота.
+1. **Intercept** — перехват нового участника в защищенном чате.
+2. **Quarantine** — временное ограничение отправки контента до проверки.
+3. **Challenge** — отдельная арифметическая проверка для точного `chat_id + user_id` с TTL.
+4. **Verification** — корректный ответ сначала фиксируется в PostgreSQL как `verified`, затем Telegram возвращает права и только после успеха сессия становится `passed`.
+5. **Re-verification** — повторное вступление в тот же или другой защищенный чат всегда создает новую независимую сессию; старый `passed` не является вечным whitelist.
+
+Все проверки Zero Trust v2 с момента его включения сохраняются в PostgreSQL и переживают рестарты. Старые `passed_users` до v2 жили только в RAM и после прежних пересборок уже были потеряны, поэтому бот не создает фиктивную legacy-историю.
 
 ## ⚙️ Базовая конфигурация
 
 Основные переменные окружения:
 
 - `BOT_TOKEN` — Telegram Bot API token.
-- `ALLOWED_CHATS` — список разрешенных ID чатов через запятую. Если переменная задана, она заменяет встроенный список legacy-чатов целиком; не указывайте один чат, если бот должен продолжать проверять вход в остальных ранее настроенных чатах.
+- `ALLOWED_CHATS` — allowlist только для legacy-функций вроде сводок/статистики. Он **не управляет Zero Trust** и не может отключить проверку входа в другом защищенном чате.
+- `ZERO_TRUST_CHAT_IDS` — отдельный security allowlist. По умолчанию: `-1002619489118,-1003237014529,-1003643412493,-1003687304800`.
+- `ZERO_TRUST_CHALLENGE_TTL_SECONDS` — TTL одной captcha-сессии, по умолчанию `300` секунд.
+- `DATABASE_URL` — PostgreSQL DSN. Обязателен, пока `ZERO_TRUST_CHAT_IDS` содержит хотя бы один чат; при отсутствии/ошибке БД startup завершается fail-closed до polling.
 - `SUMMARY_STORAGE_PATH` — SQLite-файл legacy-сводки.
 - `SUMMARY_TIMEZONE` — таймзона сводки, по умолчанию `Europe/Moscow`.
 - `DATA_DIR` — каталог постоянных runtime-данных. Для хостинга его нужно направлять в persistent storage.
+
+Подробнее о security-state machine и rollout: [`docs/zero-trust-v2.md`](docs/zero-trust-v2.md).
+
+### Zero Trust v2
+
+Security scope намеренно отделен от остальных функций:
+
+```env
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DATABASE
+ZERO_TRUST_CHAT_IDS=-1002619489118,-1003237014529,-1003643412493,-1003687304800
+ZERO_TRUST_CHALLENGE_TTL_SECONDS=300
+```
+
+Капча идентифицирует конкретную сессию через `challenge_id`, поэтому старая кнопка не может решить более новую проверку того же человека. Один пользователь может одновременно иметь независимые challenge в разных чатах. При выходе незавершенная сессия отменяется; при новом входе создается новая.
+
+Если Telegram временно не смог вернуть права после корректного ответа, сессия остается `verified`, а не ложно становится `passed`: ту же проверку можно повторить после восстановления Telegram API. При ошибке PostgreSQL бот не выдает доступ автоматически.
 
 ## 🧠 Дневная сводка и статистика
 
@@ -160,29 +182,27 @@ ENTERTAINMENT_MEMORY_PRUNE_BUFFER=1000
 
 `runtime_env.py` загружает локальный `.env`, а `.gitignore` исключает реальные credentials. В репозитории хранится только безопасный шаблон `.env.example`.
 
-Если `DATABASE_URL` отсутствует, Entertainment использует:
+Для **Zero Trust v2** PostgreSQL обязателен, пока `ZERO_TRUST_CHAT_IDS` не пуст. При отсутствии корректного `DATABASE_URL` production `main.py` завершает startup до polling, чтобы защита не могла молча отключиться.
 
-```text
-$DATA_DIR/entertainment.db
-```
-
-Если `DATABASE_URL` задан с `postgres://` или `postgresql://`, PostgreSQL становится backend Entertainment:
+Entertainment тоже использует PostgreSQL, когда `DATABASE_URL` задан с `postgres://` или `postgresql://`:
 
 ```env
 DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DATABASE
 ```
 
+Если Zero Trust явно отключен пустым `ZERO_TRUST_CHAT_IDS`, Entertainment по-прежнему умеет использовать `$DATA_DIR/entertainment.db` при отсутствии `DATABASE_URL`. Для production с защитой входа требуется PostgreSQL.
+
 Реальную строку подключения не добавляйте в Git или исходный код — задайте ее как `DATABASE_URL` в environment проекта на Bothost либо в локальном `.env`, который не коммитится.
 
-По умолчанию ошибка подключения к настроенному PostgreSQL останавливает запуск Entertainment вместо молчаливого создания второй SQLite-базы. Это защищает от split-brain памяти.
+По умолчанию ошибка подключения к настроенному PostgreSQL останавливает запуск вместо молчаливого создания второй SQLite-базы. Это защищает и Zero Trust, и Entertainment от fail-open/split-brain состояния.
 
-Аварийный fallback можно включить только явно:
+Аварийный Entertainment fallback можно включить только явно:
 
 ```env
 ENTERTAINMENT_DB_FALLBACK_SQLITE=1
 ```
 
-Для production рекомендуется оставить fallback выключенным.
+Он не является fallback для Zero Trust: security-layer остается fail-closed.
 
 ### Миграции памяти
 
@@ -196,7 +216,7 @@ ENTERTAINMENT_DB_FALLBACK_SQLITE=1
 4. не удаляют автоматически исходную legacy-таблицу/SQLite-файл;
 5. при ошибке останавливают startup вместо запуска с частично перенесенной памятью.
 
-В логах запуска появляются `ENTERTAINMENT_STORAGE_READY` и `ENTERTAINMENT_CULTURE_MEMORY_READY` с безопасными счетчиками, но без credentials/DSN и без текста сообщений. После старта автономного цикла также появляется `ENTERTAINMENT_SUPERVISOR_READY`.
+В логах запуска появляются `ZERO_TRUST_SECURITY_SCOPE`, `ZERO_TRUST_STORAGE_READY`, `ENTERTAINMENT_STORAGE_READY` и `ENTERTAINMENT_CULTURE_MEMORY_READY` с безопасными параметрами/счетчиками, но без credentials/DSN и без текста сообщений. После старта автономного цикла также появляется `ENTERTAINMENT_SUPERVISOR_READY`.
 
 ## 🛠 Установка и запуск
 
@@ -207,6 +227,8 @@ pip install -r requirements.txt
 python main.py
 ```
 
+`main.py` — production entrypoint. `legacy_main.py` импортируется как compatibility-модуль, но его старые RAM captcha handlers отключаются до начала polling и не являются источником доверия Zero Trust v2.
+
 Для чтения обычных сообщений группой Telegram бот должен действительно получать эти сообщения: обычно это обеспечивается правами администратора либо соответствующей настройкой Group Privacy Mode.
 
 ## 🧪 Проверки
@@ -216,4 +238,4 @@ python -m compileall -q .
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-GitHub Actions дополнительно поднимает реальный PostgreSQL 17 и проверяет storage contract, provenance/migration parity и Culture Memory отдельно от основного тестового job.
+GitHub Actions дополнительно поднимает реальный PostgreSQL 17 и проверяет storage contract, provenance/migration parity, Culture Memory и Zero Trust PostgreSQL state machine отдельно от основного тестового job.
