@@ -211,3 +211,26 @@ class WritersSubmissionService:
 
     async def resolve_moderation_token(self, token: str):
         return await self.storage.resolve_moderation_token(str(token))
+
+
+    async def list_files(
+        self,
+        author_user_id: int,
+        submission_id: UUID,
+    ):
+        await self._require_owned(author_user_id, submission_id)
+        return await self.storage.list_files_for_author(
+            submission_id=submission_id,
+            author_user_id=int(author_user_id),
+        )
+
+    async def history(
+        self,
+        author_user_id: int,
+        submission_id: UUID,
+    ):
+        await self._require_owned(author_user_id, submission_id)
+        return await self.storage.list_history_for_author(
+            submission_id=submission_id,
+            author_user_id=int(author_user_id),
+        )
