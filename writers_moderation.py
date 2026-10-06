@@ -385,7 +385,11 @@ def register_writers_chat_handlers(
 
         key = (message.chat.id, message.from_user.id)
         now = time.monotonic()
-        if now - last_warning_at.get(key, 0.0) < WARNING_COOLDOWN_SECONDS:
+        previous_warning_at = last_warning_at.get(key)
+        if (
+            previous_warning_at is not None
+            and now - previous_warning_at < WARNING_COOLDOWN_SECONDS
+        ):
             return
         last_warning_at[key] = now
 
