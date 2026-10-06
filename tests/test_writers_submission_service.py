@@ -60,6 +60,8 @@ class FakeStorage:
         self.items = {}
         self.idempotent_create = {}
         self.create_calls = 0
+        self.submit_calls = 0
+        self.idempotent_submit = {}
 
     async def create_submission(
         self,
@@ -109,6 +111,32 @@ class FakeStorage:
         item.version += 1
         item.revision.title = fields.title
         return item
+
+    async def seal_and_submit(
+        self,
+        *,
+        submission_id,
+        author_user_id,
+        expected_version,
+        idempotency_key,
+        now,
+    ):
+        key = (author_user_id, idempotency_key)
+        if key in self.idempotent_submit:
+            return self.idempotent_submit[key]
+        item = await self.get_for_author(submission_id, author_user_id)
+        if item is None:
+            raise NotFoundError("not found")
+        if item.version != expected_version:
+            raise ConflictError("stale")
+        self.submit_calls += 1
+        item.status = SubmissionStatus.SUBMITTED
+        item.version += 1
+        item.current_submitted_revision_id = item.revision.id
+        item.current_draft_revision_id = None
+        self.idempotent_submit[key] = item
+        return item
+
 
     async def withdraw_submission(
         self,
@@ -319,6 +347,63 @@ class WritersSubmissionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(revised.revision.revision_number, 2)
         self.assertEqual(revised.revision.title, original_title)
         self.assertNotEqual(revised.revision.id, original_revision_id)
+
+
+    async def test_submit_requires_fresh_writers_eligibility(self):
+        created = await self.service.create(
+            author_user_id=77,
+            fields=fields(),
+            idempotency_key="create-submit-eligibility",
+            now=100,
+        )
+        self.eligibility.reset_mock()
+        self.eligibility.return_value = False
+
+        with self.assertRaisesRegex(PermissionError, "writers community"):
+            await self.service.submit(
+                author_user_id=77,
+                submission_id=created.id,
+                expected_version=1,
+                idempotency_key="submit-eligibility",
+                now=101,
+            )
+
+        self.eligibility.assert_awaited_once_with(77)
+        self.assertEqual(self.storage.submit_calls, 0)
+
+    async def test_submit_delegates_exact_actor_version_and_idempotency_key(self):
+        created = await self.service.create(
+            author_user_id=77,
+            fields=fields(),
+            idempotency_key="create-submit",
+            now=100,
+        )
+        self.eligibility.reset_mock()
+
+        submitted = await self.service.submit(
+            author_user_id=77,
+            submission_id=created.id,
+            expected_version=1,
+            idempotency_key="submit-1",
+            now=101,
+        )
+        duplicate = await self.service.submit(
+            author_user_id=77,
+            submission_id=created.id,
+            expected_version=1,
+            idempotency_key="submit-1",
+            now=102,
+        )
+
+        self.assertEqual(submitted.status, SubmissionStatus.SUBMITTED)
+        self.assertEqual(duplicate.id, submitted.id)
+        self.assertIsNone(submitted.current_draft_revision_id)
+        self.assertEqual(
+            submitted.current_submitted_revision_id,
+            submitted.revision.id,
+        )
+        self.assertEqual(self.storage.submit_calls, 1)
+        self.assertEqual(self.eligibility.await_count, 2)
 
 
 if __name__ == "__main__":
