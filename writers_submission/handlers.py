@@ -182,6 +182,18 @@ def _is_writers_submit_start(message: Message) -> bool:
     return len(parts) == 2 and parts[1].strip() == "writers_submit"
 
 
+def _promote_registered_handler(observer: Any, callback: Any) -> None:
+    """Move exactly one newly registered handler ahead of legacy catchalls."""
+    handlers = getattr(observer, "handlers", None)
+    if not isinstance(handlers, list):
+        return
+    for index in range(len(handlers) - 1, -1, -1):
+        item = handlers[index]
+        if getattr(item, "callback", None) is callback:
+            handlers.insert(0, handlers.pop(index))
+            return
+
+
 def register_writers_submission_handlers(
     app: Any,
     service: Any,
@@ -401,5 +413,12 @@ def register_writers_submission_handlers(
     if new_callback_handlers:
         del app.dp.callback_query.handlers[callback_handler_start:]
         app.dp.callback_query.handlers[0:0] = new_callback_handlers
+
+    # legacy_main has broad message/callback handlers registered before this
+    # subsystem. Promote only our three exact handlers so the deep-link start,
+    # moderator callback and pending-comment flow cannot be swallowed first.
+    _promote_registered_handler(app.dp.message, writers_submission_start)
+    _promote_registered_handler(app.dp.message, writers_moderation_comment)
+    _promote_registered_handler(app.dp.callback_query, writers_moderation_callback)
 
     return pending_comments
