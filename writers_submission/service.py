@@ -207,3 +207,7 @@ class WritersSubmissionService:
             comment=normalized_comment,
             now=int(now),
         )
+
+
+    async def resolve_moderation_token(self, token: str):
+        return await self.storage.resolve_moderation_token(str(token))
