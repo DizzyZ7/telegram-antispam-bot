@@ -268,6 +268,32 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(wrong.status, 403)
         self.service.create.assert_not_awaited()
 
+    async def test_create_draft_allows_blank_body_before_file_upload(self):
+        payload = {
+            "title": "Работа файлом",
+            "work_type": "Роман",
+            "genre": "Фантастика",
+            "description": "Файл будет загружен после создания черновика",
+            "body_text": "",
+            "external_url": None,
+            "has_ready_file": False,
+        }
+
+        response = await self.client.post(
+            "/api/writers/submissions",
+            json=payload,
+            headers={
+                **self.auth_headers(),
+                "Idempotency-Key": "file-only-draft",
+            },
+        )
+
+        self.assertEqual(response.status, 201)
+        self.service.create.assert_awaited_once()
+        fields = self.service.create.await_args.kwargs["fields"]
+        self.assertEqual(fields.body_text, "")
+
+
     async def test_actor_identity_comes_only_from_signed_session(self):
         payload = {
             "author_user_id": 999999,
