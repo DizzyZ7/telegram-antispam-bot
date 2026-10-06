@@ -143,7 +143,10 @@ def _normalized_fields(payload: dict[str, Any]) -> Any:
         description=payload.get("description"),
         body_text=payload.get("body_text", ""),
         external_url=payload.get("external_url"),
-        has_ready_file=bool(payload.get("has_ready_file", False)),
+        # Draft persistence must not trust a browser claim that a file exists.
+        # Actual ready-file existence is checked from PostgreSQL at submit time.
+        has_ready_file=False,
+        require_work_content=False,
     )
 
 
