@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -11,6 +12,7 @@ from .models import (
     DraftFileContext,
     ModerationDeliveryContext,
     ModerationResult,
+    ModerationTarget,
     NotFoundError,
     OutboxEventType,
     OutboxRecord,
@@ -326,6 +328,26 @@ class PostgresWritersSubmissionStorage:
             """
             CREATE INDEX IF NOT EXISTS idx_writers_files_revision
             ON writers_submission_files(revision_id, created_at, id)
+            """
+        )
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS writers_submission_moderation_tokens (
+                token TEXT PRIMARY KEY,
+                submission_id UUID NOT NULL
+                    REFERENCES writers_submissions(id) ON DELETE CASCADE,
+                revision_id UUID NOT NULL
+                    REFERENCES writers_submission_revisions(id) ON DELETE CASCADE,
+                created_at BIGINT NOT NULL,
+                CONSTRAINT writers_submission_moderation_target_unique
+                    UNIQUE(submission_id, revision_id)
+            )
+            """
+        )
+        await connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_writers_moderation_tokens_target
+            ON writers_submission_moderation_tokens(submission_id, revision_id)
             """
         )
         await connection.execute(
@@ -1645,6 +1667,101 @@ class PostgresWritersSubmissionStorage:
                 )
         assert bundle is not None
         return bundle
+
+    async def get_or_create_moderation_token(
+        self,
+        *,
+        submission_id: UUID,
+        revision_id: UUID,
+        now: int,
+    ) -> str:
+        pool = self._require_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                target = await connection.fetchrow(
+                    """
+                    SELECT s.id
+                    FROM writers_submissions AS s
+                    JOIN writers_submission_revisions AS r
+                      ON r.submission_id = s.id
+                    WHERE s.id = $1 AND r.id = $2
+                    FOR UPDATE OF s
+                    """,
+                    submission_id,
+                    revision_id,
+                )
+                if target is None:
+                    raise NotFoundError("Submission revision was not found")
+
+                existing = await connection.fetchval(
+                    """
+                    SELECT token
+                    FROM writers_submission_moderation_tokens
+                    WHERE submission_id = $1 AND revision_id = $2
+                    """,
+                    submission_id,
+                    revision_id,
+                )
+                if existing is not None:
+                    return str(existing)
+
+                for _ in range(8):
+                    token = secrets.token_urlsafe(12)
+                    inserted = await connection.fetchval(
+                        """
+                        INSERT INTO writers_submission_moderation_tokens(
+                            token,
+                            submission_id,
+                            revision_id,
+                            created_at
+                        )
+                        VALUES($1, $2, $3, $4)
+                        ON CONFLICT DO NOTHING
+                        RETURNING token
+                        """,
+                        token,
+                        submission_id,
+                        revision_id,
+                        int(now),
+                    )
+                    if inserted is not None:
+                        return str(inserted)
+
+                    existing = await connection.fetchval(
+                        """
+                        SELECT token
+                        FROM writers_submission_moderation_tokens
+                        WHERE submission_id = $1 AND revision_id = $2
+                        """,
+                        submission_id,
+                        revision_id,
+                    )
+                    if existing is not None:
+                        return str(existing)
+
+        raise RuntimeError("Could not allocate moderation token")
+
+    async def resolve_moderation_token(
+        self,
+        token: str,
+    ) -> ModerationTarget:
+        token = str(token).strip()
+        if not token:
+            raise NotFoundError("Moderation token was not found")
+        row = await self._require_pool().fetchrow(
+            """
+            SELECT submission_id, revision_id
+            FROM writers_submission_moderation_tokens
+            WHERE token = $1
+            """,
+            token,
+        )
+        if row is None:
+            raise NotFoundError("Moderation token was not found")
+        return ModerationTarget(
+            submission_id=_uuid(row["submission_id"]),
+            revision_id=_uuid(row["revision_id"]),
+        )
 
     async def claim_submission(
         self,
