@@ -1045,5 +1045,36 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reclaimed[0].attempt_count, first[0].attempt_count + 1)
 
 
+    async def test_history_is_owned_and_restart_safe(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("История"),
+            now=100,
+            idempotency_key="history-create",
+        )
+        await self.storage.update_draft(
+            submission_id=created.id,
+            author_user_id=77,
+            expected_version=1,
+            fields=fields("История 2"),
+            now=101,
+        )
+
+        history = await self.storage.list_history_for_author(
+            submission_id=created.id,
+            author_user_id=77,
+        )
+        self.assertGreaterEqual(len(history), 2)
+        self.assertEqual(history[0]["event_type"], "DRAFT_CREATED")
+        self.assertEqual(history[-1]["event_type"], "DRAFT_UPDATED")
+
+        with self.assertRaises(NotFoundError):
+            await self.storage.list_history_for_author(
+                submission_id=created.id,
+                author_user_id=88,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
