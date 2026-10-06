@@ -115,6 +115,7 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
             storage_message_id=55,
             created_at=100,
         )
+        self.service.list_files = AsyncMock(return_value=[self.uploaded_file])
         self.file_service = SimpleNamespace(
             attach_from_temp=AsyncMock(return_value=self.uploaded_file),
             delete_attachment=AsyncMock(),
@@ -427,6 +428,37 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("path", captured)
         self.assertFalse(captured["path"].exists())
 
+
+
+    async def test_detail_restores_persisted_files_after_reload(self):
+        response = await self.client.get(
+            f"/api/writers/submissions/{self.item.id}",
+            headers=self.auth_headers(origin=None),
+        )
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["files"][0]["filename"], "story.txt")
+        self.assertNotIn("telegram_file_id", payload["files"][0])
+        self.service.list_files.assert_awaited_once_with(77, self.item.id)
+
+    async def test_history_is_scoped_to_session_actor(self):
+        self.service.history.return_value = [
+            {
+                "event_type": "SUBMITTED",
+                "created_at": 123,
+                "revision_id": str(self.item.revision.id),
+            }
+        ]
+        response = await self.client.get(
+            f"/api/writers/submissions/{self.item.id}/history",
+            headers=self.auth_headers(origin=None),
+        )
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["items"][0]["event_type"], "SUBMITTED")
+        self.service.history.assert_awaited_once_with(77, self.item.id)
 
     async def test_static_mini_app_contract_is_safe_and_state_aware(self):
         index_response = await self.client.get("/writers/")
