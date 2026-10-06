@@ -23,9 +23,9 @@ from .security import (
     SessionSigner,
     verify_telegram_init_data,
 )
-from .uploads import validate_submission_fields
+from .uploads import BODY_MAX, validate_submission_fields
 
-_JSON_BODY_LIMIT = 256 * 1024
+_JSON_BODY_LIMIT = BODY_MAX * 12 + 64 * 1024
 _IDEMPOTENCY_KEY_MAX = 128
 _UPLOAD_CHUNK_SIZE = 64 * 1024
 
