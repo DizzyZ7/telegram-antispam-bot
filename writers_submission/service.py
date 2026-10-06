@@ -4,7 +4,15 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
 
-from .models import NotFoundError, SubmissionBundle, SubmissionSummary
+from .models import (
+    AuthorizationError,
+    ConflictError,
+    ModerationResult,
+    NotFoundError,
+    ReviewAction,
+    SubmissionBundle,
+    SubmissionSummary,
+)
 from .uploads import NormalizedSubmissionFields
 
 WritersEligibilityChecker = Callable[[int], Awaitable[bool]]
@@ -138,5 +146,64 @@ class WritersSubmissionService:
             author_user_id=int(author_user_id),
             expected_version=int(expected_version),
             idempotency_key=str(idempotency_key),
+            now=int(now),
+        )
+
+
+    def _require_reviewer(self, reviewer_user_id: int) -> None:
+        moderator_ids = frozenset(
+            int(value) for value in getattr(self.config, "moderator_ids", frozenset())
+        )
+        if int(reviewer_user_id) not in moderator_ids:
+            raise AuthorizationError("Reviewer is not allowlisted")
+
+    async def claim(
+        self,
+        *,
+        reviewer_user_id: int,
+        submission_id: UUID,
+        revision_id: UUID,
+        now: int,
+    ) -> ModerationResult:
+        self._require_reviewer(reviewer_user_id)
+        return await self.storage.claim_submission(
+            submission_id=submission_id,
+            revision_id=revision_id,
+            reviewer_user_id=int(reviewer_user_id),
+            now=int(now),
+        )
+
+    async def decide(
+        self,
+        *,
+        reviewer_user_id: int,
+        submission_id: UUID,
+        revision_id: UUID,
+        action: ReviewAction,
+        comment: str | None,
+        now: int,
+    ) -> ModerationResult:
+        self._require_reviewer(reviewer_user_id)
+        try:
+            action = ReviewAction(action)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Unsupported moderation action") from exc
+        if action is ReviewAction.CLAIM:
+            raise ValueError("CLAIM is not a decision action")
+
+        normalized_comment = comment.strip() if isinstance(comment, str) else None
+        if normalized_comment == "":
+            normalized_comment = None
+        if action is ReviewAction.REQUEST_CHANGES and not normalized_comment:
+            raise ValueError("request changes requires a comment")
+        if normalized_comment is not None and len(normalized_comment) > 2000:
+            raise ValueError("moderation comment is too long")
+
+        return await self.storage.decide_submission(
+            submission_id=submission_id,
+            revision_id=revision_id,
+            reviewer_user_id=int(reviewer_user_id),
+            action=action,
+            comment=normalized_comment,
             now=int(now),
         )
