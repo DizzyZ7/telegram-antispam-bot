@@ -428,5 +428,41 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(captured["path"].exists())
 
 
+    async def test_static_mini_app_contract_is_safe_and_state_aware(self):
+        index_response = await self.client.get("/writers/")
+        js_response = await self.client.get("/writers/app.js")
+        css_response = await self.client.get("/writers/app.css")
+
+        self.assertEqual(index_response.status, 200)
+        self.assertEqual(js_response.status, 200)
+        self.assertEqual(css_response.status, 200)
+
+        index = await index_response.text()
+        script = await js_response.text()
+        styles = await css_response.text()
+
+        self.assertIn("https://telegram.org/js/telegram-web-app.js", index)
+        self.assertIn("app.js", index)
+        self.assertIn("app.css", index)
+        self.assertNotIn("BOT_TOKEN", index + script)
+        self.assertNotIn("DATABASE_URL", index + script)
+        self.assertNotIn("WRITERS_SUBMISSION_MODERATOR_IDS", index + script)
+
+        self.assertIn(".textContent", script)
+        self.assertNotIn(".innerHTML =", script)
+        self.assertIn("expected_version", script)
+        self.assertIn("Idempotency-Key", script)
+        self.assertIn("crypto.randomUUID", script)
+        self.assertIn("response.status === 409", script)
+        self.assertIn("reloadRequired", script)
+
+        self.assertIn("Telegram.WebApp.initData", script)
+        self.assertIn("/api/writers/session", script)
+        self.assertIn("autosave", script.casefold())
+        self.assertIn("timeline", index.casefold())
+        self.assertIn("--tg-theme-bg-color", styles)
+        self.assertIn("@media", styles)
+
+
 if __name__ == "__main__":
     unittest.main()
