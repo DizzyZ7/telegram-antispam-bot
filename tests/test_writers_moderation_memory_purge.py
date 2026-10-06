@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from aiogram import Dispatcher
 
@@ -55,6 +55,18 @@ class WritersModerationMemoryPurgeTests(unittest.IsolatedAsyncioTestCase):
         target.delete.assert_awaited_once()
         purge.assert_not_awaited()
         app.bot.send_message.assert_not_awaited()
+
+    async def test_first_warning_is_not_suppressed_by_low_process_uptime(self):
+        app = module()
+        register_writers_chat_handlers(app)
+        handler = app.dp.message.handlers[0].callback
+        target = message()
+
+        with patch("writers_moderation.time.monotonic", return_value=1.0):
+            await handler(target)
+
+        target.delete.assert_awaited_once()
+        app.bot.send_message.assert_awaited_once()
 
     async def test_purge_failure_does_not_break_moderation_warning(self):
         app = module()
