@@ -120,3 +120,23 @@ class WritersSubmissionService:
             idempotency_key=str(idempotency_key),
             now=int(now),
         )
+
+
+    async def submit(
+        self,
+        *,
+        author_user_id: int,
+        submission_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        now: int,
+    ) -> SubmissionBundle:
+        await self._require_owned(author_user_id, submission_id)
+        await self._require_eligible(author_user_id)
+        return await self.storage.seal_and_submit(
+            submission_id=submission_id,
+            author_user_id=int(author_user_id),
+            expected_version=int(expected_version),
+            idempotency_key=str(idempotency_key),
+            now=int(now),
+        )
