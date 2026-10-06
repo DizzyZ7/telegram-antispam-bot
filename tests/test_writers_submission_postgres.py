@@ -172,5 +172,154 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.storage = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
 
 
+    async def test_create_idempotency_survives_storage_recreation(self):
+        first = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Оригинал"),
+            now=100,
+            idempotency_key="persistent-create",
+        )
+        await self.storage.close()
+
+        reopened = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
+        await reopened.initialize()
+        try:
+            second = await reopened.create_submission(
+                author_user_id=77,
+                writers_chat_id=-1002619489118,
+                fields=fields("Дубликат не должен победить"),
+                now=200,
+                idempotency_key="persistent-create",
+            )
+            self.assertEqual(second.id, first.id)
+            self.assertEqual(second.revision.id, first.revision.id)
+            self.assertEqual(second.revision.title, "Оригинал")
+            count = await reopened.pool.fetchval(
+                "SELECT COUNT(*) FROM writers_submissions WHERE author_user_id = 77"
+            )
+            self.assertEqual(count, 1)
+        finally:
+            await reopened.close()
+
+        self.storage = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
+
+    async def test_idempotency_key_is_scoped_by_actor(self):
+        first = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Первый"),
+            now=100,
+            idempotency_key="same-key",
+        )
+        second = await self.storage.create_submission(
+            author_user_id=88,
+            writers_chat_id=-1002619489118,
+            fields=fields("Второй"),
+            now=101,
+            idempotency_key="same-key",
+        )
+
+        self.assertNotEqual(first.id, second.id)
+
+    async def test_changes_requested_creates_prefilled_revision_two_idempotently(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Редакция один"),
+            now=100,
+            idempotency_key="create-for-revision",
+        )
+        assert self.storage.pool is not None
+        await self.storage.pool.execute(
+            """
+            UPDATE writers_submissions
+            SET status = 'CHANGES_REQUESTED',
+                current_submitted_revision_id = current_draft_revision_id,
+                current_draft_revision_id = NULL,
+                version = version + 1,
+                updated_at = 105
+            WHERE id = $1
+            """,
+            created.id,
+        )
+        await self.storage.pool.execute(
+            """
+            UPDATE writers_submission_revisions
+            SET state = 'SEALED', sealed_at = 105
+            WHERE id = $1
+            """,
+            created.revision.id,
+        )
+
+        revised = await self.storage.create_revision(
+            submission_id=created.id,
+            author_user_id=77,
+            idempotency_key="revision-two",
+            now=110,
+        )
+        duplicate = await self.storage.create_revision(
+            submission_id=created.id,
+            author_user_id=77,
+            idempotency_key="revision-two",
+            now=111,
+        )
+
+        self.assertEqual(revised.id, created.id)
+        self.assertEqual(revised.status, SubmissionStatus.DRAFT)
+        self.assertEqual(revised.revision.revision_number, 2)
+        self.assertEqual(revised.revision.title, "Редакция один")
+        self.assertEqual(duplicate.revision.id, revised.revision.id)
+
+        rows = await self.storage.pool.fetch(
+            """
+            SELECT revision_number, state, title
+            FROM writers_submission_revisions
+            WHERE submission_id = $1
+            ORDER BY revision_number
+            """,
+            created.id,
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["revision_number"], 1)
+        self.assertEqual(rows[0]["state"], "SEALED")
+        self.assertEqual(rows[0]["title"], "Редакция один")
+        self.assertEqual(rows[1]["revision_number"], 2)
+        self.assertEqual(rows[1]["state"], "DRAFT")
+
+    async def test_withdraw_is_idempotent_and_terminal(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields(),
+            now=100,
+            idempotency_key="create-withdraw",
+        )
+        first = await self.storage.withdraw_submission(
+            submission_id=created.id,
+            author_user_id=77,
+            idempotency_key="withdraw-once",
+            now=101,
+        )
+        second = await self.storage.withdraw_submission(
+            submission_id=created.id,
+            author_user_id=77,
+            idempotency_key="withdraw-once",
+            now=102,
+        )
+
+        self.assertEqual(first.status, SubmissionStatus.WITHDRAWN)
+        self.assertEqual(second.status, SubmissionStatus.WITHDRAWN)
+        self.assertEqual(first.version, second.version)
+
+        with self.assertRaises(ConflictError):
+            await self.storage.withdraw_submission(
+                submission_id=created.id,
+                author_user_id=77,
+                idempotency_key="different-withdraw",
+                now=103,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
