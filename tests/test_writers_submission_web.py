@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import unittest
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -205,6 +206,37 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
         self.assertIn("Permissions-Policy", response.headers)
         self.assertNotEqual(response.headers.get("Access-Control-Allow-Origin"), "*")
+
+    async def test_http_exception_paths_do_not_emit_aiohttp_return_warning(self):
+        payload = {
+            "title": "Работа",
+            "work_type": "Рассказ",
+            "genre": "Фантастика",
+            "description": "Описание",
+            "body_text": "Текст",
+            "external_url": None,
+        }
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            response = await self.client.post(
+                "/api/writers/submissions",
+                json=payload,
+                headers={
+                    "Cookie": self.cookie,
+                    "Idempotency-Key": "no-origin-warning",
+                },
+            )
+            await response.read()
+
+        self.assertEqual(response.status, 403)
+        self.assertFalse(
+            any(
+                "returning HTTPException object is deprecated" in str(item.message)
+                for item in caught
+            ),
+            [str(item.message) for item in caught],
+        )
+
 
     async def test_state_changing_cookie_requests_require_same_origin(self):
         payload = {
