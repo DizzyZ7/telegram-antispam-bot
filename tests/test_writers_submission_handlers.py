@@ -10,7 +10,7 @@ from uuid import uuid4
 from aiogram import Dispatcher, F
 
 from writers_submission.models import ReviewAction, SubmissionStatus
-from writers_submission.handlers import register_writers_submission_handlers
+from writers_submission.handlers import (\n    WritersSubmissionStartFilter,\n    register_writers_submission_handlers,\n)
 
 
 MOD_CHAT_ID = -100111
@@ -124,6 +124,25 @@ def handlers_by_name(app, observer_name):
         item.callback.__name__: item.callback
         for item in getattr(app.dp, observer_name).handlers
     }
+
+
+class WritersSubmissionStartFilterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_filter_matches_only_private_writers_submit(self):
+        filter_ = WritersSubmissionStartFilter()
+
+        private_target = start_message(private=True)
+        self.assertTrue(await filter_(private_target))
+
+        plain_start = start_message(private=True)
+        plain_start.text = "/start"
+        self.assertFalse(await filter_(plain_start))
+
+        other_start = start_message(private=True)
+        other_start.text = "/start something_else"
+        self.assertFalse(await filter_(other_start))
+
+        group_target = start_message(private=False)
+        self.assertFalse(await filter_(group_target))
 
 
 class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
