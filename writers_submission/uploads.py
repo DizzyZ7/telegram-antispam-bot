@@ -100,6 +100,7 @@ def validate_submission_fields(
     body_text: object,
     external_url: object,
     has_ready_file: bool,
+    require_work_content: bool = True,
 ) -> NormalizedSubmissionFields:
     normalized = NormalizedSubmissionFields(
         title=_compact_text(title, field="title", max_length=TITLE_MAX),
@@ -117,7 +118,11 @@ def validate_submission_fields(
         body_text=_body_text(body_text),
         external_url=_external_url(external_url),
     )
-    if not normalized.body_text and not bool(has_ready_file):
+    if (
+        bool(require_work_content)
+        and not normalized.body_text
+        and not bool(has_ready_file)
+    ):
         raise ValidationError(
             "submission payload requires body_text or at least one ready file"
         )
