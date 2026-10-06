@@ -6,8 +6,10 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from writers_submission.models import (
+    AuthorizationError,
     ConflictError,
     NotFoundError,
+    ReviewAction,
     SubmissionStatus,
 )
 from writers_submission.service import WritersSubmissionService
@@ -52,6 +54,8 @@ def bundle(
             revision_id if status in {SubmissionStatus.DRAFT, SubmissionStatus.CHANGES_REQUESTED} else None
         ),
         current_submitted_revision_id=None,
+        claimed_by_user_id=None,
+        claimed_at=None,
     )
 
 
@@ -62,6 +66,8 @@ class FakeStorage:
         self.create_calls = 0
         self.submit_calls = 0
         self.idempotent_submit = {}
+        self.decision_calls = 0
+        self.decisions = {}
 
     async def create_submission(
         self,
@@ -138,6 +144,80 @@ class FakeStorage:
         return item
 
 
+    async def claim_submission(
+        self,
+        *,
+        submission_id,
+        revision_id,
+        reviewer_user_id,
+        now,
+    ):
+        item = self.items.get(submission_id)
+        if item is None or item.current_submitted_revision_id != revision_id:
+            raise NotFoundError("not found")
+        if item.status is SubmissionStatus.SUBMITTED:
+            item.status = SubmissionStatus.IN_REVIEW
+            item.claimed_by_user_id = reviewer_user_id
+            item.claimed_at = now
+            return SimpleNamespace(
+                submission=item,
+                action=ReviewAction.CLAIM,
+                reviewer_user_id=reviewer_user_id,
+                applied=True,
+                comment=None,
+            )
+        if (
+            item.status is SubmissionStatus.IN_REVIEW
+            and item.claimed_by_user_id == reviewer_user_id
+        ):
+            return SimpleNamespace(
+                submission=item,
+                action=ReviewAction.CLAIM,
+                reviewer_user_id=reviewer_user_id,
+                applied=False,
+                comment=None,
+            )
+        raise ConflictError("already claimed")
+
+    async def decide_submission(
+        self,
+        *,
+        submission_id,
+        revision_id,
+        reviewer_user_id,
+        action,
+        comment,
+        now,
+    ):
+        key = (submission_id, revision_id, reviewer_user_id, action)
+        if key in self.decisions:
+            return self.decisions[key]
+        item = self.items.get(submission_id)
+        if item is None or item.current_submitted_revision_id != revision_id:
+            raise NotFoundError("not found")
+        if (
+            item.status is not SubmissionStatus.IN_REVIEW
+            or item.claimed_by_user_id != reviewer_user_id
+        ):
+            raise ConflictError("not claimant")
+        target = {
+            ReviewAction.APPROVE: SubmissionStatus.APPROVED,
+            ReviewAction.REQUEST_CHANGES: SubmissionStatus.CHANGES_REQUESTED,
+            ReviewAction.REJECT: SubmissionStatus.REJECTED,
+        }[action]
+        item.status = target
+        self.decision_calls += 1
+        result = SimpleNamespace(
+            submission=item,
+            action=action,
+            reviewer_user_id=reviewer_user_id,
+            applied=True,
+            comment=comment,
+        )
+        self.decisions[key] = result
+        return result
+
+
     async def withdraw_submission(
         self,
         *,
@@ -188,7 +268,10 @@ class WritersSubmissionServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.storage = FakeStorage()
         self.eligibility = AsyncMock(return_value=True)
-        self.config = SimpleNamespace(writers_chat_id=-1002619489118)
+        self.config = SimpleNamespace(
+            writers_chat_id=-1002619489118,
+            moderator_ids=frozenset({9001, 9002}),
+        )
         self.service = WritersSubmissionService(
             self.storage,
             self.config,
@@ -404,6 +487,135 @@ class WritersSubmissionServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.storage.submit_calls, 1)
         self.assertEqual(self.eligibility.await_count, 2)
+
+
+    async def _submitted_for_moderation(self, key: str):
+        created = await self.service.create(
+            author_user_id=77,
+            fields=fields(),
+            idempotency_key=f"create-{key}",
+            now=100,
+        )
+        return await self.service.submit(
+            author_user_id=77,
+            submission_id=created.id,
+            expected_version=1,
+            idempotency_key=f"submit-{key}",
+            now=101,
+        )
+
+    async def test_non_allowlisted_reviewer_cannot_claim(self):
+        submitted = await self._submitted_for_moderation("unauthorized-claim")
+
+        with self.assertRaises(AuthorizationError):
+            await self.service.claim(
+                reviewer_user_id=9999,
+                submission_id=submitted.id,
+                revision_id=submitted.revision.id,
+                now=110,
+            )
+
+        self.assertEqual(submitted.status, SubmissionStatus.SUBMITTED)
+
+    async def test_claim_transitions_submitted_to_in_review_idempotently(self):
+        submitted = await self._submitted_for_moderation("claim")
+
+        first = await self.service.claim(
+            reviewer_user_id=9001,
+            submission_id=submitted.id,
+            revision_id=submitted.revision.id,
+            now=110,
+        )
+        second = await self.service.claim(
+            reviewer_user_id=9001,
+            submission_id=submitted.id,
+            revision_id=submitted.revision.id,
+            now=111,
+        )
+
+        self.assertEqual(first.submission.status, SubmissionStatus.IN_REVIEW)
+        self.assertEqual(first.submission.claimed_by_user_id, 9001)
+        self.assertTrue(first.applied)
+        self.assertFalse(second.applied)
+
+    async def test_only_claimant_can_decide(self):
+        submitted = await self._submitted_for_moderation("claimant")
+        await self.service.claim(
+            reviewer_user_id=9001,
+            submission_id=submitted.id,
+            revision_id=submitted.revision.id,
+            now=110,
+        )
+
+        with self.assertRaises(ConflictError):
+            await self.service.decide(
+                reviewer_user_id=9002,
+                submission_id=submitted.id,
+                revision_id=submitted.revision.id,
+                action=ReviewAction.APPROVE,
+                comment=None,
+                now=111,
+            )
+
+    async def test_decision_actions_transition_and_duplicate_is_idempotent(self):
+        cases = (
+            (ReviewAction.APPROVE, None, SubmissionStatus.APPROVED),
+            (
+                ReviewAction.REQUEST_CHANGES,
+                "Нужно усилить финал",
+                SubmissionStatus.CHANGES_REQUESTED,
+            ),
+            (ReviewAction.REJECT, "Не подходит формату", SubmissionStatus.REJECTED),
+        )
+        for index, (action, comment, expected) in enumerate(cases):
+            with self.subTest(action=action):
+                submitted = await self._submitted_for_moderation(f"decision-{index}")
+                await self.service.claim(
+                    reviewer_user_id=9001,
+                    submission_id=submitted.id,
+                    revision_id=submitted.revision.id,
+                    now=110,
+                )
+                first = await self.service.decide(
+                    reviewer_user_id=9001,
+                    submission_id=submitted.id,
+                    revision_id=submitted.revision.id,
+                    action=action,
+                    comment=comment,
+                    now=111,
+                )
+                before = self.storage.decision_calls
+                duplicate = await self.service.decide(
+                    reviewer_user_id=9001,
+                    submission_id=submitted.id,
+                    revision_id=submitted.revision.id,
+                    action=action,
+                    comment=comment,
+                    now=112,
+                )
+
+                self.assertEqual(first.submission.status, expected)
+                self.assertEqual(duplicate.submission.status, expected)
+                self.assertEqual(self.storage.decision_calls, before)
+
+    async def test_request_changes_requires_comment(self):
+        submitted = await self._submitted_for_moderation("comment")
+        await self.service.claim(
+            reviewer_user_id=9001,
+            submission_id=submitted.id,
+            revision_id=submitted.revision.id,
+            now=110,
+        )
+
+        with self.assertRaisesRegex(ValueError, "comment"):
+            await self.service.decide(
+                reviewer_user_id=9001,
+                submission_id=submitted.id,
+                revision_id=submitted.revision.id,
+                action=ReviewAction.REQUEST_CHANGES,
+                comment="   ",
+                now=111,
+            )
 
 
 if __name__ == "__main__":
