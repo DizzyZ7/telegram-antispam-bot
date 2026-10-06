@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
-from aiogram import Dispatcher
+from aiogram import Dispatcher, F
 
 from writers_submission.models import ReviewAction, SubmissionStatus
 from writers_submission.handlers import register_writers_submission_handlers
@@ -262,6 +262,42 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
         echoed = message.answer.await_args.args[0]
         self.assertIn(html.escape(raw), echoed)
         self.assertNotIn(raw, echoed)
+
+
+    async def test_submission_handlers_are_promoted_ahead_of_legacy_catchalls(self):
+        app = make_app()
+
+        @app.dp.message(F.text)
+        async def legacy_text_catchall(message):
+            return None
+
+        @app.dp.callback_query(F.data)
+        async def legacy_callback_catchall(callback):
+            return None
+
+        register_writers_submission_handlers(
+            app,
+            make_service(),
+            make_config(),
+            now_fn=lambda: 100.0,
+        )
+
+        message_names = [
+            item.callback.__name__
+            for item in app.dp.message.handlers[:2]
+        ]
+        callback_names = [
+            item.callback.__name__
+            for item in app.dp.callback_query.handlers[:1]
+        ]
+        self.assertEqual(
+            set(message_names),
+            {"writers_submission_start", "writers_moderation_comment"},
+        )
+        self.assertEqual(
+            callback_names,
+            ["writers_moderation_callback"],
+        )
 
 
 if __name__ == "__main__":
