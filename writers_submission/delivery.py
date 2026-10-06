@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import time
 from contextlib import suppress
 from typing import Any
 
@@ -99,6 +100,7 @@ class WritersDeliveryWorker:
         lease_seconds: int = 60,
         batch_size: int = 10,
         worker_id: str = "writers-delivery",
+        now_fn: Any = time.time,
     ) -> None:
         self.bot = bot
         self.storage = storage
@@ -107,6 +109,7 @@ class WritersDeliveryWorker:
         self.lease_seconds = max(1, int(lease_seconds))
         self.batch_size = max(1, int(batch_size))
         self.worker_id = str(worker_id)
+        self.now_fn = now_fn
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
 
@@ -132,7 +135,7 @@ class WritersDeliveryWorker:
     async def _run_forever(self) -> None:
         while not self._stop_event.is_set():
             try:
-                now = int(asyncio.get_running_loop().time())
+                now = int(self.now_fn())
                 await self.run_once(now=now)
             except asyncio.CancelledError:
                 raise
