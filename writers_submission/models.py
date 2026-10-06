@@ -144,3 +144,32 @@ class OutboxRecord:
     dedupe_key: str | None
     created_at: int
     updated_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class ModerationResult:
+    submission: SubmissionBundle
+    action: ReviewAction
+    reviewer_user_id: int
+    applied: bool
+    comment: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ModerationDeliveryContext:
+    author_user_id: int
+    title: str
+    work_type: str
+    genre: str
+    description: str
+    body_text: str
+    external_url: str | None
+    files: tuple[SubmissionFile, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorNotificationContext:
+    author_user_id: int
+    title: str
+    action: ReviewAction
+    comment: str | None
