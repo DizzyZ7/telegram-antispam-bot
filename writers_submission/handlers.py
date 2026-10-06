@@ -190,6 +190,8 @@ def register_writers_submission_handlers(
     now_fn: Callable[[], float] = time.monotonic,
 ) -> PendingCommentStore:
     pending_comments = PendingCommentStore()
+    message_handler_start = len(app.dp.message.handlers)
+    callback_handler_start = len(app.dp.callback_query.handlers)
     moderation_chat_id = int(config.moderation_chat_id)
     moderator_ids = frozenset(int(value) for value in config.moderator_ids)
 
@@ -389,5 +391,15 @@ def register_writers_submission_handlers(
             f"✅ Комментарий сохранен: {escaped_comment}{suffix}",
             parse_mode="HTML",
         )
+
+    new_message_handlers = app.dp.message.handlers[message_handler_start:]
+    if new_message_handlers:
+        del app.dp.message.handlers[message_handler_start:]
+        app.dp.message.handlers[0:0] = new_message_handlers
+
+    new_callback_handlers = app.dp.callback_query.handlers[callback_handler_start:]
+    if new_callback_handlers:
+        del app.dp.callback_query.handlers[callback_handler_start:]
+        app.dp.callback_query.handlers[0:0] = new_callback_handlers
 
     return pending_comments
