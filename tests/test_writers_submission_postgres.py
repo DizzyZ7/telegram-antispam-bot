@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import unittest
 
@@ -552,6 +553,7 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
             SELECT event_type, state, submission_id, revision_id, dedupe_key
             FROM writers_submission_outbox
             WHERE submission_id = $1
+              AND event_type = 'MODERATION_CARD'
             """,
             created.id,
         )
@@ -562,6 +564,26 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             outbox[0]["dedupe_key"],
             f"moderation:{created.id}:{submitted.revision.id}",
+        )
+
+        acceptance = await self.storage.pool.fetchrow(
+            """
+            SELECT event_type, state, payload_json, dedupe_key
+            FROM writers_submission_outbox
+            WHERE submission_id = $1
+              AND revision_id = $2
+              AND dedupe_key = $3
+            """,
+            created.id,
+            submitted.revision.id,
+            f"author:{created.id}:{submitted.revision.id}:SUBMISSION_ACCEPTED",
+        )
+        self.assertIsNotNone(acceptance)
+        self.assertEqual(acceptance["event_type"], "AUTHOR_NOTIFICATION")
+        self.assertEqual(acceptance["state"], "PENDING")
+        self.assertEqual(
+            json.loads(acceptance["payload_json"])["kind"],
+            "SUBMISSION_ACCEPTED",
         )
 
     async def test_submit_rejects_empty_work_without_ready_file(self):
@@ -805,12 +827,25 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
             lease_seconds=60,
             limit=10,
         )
-        self.assertEqual(len(claimed), 1)
-        self.assertEqual(claimed[0].state.value, "IN_FLIGHT")
-        self.assertEqual(claimed[0].worker_id, "worker-a")
+        self.assertEqual(len(claimed), 2)
+        target = next(
+            item for item in claimed
+            if item.event_type.value == "MODERATION_CARD"
+        )
+        accepted = next(
+            item for item in claimed
+            if item.event_type.value == "AUTHOR_NOTIFICATION"
+        )
+        self.assertEqual(target.state.value, "IN_FLIGHT")
+        self.assertEqual(target.worker_id, "worker-a")
+        await self.storage.mark_outbox_delivered(
+            outbox_id=accepted.id,
+            worker_id="worker-a",
+            now=112,
+        )
 
         await self.storage.mark_outbox_retryable(
-            outbox_id=claimed[0].id,
+            outbox_id=target.id,
             worker_id="worker-a",
             now=112,
             next_attempt_at=120,
@@ -988,9 +1023,11 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
             WHERE submission_id = $1
               AND revision_id = $2
               AND event_type = 'AUTHOR_NOTIFICATION'
+              AND dedupe_key = $3
             """,
             submitted.id,
             submitted.revision.id,
+            f"author:{submitted.id}:{submitted.revision.id}:REQUEST_CHANGES",
         )
         self.assertEqual(count, 1)
 
@@ -1023,7 +1060,20 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
             lease_seconds=60,
             limit=10,
         )
-        self.assertEqual(len(first), 1)
+        self.assertEqual(len(first), 2)
+        target = next(
+            item for item in first
+            if item.event_type.value == "MODERATION_CARD"
+        )
+        accepted = next(
+            item for item in first
+            if item.event_type.value == "AUTHOR_NOTIFICATION"
+        )
+        await self.storage.mark_outbox_delivered(
+            outbox_id=accepted.id,
+            worker_id="worker-a",
+            now=121,
+        )
 
         before_expiry = await self.storage.claim_due_outbox(
             worker_id="worker-b",
@@ -1040,9 +1090,103 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
             limit=10,
         )
         self.assertEqual(len(reclaimed), 1)
-        self.assertEqual(reclaimed[0].id, first[0].id)
+        self.assertEqual(reclaimed[0].id, target.id)
         self.assertEqual(reclaimed[0].worker_id, "worker-b")
-        self.assertEqual(reclaimed[0].attempt_count, first[0].attempt_count + 1)
+        self.assertEqual(reclaimed[0].attempt_count, target.attempt_count + 1)
+
+
+    async def test_withdraw_creates_one_author_confirmation_notification(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Отзываемая работа"),
+            now=100,
+            idempotency_key="create-withdraw-notification",
+        )
+
+        first = await self.storage.withdraw_submission(
+            submission_id=created.id,
+            author_user_id=77,
+            idempotency_key="withdraw-notification",
+            now=110,
+        )
+        duplicate = await self.storage.withdraw_submission(
+            submission_id=created.id,
+            author_user_id=77,
+            idempotency_key="withdraw-notification",
+            now=111,
+        )
+
+        self.assertEqual(first.status, SubmissionStatus.WITHDRAWN)
+        self.assertEqual(duplicate.id, first.id)
+        assert self.storage.pool is not None
+        rows = await self.storage.pool.fetch(
+            """
+            SELECT event_type, payload_json, dedupe_key
+            FROM writers_submission_outbox
+            WHERE submission_id = $1
+              AND event_type = 'AUTHOR_NOTIFICATION'
+            """,
+            created.id,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]["dedupe_key"],
+            f"author:{created.id}:{created.revision.id}:WITHDRAWN",
+        )
+        self.assertEqual(
+            json.loads(rows[0]["payload_json"])["kind"],
+            "WITHDRAWN",
+        )
+
+    async def test_delivered_outbox_persists_telegram_receipt_ids(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Delivery receipt"),
+            now=100,
+            idempotency_key="create-delivery-receipt",
+        )
+        await self.storage.seal_and_submit(
+            submission_id=created.id,
+            author_user_id=77,
+            expected_version=1,
+            idempotency_key="submit-delivery-receipt",
+            now=110,
+        )
+        claimed = await self.storage.claim_due_outbox(
+            worker_id="worker-receipt",
+            now=120,
+            lease_seconds=60,
+            limit=10,
+        )
+        moderation = next(
+            item for item in claimed
+            if item.event_type.value == "MODERATION_CARD"
+        )
+
+        await self.storage.mark_outbox_delivered(
+            outbox_id=moderation.id,
+            worker_id="worker-receipt",
+            now=121,
+            delivery_chat_id=-100111,
+            delivery_message_ids=(501, 502),
+        )
+
+        assert self.storage.pool is not None
+        row = await self.storage.pool.fetchrow(
+            """
+            SELECT delivery_chat_id, delivery_message_ids_json
+            FROM writers_submission_outbox
+            WHERE id = $1
+            """,
+            moderation.id,
+        )
+        self.assertEqual(row["delivery_chat_id"], -100111)
+        self.assertEqual(
+            json.loads(row["delivery_message_ids_json"]),
+            [501, 502],
+        )
 
 
     async def test_history_is_owned_and_restart_safe(self):
