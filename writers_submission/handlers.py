@@ -199,7 +199,7 @@ def register_writers_submission_handlers(
     service: Any,
     config: Any,
     *,
-    now_fn: Callable[[], float] = time.monotonic,
+    now_fn: Callable[[], float] = time.time,
 ) -> PendingCommentStore:
     pending_comments = PendingCommentStore()
     message_handler_start = len(app.dp.message.handlers)
