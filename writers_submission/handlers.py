@@ -109,6 +109,16 @@ class PendingCommentStore:
         return any(key[0] == reviewer_user_id for key in self._items)
 
 
+class WritersSubmissionStartFilter(BaseFilter):
+    """Match only the private /start writers_submit deep-link entry."""
+
+    async def __call__(self, message: Message) -> bool:
+        return (
+            _chat_type_value(message.chat) == "private"
+            and _is_writers_submit_start(message)
+        )
+
+
 class PendingModerationCommentFilter(BaseFilter):
     def __init__(
         self,
@@ -207,7 +217,7 @@ def register_writers_submission_handlers(
     moderation_chat_id = int(config.moderation_chat_id)
     moderator_ids = frozenset(int(value) for value in config.moderator_ids)
 
-    @app.dp.message(CommandStart())
+    @app.dp.message(CommandStart(), WritersSubmissionStartFilter())
     async def writers_submission_start(message: Message) -> None:
         if not _is_writers_submit_start(message):
             return
