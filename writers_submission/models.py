@@ -126,3 +126,21 @@ class SubmissionFile:
     storage_chat_id: int | None
     storage_message_id: int | None
     created_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxRecord:
+    id: UUID
+    submission_id: UUID
+    revision_id: UUID | None
+    event_type: OutboxEventType
+    state: OutboxState
+    attempt_count: int
+    next_attempt_at: int
+    lease_until: int | None
+    worker_id: str | None
+    last_error_code: str | None
+    payload: dict[str, object]
+    dedupe_key: str | None
+    created_at: int
+    updated_at: int
