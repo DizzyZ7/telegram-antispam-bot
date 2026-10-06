@@ -3,9 +3,14 @@ from __future__ import annotations
 import os
 import unittest
 
-from writers_submission.models import ConflictError, SubmissionStatus
+from writers_submission.models import (
+    ConflictError,
+    NotFoundError,
+    SubmissionStatus,
+    ValidationError,
+)
 from writers_submission.storage import PostgresWritersSubmissionStorage
-from writers_submission.uploads import NormalizedSubmissionFields
+from writers_submission.uploads import NormalizedSubmissionFields, ValidatedUpload
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 
@@ -318,6 +323,190 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
                 author_user_id=77,
                 idempotency_key="different-withdraw",
                 now=103,
+            )
+
+
+    async def test_ready_file_is_owner_scoped_and_survives_restart(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields(),
+            now=100,
+            idempotency_key="create-file-persist",
+        )
+        context = await self.storage.get_draft_file_context(
+            submission_id=created.id,
+            author_user_id=77,
+        )
+        upload = ValidatedUpload(
+            safe_filename="story.txt",
+            file_class="txt",
+            declared_mime="text/plain",
+            byte_size=12,
+            sha256="a" * 64,
+        )
+        stored = await self.storage.add_ready_file(
+            submission_id=created.id,
+            author_user_id=77,
+            revision_id=context.revision_id,
+            upload=upload,
+            telegram_file_id="telegram-file",
+            telegram_file_unique_id="unique-file",
+            storage_chat_id=-100222,
+            storage_message_id=555,
+            max_files=3,
+            now=101,
+        )
+        self.assertEqual(stored.revision_id, context.revision_id)
+
+        with self.assertRaises(NotFoundError):
+            await self.storage.list_files_for_author(
+                submission_id=created.id,
+                author_user_id=88,
+            )
+
+        await self.storage.close()
+        reopened = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
+        await reopened.initialize()
+        try:
+            files = await reopened.list_files_for_author(
+                submission_id=created.id,
+                author_user_id=77,
+            )
+            self.assertEqual(len(files), 1)
+            self.assertEqual(files[0].id, stored.id)
+            self.assertEqual(files[0].telegram_file_id, "telegram-file")
+        finally:
+            await reopened.close()
+        self.storage = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
+
+    async def test_file_count_limit_is_rechecked_transactionally(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields(),
+            now=100,
+            idempotency_key="create-file-limit",
+        )
+        context = await self.storage.get_draft_file_context(
+            submission_id=created.id,
+            author_user_id=77,
+        )
+        upload = ValidatedUpload(
+            safe_filename="story.txt",
+            file_class="txt",
+            declared_mime="text/plain",
+            byte_size=12,
+            sha256="b" * 64,
+        )
+        await self.storage.add_ready_file(
+            submission_id=created.id,
+            author_user_id=77,
+            revision_id=context.revision_id,
+            upload=upload,
+            telegram_file_id="file-1",
+            telegram_file_unique_id="unique-1",
+            storage_chat_id=-100222,
+            storage_message_id=1,
+            max_files=1,
+            now=101,
+        )
+        with self.assertRaises(ValidationError):
+            await self.storage.add_ready_file(
+                submission_id=created.id,
+                author_user_id=77,
+                revision_id=context.revision_id,
+                upload=upload,
+                telegram_file_id="file-2",
+                telegram_file_unique_id="unique-2",
+                storage_chat_id=-100222,
+                storage_message_id=2,
+                max_files=1,
+                now=102,
+            )
+
+    async def test_attachment_cannot_cross_revision_or_mutate_sealed_revision(self):
+        first = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Первая"),
+            now=100,
+            idempotency_key="create-first-file-scope",
+        )
+        second = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Вторая"),
+            now=101,
+            idempotency_key="create-second-file-scope",
+        )
+        first_context = await self.storage.get_draft_file_context(
+            submission_id=first.id,
+            author_user_id=77,
+        )
+        second_context = await self.storage.get_draft_file_context(
+            submission_id=second.id,
+            author_user_id=77,
+        )
+        upload = ValidatedUpload(
+            safe_filename="story.txt",
+            file_class="txt",
+            declared_mime="text/plain",
+            byte_size=12,
+            sha256="c" * 64,
+        )
+        with self.assertRaises(ConflictError):
+            await self.storage.add_ready_file(
+                submission_id=first.id,
+                author_user_id=77,
+                revision_id=second_context.revision_id,
+                upload=upload,
+                telegram_file_id="wrong-revision",
+                telegram_file_unique_id=None,
+                storage_chat_id=-100222,
+                storage_message_id=3,
+                max_files=3,
+                now=102,
+            )
+
+        stored = await self.storage.add_ready_file(
+            submission_id=first.id,
+            author_user_id=77,
+            revision_id=first_context.revision_id,
+            upload=upload,
+            telegram_file_id="sealed-file",
+            telegram_file_unique_id=None,
+            storage_chat_id=-100222,
+            storage_message_id=4,
+            max_files=3,
+            now=103,
+        )
+        assert self.storage.pool is not None
+        await self.storage.pool.execute(
+            """
+            UPDATE writers_submission_revisions
+            SET state = 'SEALED', sealed_at = 104
+            WHERE id = $1
+            """,
+            first_context.revision_id,
+        )
+        await self.storage.pool.execute(
+            """
+            UPDATE writers_submissions
+            SET status = 'SUBMITTED',
+                current_submitted_revision_id = current_draft_revision_id,
+                current_draft_revision_id = NULL
+            WHERE id = $1
+            """,
+            first.id,
+        )
+
+        with self.assertRaises(ConflictError):
+            await self.storage.delete_ready_file(
+                submission_id=first.id,
+                author_user_id=77,
+                file_id=stored.id,
+                now=105,
             )
 
 
