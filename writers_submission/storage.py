@@ -7,20 +7,53 @@ import asyncpg
 
 from .models import (
     ConflictError,
+    DraftFileContext,
     NotFoundError,
     RevisionState,
     SubmissionBundle,
+    SubmissionFile,
     SubmissionRevision,
     SubmissionStatus,
     SubmissionSummary,
+    ValidationError,
 )
-from .uploads import NormalizedSubmissionFields
+from .uploads import NormalizedSubmissionFields, ValidatedUpload
 
 
 def _uuid(value: object | None) -> UUID | None:
     if value is None:
         return None
     return value if isinstance(value, UUID) else UUID(str(value))
+
+
+def _file_from_row(row: asyncpg.Record) -> SubmissionFile:
+    return SubmissionFile(
+        id=_uuid(row["id"]),
+        submission_id=_uuid(row["submission_id"]),
+        revision_id=_uuid(row["revision_id"]),
+        safe_filename=str(row["safe_filename"]),
+        declared_mime=str(row["declared_mime"]),
+        detected_file_class=str(row["detected_file_class"]),
+        byte_size=int(row["byte_size"]),
+        sha256=str(row["sha256"]),
+        telegram_file_id=str(row["telegram_file_id"]),
+        telegram_file_unique_id=(
+            str(row["telegram_file_unique_id"])
+            if row["telegram_file_unique_id"] is not None
+            else None
+        ),
+        storage_chat_id=(
+            int(row["storage_chat_id"])
+            if row["storage_chat_id"] is not None
+            else None
+        ),
+        storage_message_id=(
+            int(row["storage_message_id"])
+            if row["storage_message_id"] is not None
+            else None
+        ),
+        created_at=int(row["created_at"]),
+    )
 
 
 def _revision_from_row(row: asyncpg.Record) -> SubmissionRevision:
@@ -1060,3 +1093,302 @@ class PostgresWritersSubmissionStorage:
                 )
         assert bundle is not None
         return bundle
+
+
+    async def get_draft_file_context(
+        self,
+        *,
+        submission_id: UUID,
+        author_user_id: int,
+    ) -> DraftFileContext:
+        pool = self._require_pool()
+        async with pool.acquire() as connection:
+            submission = await connection.fetchrow(
+                """
+                SELECT status, current_draft_revision_id
+                FROM writers_submissions
+                WHERE id = $1 AND author_user_id = $2
+                """,
+                submission_id,
+                int(author_user_id),
+            )
+            if submission is None:
+                raise NotFoundError("Submission was not found")
+            if str(submission["status"]) != SubmissionStatus.DRAFT.value:
+                raise ConflictError("Submission is not an editable draft")
+            revision_id = _uuid(submission["current_draft_revision_id"])
+            if revision_id is None:
+                raise ConflictError("Submission has no current draft revision")
+            state = await connection.fetchval(
+                """
+                SELECT state
+                FROM writers_submission_revisions
+                WHERE id = $1 AND submission_id = $2
+                """,
+                revision_id,
+                submission_id,
+            )
+            if state != RevisionState.DRAFT.value:
+                raise ConflictError("Draft revision is sealed")
+            count = await connection.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM writers_submission_files
+                WHERE submission_id = $1 AND revision_id = $2
+                """,
+                submission_id,
+                revision_id,
+            )
+        return DraftFileContext(
+            revision_id=revision_id,
+            file_count=int(count or 0),
+        )
+
+    async def add_ready_file(
+        self,
+        *,
+        submission_id: UUID,
+        author_user_id: int,
+        revision_id: UUID,
+        upload: ValidatedUpload,
+        telegram_file_id: str,
+        telegram_file_unique_id: str | None,
+        storage_chat_id: int,
+        storage_message_id: int,
+        max_files: int,
+        now: int,
+    ) -> SubmissionFile:
+        if int(max_files) <= 0:
+            raise ValueError("max_files must be positive")
+        pool = self._require_pool()
+        file_id = uuid4()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                submission = await connection.fetchrow(
+                    """
+                    SELECT status, current_draft_revision_id
+                    FROM writers_submissions
+                    WHERE id = $1 AND author_user_id = $2
+                    FOR UPDATE
+                    """,
+                    submission_id,
+                    int(author_user_id),
+                )
+                if submission is None:
+                    raise NotFoundError("Submission was not found")
+                if str(submission["status"]) != SubmissionStatus.DRAFT.value:
+                    raise ConflictError("Submission is not an editable draft")
+                current_revision_id = _uuid(submission["current_draft_revision_id"])
+                if current_revision_id != revision_id:
+                    raise ConflictError("Draft revision changed during upload")
+                state = await connection.fetchval(
+                    """
+                    SELECT state
+                    FROM writers_submission_revisions
+                    WHERE id = $1 AND submission_id = $2
+                    """,
+                    revision_id,
+                    submission_id,
+                )
+                if state != RevisionState.DRAFT.value:
+                    raise ConflictError("Draft revision is sealed")
+
+                count = await connection.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM writers_submission_files
+                    WHERE submission_id = $1 AND revision_id = $2
+                    """,
+                    submission_id,
+                    revision_id,
+                )
+                if int(count or 0) >= int(max_files):
+                    raise ValidationError("maximum file count reached")
+
+                row = await connection.fetchrow(
+                    """
+                    INSERT INTO writers_submission_files(
+                        id,
+                        submission_id,
+                        revision_id,
+                        safe_filename,
+                        declared_mime,
+                        detected_file_class,
+                        byte_size,
+                        sha256,
+                        telegram_file_id,
+                        telegram_file_unique_id,
+                        storage_chat_id,
+                        storage_message_id,
+                        created_at
+                    )
+                    VALUES(
+                        $1, $2, $3, $4, $5, $6, $7, $8,
+                        $9, $10, $11, $12, $13
+                    )
+                    RETURNING *
+                    """,
+                    file_id,
+                    submission_id,
+                    revision_id,
+                    upload.safe_filename,
+                    upload.declared_mime,
+                    upload.file_class,
+                    int(upload.byte_size),
+                    upload.sha256,
+                    str(telegram_file_id),
+                    (
+                        str(telegram_file_unique_id)
+                        if telegram_file_unique_id is not None
+                        else None
+                    ),
+                    int(storage_chat_id),
+                    int(storage_message_id),
+                    int(now),
+                )
+                await connection.execute(
+                    """
+                    UPDATE writers_submissions
+                    SET updated_at = $3,
+                        version = version + 1
+                    WHERE id = $1 AND author_user_id = $2
+                    """,
+                    submission_id,
+                    int(author_user_id),
+                    int(now),
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_events(
+                        submission_id,
+                        revision_id,
+                        actor_user_id,
+                        event_type,
+                        metadata_json,
+                        created_at
+                    )
+                    VALUES($1, $2, $3, 'FILE_ATTACHED', $4, $5)
+                    """,
+                    submission_id,
+                    revision_id,
+                    int(author_user_id),
+                    json.dumps(
+                        {
+                            "file_id": str(file_id),
+                            "file_class": upload.file_class,
+                            "byte_size": int(upload.byte_size),
+                        },
+                        separators=(",", ":"),
+                    ),
+                    int(now),
+                )
+        assert row is not None
+        return _file_from_row(row)
+
+    async def delete_ready_file(
+        self,
+        *,
+        submission_id: UUID,
+        author_user_id: int,
+        file_id: UUID,
+        now: int,
+    ) -> SubmissionFile:
+        pool = self._require_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                submission = await connection.fetchrow(
+                    """
+                    SELECT status, current_draft_revision_id
+                    FROM writers_submissions
+                    WHERE id = $1 AND author_user_id = $2
+                    FOR UPDATE
+                    """,
+                    submission_id,
+                    int(author_user_id),
+                )
+                if submission is None:
+                    raise NotFoundError("Submission was not found")
+                if str(submission["status"]) != SubmissionStatus.DRAFT.value:
+                    raise ConflictError("Submission is not an editable draft")
+                revision_id = _uuid(submission["current_draft_revision_id"])
+                if revision_id is None:
+                    raise ConflictError("Submission has no current draft revision")
+                state = await connection.fetchval(
+                    """
+                    SELECT state
+                    FROM writers_submission_revisions
+                    WHERE id = $1 AND submission_id = $2
+                    """,
+                    revision_id,
+                    submission_id,
+                )
+                if state != RevisionState.DRAFT.value:
+                    raise ConflictError("Draft revision is sealed")
+
+                row = await connection.fetchrow(
+                    """
+                    DELETE FROM writers_submission_files
+                    WHERE id = $1
+                      AND submission_id = $2
+                      AND revision_id = $3
+                    RETURNING *
+                    """,
+                    file_id,
+                    submission_id,
+                    revision_id,
+                )
+                if row is None:
+                    raise NotFoundError("Attachment was not found")
+                await connection.execute(
+                    """
+                    UPDATE writers_submissions
+                    SET updated_at = $3,
+                        version = version + 1
+                    WHERE id = $1 AND author_user_id = $2
+                    """,
+                    submission_id,
+                    int(author_user_id),
+                    int(now),
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_events(
+                        submission_id,
+                        revision_id,
+                        actor_user_id,
+                        event_type,
+                        metadata_json,
+                        created_at
+                    )
+                    VALUES($1, $2, $3, 'FILE_DELETED', $4, $5)
+                    """,
+                    submission_id,
+                    revision_id,
+                    int(author_user_id),
+                    json.dumps(
+                        {"file_id": str(file_id)},
+                        separators=(",", ":"),
+                    ),
+                    int(now),
+                )
+        return _file_from_row(row)
+
+    async def list_files_for_author(
+        self,
+        *,
+        submission_id: UUID,
+        author_user_id: int,
+    ) -> list[SubmissionFile]:
+        owned = await self.get_for_author(submission_id, int(author_user_id))
+        if owned is None:
+            raise NotFoundError("Submission was not found")
+        rows = await self._require_pool().fetch(
+            """
+            SELECT *
+            FROM writers_submission_files
+            WHERE submission_id = $1
+            ORDER BY created_at, id
+            """,
+            submission_id,
+        )
+        return [_file_from_row(row) for row in rows]
