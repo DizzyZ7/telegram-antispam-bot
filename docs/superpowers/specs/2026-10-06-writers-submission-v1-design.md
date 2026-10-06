@@ -1,7 +1,7 @@
 # Writers Submission v1 — Design
 
 Date: 2026-10-06
-Status: approved conversational design, written spec pending final review
+Status: conversational design approved; written spec pending final user review
 Branch: `design/writers-submission-v1`
 
 ## 1. Purpose
@@ -10,22 +10,23 @@ Writers Submission v1 adds a restart-safe Telegram Mini App flow for authors in 
 
 The subsystem must let an author:
 
-- open a Mini App from the bot;
-- see their own drafts and submitted works;
+- enter through the bot and open a Mini App in private chat;
+- see only their own drafts and submitted works;
 - create and autosave a draft;
-- provide a title, work type, genre, short description and main text;
-- optionally attach a link and up to three supported files;
+- provide a title, work type, genre and short description;
+- provide the work as main text and/or supported files;
+- optionally attach an HTTPS link;
 - submit an immutable revision for moderation;
 - see review state and moderation feedback;
 - create a new revision when changes are requested;
 - withdraw a non-final submission;
 - receive Telegram notifications for meaningful state changes.
 
-Moderators must be able to claim, review and decide submissions from a private Telegram moderation chat. PostgreSQL is the source of truth for submission state, ownership, revisions, moderation actions and delivery state.
+Moderators must be able to claim, review and decide submissions from a private Telegram moderation chat. PostgreSQL is the source of truth for ownership, revisions, workflow state, moderation actions, audit history and delivery state.
 
-This subsystem is deliberately separate from `writers_moderation.py`. The existing writers moderation/rules layer and Zero Trust captcha ownership remain unchanged.
+This subsystem is deliberately separate from `writers_moderation.py`. Existing writers moderation/rules behavior and Zero Trust captcha ownership remain unchanged.
 
-## 2. Existing constraints
+## 2. Existing constraints and selected approach
 
 The current application is a single asyncio Python process. It already uses:
 
@@ -34,11 +35,11 @@ The current application is a single asyncio Python process. It already uses:
 - `main.py` as the production lifecycle owner;
 - explicit startup/shutdown handling for storage and background services.
 
-Writers Submission v1 should fit that runtime rather than introducing a second deployment or a Node build pipeline.
+Writers Submission v1 therefore stays in that process rather than introducing a second deployment.
 
-The web layer therefore uses a small `aiohttp` application started and stopped by `main.py`. `aiohttp` is declared explicitly in `requirements.txt`; the subsystem must not rely on it being present only as a transitive dependency.
+The web layer uses a small `aiohttp` application started and stopped by `main.py`. `aiohttp` is declared explicitly in `requirements.txt`; the subsystem must not rely on a transitive dependency.
 
-The Mini App frontend is plain HTML/CSS/JavaScript. React/Vite, a separate SPA build step and a separate web service are intentionally out of scope for v1.
+The Mini App frontend is plain HTML/CSS/JavaScript. React/Vite, a separate SPA build step and a separate Node service are intentionally out of scope for v1.
 
 ## 3. High-level architecture
 
@@ -65,17 +66,33 @@ Responsibilities:
 
 - `config.py`: parse and validate Writers Submission environment configuration.
 - `models.py`: enums and immutable service DTOs.
-- `security.py`: Telegram Mini App `initData` verification, request authentication helpers and upload validation.
+- `security.py`: Telegram Mini App `initData` verification, application-session signing, request authentication and upload validation.
 - `storage.py`: PostgreSQL schema/bootstrap and atomic persistence operations.
-- `service.py`: ownership, state-machine, revision and moderation business rules.
-- `handlers.py`: Telegram entry button, moderator callbacks and author notifications.
+- `service.py`: ownership, state-machine, revision, file and moderation business rules.
+- `handlers.py`: private-chat entry flow, moderator callbacks and author notifications.
 - `web.py`: aiohttp static routes and JSON API.
-- `delivery.py`: restart-safe moderation-card/file outbox worker.
+- `delivery.py`: restart-safe moderation-card/notification outbox worker.
 - `static/*`: mobile-first Mini App.
 
-`main.py` owns construction and lifecycle of the storage, service, web server and delivery worker.
+`main.py` owns construction and lifecycle of storage, service, web server and delivery worker.
 
-## 4. Deployment and configuration
+## 4. Entry flow
+
+The writers group must not depend on a direct group `WebAppInfo` launch.
+
+The supported flow is:
+
+1. a writers-chat command/button/link points to a Telegram deep link such as `https://t.me/<bot>?start=writers_submit`;
+2. the user opens the bot in private chat;
+3. the bot handles the start parameter and sends the private-chat button `✒️ Отправить работу` with `WebAppInfo(WRITERS_SUBMISSION_PUBLIC_URL)`;
+4. opening that button gives the Mini App Telegram `initData`;
+5. the Mini App exchanges fresh verified `initData` for an application session and loads the author's workspace.
+
+The bot may also expose the same private-chat entry from its normal command/menu UX. The group deep link is a convenience, not an authorization boundary.
+
+Because the author must open the bot privately before using the Mini App, later private notifications normally have a valid bot-user conversation. Notification failure is still handled safely.
+
+## 5. Deployment and configuration
 
 Writers Submission is explicitly enabled. A partially configured subsystem must fail closed rather than silently expose an unauthenticated form.
 
@@ -85,10 +102,12 @@ Proposed environment variables:
 WRITERS_SUBMISSION_ENABLED=0
 WRITERS_SUBMISSION_PUBLIC_URL=https://example.invalid/writers/
 WRITERS_SUBMISSION_MOD_CHAT_ID=-100...
+WRITERS_SUBMISSION_FILE_CHAT_ID=-100...
 WRITERS_SUBMISSION_MODERATOR_IDS=12345,67890
 WRITERS_SUBMISSION_BIND_HOST=0.0.0.0
 WRITERS_SUBMISSION_PORT=8080
 WRITERS_SUBMISSION_INIT_DATA_MAX_AGE_SECONDS=900
+WRITERS_SUBMISSION_SESSION_TTL_SECONDS=43200
 WRITERS_SUBMISSION_MAX_FILE_BYTES=20971520
 WRITERS_SUBMISSION_MAX_FILES=3
 WRITERS_SUBMISSION_RATE_LIMIT_WINDOW_SECONDS=60
@@ -96,61 +115,85 @@ WRITERS_SUBMISSION_RATE_LIMIT_WINDOW_SECONDS=60
 
 `WRITERS_CHAT_ID` remains the writers-community scope and is reused instead of defining a second source-chat setting.
 
+`WRITERS_SUBMISSION_FILE_CHAT_ID` is a private Telegram staging/storage chat used only to turn validated uploads into reusable Telegram `file_id` values. It may equal the moderation chat, but a separate private chat is recommended to avoid clutter.
+
 When `WRITERS_SUBMISSION_ENABLED=1`, startup requires:
 
 - a valid `DATABASE_URL`;
 - an HTTPS `WRITERS_SUBMISSION_PUBLIC_URL` outside explicitly allowed local development mode;
-- a valid moderation chat id;
+- valid moderation and file-storage chat ids;
 - at least one numeric moderator id;
-- a bot token already available to the main application;
-- valid positive limits.
+- a bot token already available to the application;
+- valid positive TTL/file/rate limits.
 
-If these invariants are not met, startup raises an actionable configuration error. With the subsystem disabled, existing bot behavior remains unchanged and no web listener is started.
+If these invariants are not met, startup raises an actionable configuration error. With the subsystem disabled, existing bot behavior remains unchanged and no Writers web listener is started.
 
-## 5. Authentication and authorization
+## 6. Authentication and authorization
 
-### 5.1 Telegram identity
+### 6.1 Telegram bootstrap identity
 
 The browser is never trusted to supply an author id.
 
-Every authenticated API request carries the original Telegram Web App `initData` in a dedicated request header. The backend verifies it using Telegram's documented HMAC procedure derived from the bot token, verifies `auth_date`, rejects stale payloads, parses the signed user object and obtains `user_id` only from that verified payload.
+On session bootstrap, the frontend sends the original Telegram Web App `initData`. The backend:
 
-The server never accepts `user_id`, reviewer id or chat id from frontend JSON as an authority boundary.
+1. verifies it using Telegram's documented HMAC procedure derived from the bot token;
+2. verifies `auth_date` against `WRITERS_SUBMISSION_INIT_DATA_MAX_AGE_SECONDS`;
+3. parses the signed Telegram user object;
+4. obtains `user_id` only from that verified payload.
+
+The server never accepts `user_id`, reviewer id or writers chat id from frontend JSON as an authority boundary.
 
 Raw `initData`, its hash material and the bot token must never be logged or persisted.
 
-### 5.2 Writers-community membership
+### 6.2 Application session
 
-Viewing already-owned submissions requires only valid Telegram identity. This preserves access to the author's own history if they later leave the writers chat.
+Requiring the same original `initData` on every autosave would make long editing sessions fail once the bootstrap freshness window expires. Therefore fresh verified `initData` is exchanged for a bounded application session.
 
-Creating a new work or submitting a revision additionally requires current eligibility for the writers community. V1 performs a fail-closed `getChatMember(WRITERS_CHAT_ID, user_id)` check at the eligibility boundary and accepts only normal member/administrator/creator states. The result may be cached in memory for a short bounded interval to avoid a Bot API call on every autosave, but submit always performs a fresh eligibility check.
+V1 uses a Secure, HttpOnly, SameSite cookie containing or referencing an authenticated session signed by the server with a domain-separated key derived from server secret material. The session contains only the minimum claims needed for Writers Submission, including Telegram user id, issuance time and expiry.
 
-Zero Trust remains responsible for entry verification into the writers chat. Writers Submission does not create a second captcha or mutate Zero Trust state.
+Requirements:
 
-### 5.3 Moderator authorization
+- session lifetime is bounded by `WRITERS_SUBMISSION_SESSION_TTL_SECONDS`;
+- signature is verified on every authenticated request;
+- expiry is enforced server-side;
+- cookie is not readable from JavaScript;
+- raw `initData` is discarded after bootstrap;
+- changing/restarting the process must not weaken authentication; a stable server signing source is used so restart does not magically authenticate arbitrary users.
 
-Moderator callbacks are accepted only when the Telegram actor id is present in the explicit `WRITERS_SUBMISSION_MODERATOR_IDS` allowlist. Merely being able to see or forward a moderation message does not grant review authority.
+The session proves Telegram identity only. Ownership and workflow authorization are still checked in service/storage on every operation.
+
+### 6.3 Writers-community eligibility
+
+Viewing and editing already-owned drafts/submissions requires valid Telegram identity and ownership. This preserves access to an author's own history even if they later leave the writers chat.
+
+Creating a new logical submission or submitting a revision additionally requires current writers-community eligibility. V1 performs a fail-closed `getChatMember(WRITERS_CHAT_ID, user_id)` check and accepts only normal member/administrator/creator states. Submit always performs a fresh eligibility check. A short in-memory cache may be used for the create boundary but is not an authorization substitute at submit.
+
+Zero Trust remains responsible for entry verification into the writers chat. Writers Submission does not create another captcha or mutate Zero Trust state.
+
+### 6.4 Moderator authorization
+
+Moderator callbacks are accepted only when the Telegram actor id is present in `WRITERS_SUBMISSION_MODERATOR_IDS`. Seeing or forwarding a moderation message does not grant review authority.
 
 Every moderator action re-checks authorization server-side before touching storage.
 
-### 5.4 Same-origin web security
+### 6.5 Same-origin web security
 
 The web API is same-origin with the Mini App. V1 does not enable permissive CORS.
 
 Responses set at least:
 
-- `Content-Security-Policy` allowing the local application and the official Telegram Web App script origin only as required;
+- `Content-Security-Policy` allowing local assets and the official Telegram Web App script origin only as required;
 - `X-Content-Type-Options: nosniff`;
 - `Referrer-Policy: no-referrer`;
 - a restrictive `Permissions-Policy` for unused browser capabilities.
 
 No bot token, DSN, moderator id list or other server secret is emitted to frontend assets.
 
-## 6. Data model
+## 7. Data model
 
-Public/API identities use UUIDs or equivalent unguessable identifiers. Internal database surrogate keys may exist but are never used as the frontend authorization boundary.
+Public/API identities use UUIDs or equivalent unguessable identifiers. Internal surrogate keys may exist but are never used as the frontend authorization boundary.
 
-### 6.1 `writers_submissions`
+### 7.1 `writers_submissions`
 
 One logical work thread per author.
 
@@ -159,7 +202,7 @@ Core fields:
 - `id` UUID primary key;
 - `writers_chat_id` bigint;
 - `author_user_id` bigint;
-- `status` enum/text constrained to the state machine;
+- `status` constrained to the state machine;
 - `current_draft_revision_id` nullable;
 - `current_submitted_revision_id` nullable;
 - `claimed_by_user_id` nullable;
@@ -169,7 +212,9 @@ Core fields:
 
 Indexes include `(author_user_id, updated_at)` and moderation queue status indexes.
 
-### 6.2 `writers_submission_revisions`
+Ownership never changes.
+
+### 7.2 `writers_submission_revisions`
 
 A submission can have multiple revisions.
 
@@ -187,33 +232,34 @@ Core fields:
 - `external_url` nullable;
 - `created_at`, `updated_at`, `sealed_at` nullable.
 
-A `DRAFT` revision may be edited by its owner. `submit` atomically seals it. A `SEALED` revision is immutable at the storage/service boundary.
+A `DRAFT` revision may be edited by its owner. `submit` atomically seals it. A `SEALED` revision is immutable at the service/storage boundary.
 
-When moderation requests changes, the author creates a new draft revision derived from the previous sealed revision. The prior revision remains unchanged.
+When moderation requests changes, the author creates revision `N+1`, normally prefilled from the prior sealed revision. Revision `N` remains unchanged.
 
-### 6.3 `writers_submission_files`
+### 7.3 `writers_submission_files`
 
 Core fields:
 
 - `id` UUID primary key;
 - `submission_id` FK;
 - `revision_id` FK;
-- original display filename after safe normalization;
+- safe display filename;
 - declared MIME;
 - detected file class;
 - byte size;
-- checksum (SHA-256);
-- `telegram_file_id` nullable until delivered;
-- `telegram_file_unique_id` nullable;
-- upload/delivery timestamps.
+- SHA-256 checksum;
+- `telegram_file_id` required for a ready attachment;
+- `telegram_file_unique_id` when returned by Telegram;
+- file-storage chat/message metadata needed for operator cleanup where applicable;
+- created timestamp.
 
 A file belongs to one revision. Files attached to a sealed revision cannot be replaced or deleted.
 
 Binary file contents are not stored permanently in PostgreSQL.
 
-### 6.4 `writers_submission_reviews`
+### 7.4 `writers_submission_reviews`
 
-Records moderation decisions without overwriting history.
+Records moderation actions without overwriting history.
 
 Fields include:
 
@@ -225,15 +271,15 @@ Fields include:
 - optional moderation comment;
 - timestamp.
 
-### 6.5 `writers_submission_events`
+### 7.5 `writers_submission_events`
 
 Append-only audit timeline.
 
-Events include draft creation, update, file attach/delete, submit, delivery, claim, decision, withdrawal and revision creation. Event metadata is bounded and sanitized. It must not duplicate raw `initData`, bot credentials or full uploaded binary content.
+Events include draft creation/update, file attach/delete, submit, delivery, claim, decision, withdrawal and revision creation. Metadata is bounded and sanitized. It never contains raw `initData`, credentials or uploaded bytes.
 
-### 6.6 `writers_submission_outbox`
+### 7.6 `writers_submission_outbox`
 
-A transactional outbox makes Telegram moderation delivery restart-safe.
+A transactional outbox makes Telegram moderation delivery and critical author notifications restart-safe.
 
 Fields include:
 
@@ -243,12 +289,26 @@ Fields include:
 - state (`PENDING`, `IN_FLIGHT`, `DELIVERED`, `RETRYABLE_FAILED`, `PERMANENT_FAILED`);
 - attempt count;
 - next-attempt timestamp;
-- last bounded error class/code without secret payloads;
+- bounded safe error class/code;
 - created/updated timestamps.
 
-Creating a submitted revision and creating its moderation-delivery outbox row occur in one PostgreSQL transaction.
+Creating a submitted revision and its moderation-delivery outbox row occur in one PostgreSQL transaction.
 
-## 7. Submission state machine
+### 7.7 `writers_submission_idempotency`
+
+State-changing HTTP operations that may be retried use a bounded persistent idempotency record.
+
+Fields include:
+
+- verified actor user id;
+- operation name;
+- client idempotency key;
+- resulting entity/reference or stable response summary;
+- created/expiry timestamps.
+
+A unique constraint on actor + operation + key prevents duplicate create/submit/withdraw/revision operations after browser/network retries or process restart.
+
+## 8. Submission state machine
 
 Top-level statuses:
 
@@ -275,50 +335,54 @@ REJECTED          terminal
 WITHDRAWN         terminal
 ```
 
-A moderator claim is atomic. Two moderators clicking `claim` concurrently cannot both become the reviewer. Storage uses a conditional update / row lock and returns the winner.
+A moderator claim is atomic. Two moderators clicking `claim` concurrently cannot both become the reviewer. Storage uses a conditional update/row lock and returns exactly one winner.
 
-Decision writes are conditional on the expected current state and reviewer ownership. Duplicate callbacks are idempotent: they return the already-applied result and do not produce duplicate state transitions or duplicate author notifications.
+Decision writes are conditional on expected current state and reviewer ownership. Duplicate callbacks are idempotent: they return the already-applied result and do not produce duplicate transitions or notifications.
 
-`WITHDRAWN` is allowed only before a terminal moderation decision. A decision and withdrawal racing each other are serialized transactionally; one transition wins and the other receives the resulting state rather than overwriting it.
+`WITHDRAWN` is allowed only before a terminal decision. A decision and withdrawal racing each other are serialized transactionally; one transition wins and the other sees the resulting state instead of overwriting it.
 
-## 8. Draft and revision semantics
+## 9. Draft and revision semantics
 
-Draft autosave updates only the current author's current `DRAFT` revision.
+Draft autosave updates only the current author's current `DRAFT` revision and requires the expected submission/revision version.
 
 Submission performs one transaction that:
 
 1. locks the submission/current draft;
 2. validates ownership and current state;
-3. validates required fields and attachments;
+3. validates required fields and ready attachment metadata;
 4. seals the current revision;
 5. changes top-level status to `SUBMITTED`;
 6. sets `current_submitted_revision_id`;
-7. appends audit events;
-8. inserts moderation-delivery outbox work.
+7. clears `current_draft_revision_id`;
+8. appends audit events;
+9. inserts moderation-delivery outbox work;
+10. records idempotency result where supplied.
 
 No API exists to modify a sealed revision.
 
-`CHANGES_REQUESTED -> DRAFT` creates revision `N+1`, normally prefilled from revision `N`. It does not mutate revision `N`.
+`CHANGES_REQUESTED -> DRAFT` creates revision `N+1`, sets it as `current_draft_revision_id`, and normally prefills it from revision `N`. It never mutates `N`.
 
-## 9. Form and validation
+## 10. Form and validation
 
 V1 fields:
 
 - title — required;
 - work type — required;
-- genre — required but represented as free text or a small UI preset plus custom value; the server stores text, not a hard product taxonomy;
+- genre — required, represented as free text or a small UI preset plus custom value; storage remains text rather than a hard product taxonomy;
 - short description — required;
-- main text — required unless at least one supported file contains the work; the service still requires enough metadata to understand the submission;
+- main text — optional only when at least one ready supported file contains the work;
 - external link — optional HTTPS URL;
-- files — optional, up to configured maximum (default three).
+- files — optional, up to the configured maximum (default three).
+
+At least one actual work payload is required: non-empty main text or at least one ready file.
 
 Server-side validation is authoritative. Frontend validation exists only for UX.
 
-All user text has bounded lengths. Exact bounds are constants/configured defaults chosen in implementation and covered by tests; the API rejects oversized payloads before persistence.
+All user text has explicit bounded lengths defined as implementation constants/config defaults and covered by tests. The API rejects oversized request bodies before persistence.
 
-HTML is never trusted. The Mini App renders user content as text, not raw HTML. Telegram moderation messages escape dynamic content before HTML/Markdown formatting.
+HTML is never trusted. The Mini App renders user content as text, not raw HTML. Telegram messages escape dynamic content before HTML/Markdown formatting.
 
-## 10. File handling
+## 11. File handling and restart safety
 
 Default v1 file rules:
 
@@ -326,33 +390,48 @@ Default v1 file rules:
 - maximum three files per revision;
 - supported extensions: `.pdf`, `.docx`, `.txt`;
 - supported MIME classes are mapped explicitly;
-- extension, declared MIME and file signature/header must be mutually compatible;
+- extension, declared MIME and detected file class must be compatible;
 - PDF requires a PDF signature;
 - TXT must pass bounded text/binary sanity checks;
-- DOCX requires the ZIP/container signature but is not executed or rendered server-side in v1.
+- DOCX requires ZIP/container signature plus bounded central-directory name checks for DOCX structure; no document extraction, rendering or macro execution occurs.
 
-V1 does not parse macros, execute documents, render PDFs, run OCR or automatically fetch links.
+V1 does not execute documents, render PDFs, run OCR or automatically fetch links.
 
-Uploads are streamed/bounded to temporary storage rather than read without limit. Filenames are normalized to safe display names; filesystem paths are generated by the server and never taken from the supplied filename.
+### 11.1 Attachment upload flow
 
-Temporary file lifetime is strictly bounded. After successful Telegram document delivery and persistence of Telegram `file_id`/`file_unique_id`, the temporary copy is removed. On retryable delivery failure it may remain only within a bounded retry window; terminal cleanup removes it.
+To avoid losing a binary between submit and asynchronous moderation delivery, an attachment becomes `ready` before it is eligible for a submission.
 
-A revision cannot be submitted while an attached file is in an invalid or incomplete upload state.
+Upload flow:
 
-External links must be HTTPS and are stored/displayed only. The backend never requests them, eliminating SSRF through the submission URL field.
+1. aiohttp streams the multipart body with a hard byte limit into a server-generated temporary path;
+2. extension/MIME/signature and bounded DOCX container metadata are validated;
+3. checksum is calculated while streaming/validating;
+4. the bot uploads the validated file to `WRITERS_SUBMISSION_FILE_CHAT_ID` with notifications disabled where possible;
+5. Telegram returns reusable `file_id` / `file_unique_id`;
+6. PostgreSQL persists attachment metadata and Telegram identifiers;
+7. the temporary local file is removed immediately after successful persistence;
+8. optional staging Telegram message cleanup may run only after identifiers are persisted.
 
-## 11. Telegram moderation delivery
+If Telegram staging upload or DB persistence fails, the attachment operation fails and the temporary file is cleaned up. The draft itself remains intact.
 
-Submitting a revision creates a private moderation-card delivery job.
+The moderation outbox therefore depends only on durable PostgreSQL metadata plus Telegram `file_id`, never on a restart-fragile local temporary file.
+
+Filenames are normalized for display; local paths are generated by the server and never taken from the supplied filename.
+
+External links must be HTTPS and are stored/displayed only. The backend never requests them, preventing SSRF through the URL field.
+
+## 12. Telegram moderation delivery
+
+Submitting a revision creates a private moderation-card outbox job.
 
 The delivery worker sends to `WRITERS_SUBMISSION_MOD_CHAT_ID`:
 
 - author display identity and numeric id;
-- submission/revision reference;
+- opaque submission/revision reference;
 - title, type, genre and description;
 - bounded text preview;
-- external link when present;
-- attached Telegram documents;
+- external link when present, clearly treated as user-supplied;
+- attached documents by existing Telegram `file_id`;
 - inline moderator controls.
 
 Controls:
@@ -362,47 +441,50 @@ Controls:
 - `Нужны правки`;
 - `Отклонить`.
 
-Callback payloads use a compact opaque moderation token that maps server-side to the target submission/revision. The payload does not trust a frontend-supplied reviewer identity and stays within Telegram callback-size limits.
+Callback payloads use a compact opaque moderation token that maps server-side to the target submission/revision and remains within Telegram callback-size limits. Reviewer identity comes only from the callback actor, never from payload data.
 
-For actions requiring a free-form comment (`REQUEST_CHANGES`, optionally `REJECT`), v1 uses a small moderator conversation state keyed by moderator + moderation token with a bounded expiry. The final decision is persisted only after the comment is received or an explicit no-comment path is chosen where allowed.
+For actions requiring free-form feedback (`REQUEST_CHANGES`, and optionally `REJECT`), v1 uses a small bounded-expiry moderator conversation state keyed by moderator + moderation token. No durable decision occurs until the comment/no-comment choice is finalized, so losing this transient input state on restart cannot create a false moderation decision.
 
-The moderation card is updated after claim/decision when possible, but PostgreSQL remains authoritative if message editing fails.
+The moderation card is updated after claim/decision when possible, but PostgreSQL remains authoritative if Telegram message editing fails.
 
-## 12. Delivery failure semantics
+## 13. Delivery failure semantics
 
-A submission is durably accepted when PostgreSQL commits the sealed revision and outbox event. Telegram delivery is asynchronous and retryable.
+A submission is durably accepted when PostgreSQL commits the sealed revision and moderation outbox event.
+
+Because every attachment already has a Telegram `file_id`, moderation delivery is restart-safe without persistent local binaries.
 
 Therefore:
 
-- a transient Telegram failure does not lose the submission;
+- a transient Telegram moderation-chat failure does not lose the submission;
 - the outbox retries with bounded exponential backoff and jitter;
 - restart resumes pending/retryable jobs;
-- successful delivery records Telegram ids and marks the outbox delivered;
-- permanent failure is surfaced in operator logs/diagnostics and remains visible as a technical delivery failure rather than pretending moderators received the work.
+- successful delivery records moderation message ids and marks the outbox delivered;
+- permanent failure is visible in safe operator diagnostics rather than pretending moderators received the work.
 
-Author UX distinguishes `submission accepted` from `moderation delivery pending` only when delivery is materially delayed; normal fast delivery should not expose implementation details.
+Author UX distinguishes `submission accepted` from `moderation delivery pending` only when delivery is materially delayed.
 
-A file selected as part of the sealed revision must be durably uploaded and eligible for Telegram delivery before submit commits. If local staging/upload validation failed, submit is rejected and the revision remains draft.
+An attachment that failed validation/staging never becomes ready and therefore cannot be part of a sealed revision.
 
-## 13. Author notifications
+## 14. Author notifications
 
-Significant transitions enqueue/send private Telegram notifications:
+Significant transitions use Telegram private notifications:
 
 - submission accepted;
-- reviewer claimed the work (optional UX notification, configurable later; v1 may omit to reduce noise);
 - approved;
 - changes requested with moderator comment;
 - rejected with permitted comment;
 - withdrawal confirmation;
-- serious moderation-delivery problem when action from the author is required.
+- serious delivery problem only when author action is required.
 
-Notification failure never rewrites the durable moderation decision. It is logged safely and may use the same outbox pattern where required for restart-safe delivery.
+A `claimed` notification is omitted in v1 to reduce noise; claim remains visible in the Mini App timeline/status if desired.
 
-## 14. Mini App UX
+Critical post-decision notifications may use the same durable outbox mechanism. Notification failure never rewrites a durable moderation decision.
 
-### 14.1 Home — `Мои работы`
+## 15. Mini App UX
 
-Shows the current author's submissions sorted by most recently updated, grouped or filtered by:
+### 15.1 Home — `Мои работы`
+
+Shows the current author's submissions sorted by most recently updated, grouped/filtered by:
 
 - drafts;
 - under review;
@@ -411,7 +493,7 @@ Shows the current author's submissions sorted by most recently updated, grouped 
 
 Each card shows title, revision, human-readable status and last update time.
 
-### 14.2 Editor
+### 15.2 Editor
 
 Mobile-first editor with:
 
@@ -427,11 +509,11 @@ Mobile-first editor with:
 - `Сохранить черновик`;
 - `Отправить`.
 
-Autosave is debounced and uses an expected revision/version so stale browser tabs cannot silently overwrite newer edits. Conflict responses prompt the client to reload instead of last-write-wins data loss.
+Autosave is debounced and carries an expected version so stale browser tabs cannot silently overwrite newer edits. A conflict prompts reload/merge rather than last-write-wins data loss.
 
-### 14.3 Submission timeline
+### 15.3 Submission timeline
 
-The detail screen renders a bounded audit-derived timeline such as:
+The detail screen renders a bounded audit-derived timeline, for example:
 
 ```text
 Черновик создан
@@ -443,16 +525,27 @@ The detail screen renders a bounded audit-derived timeline such as:
 Одобрено
 ```
 
-Internal delivery retries and sensitive operator metadata are not exposed as author timeline events unless they affect the author's required action.
+Internal delivery retries and sensitive operator metadata are not exposed unless they require author action.
 
-## 15. HTTP/API surface
+## 16. HTTP/API surface
 
-All API routes are under `/api/writers` and require verified Telegram `initData` except static health/public assets explicitly designed otherwise.
-
-Proposed author routes:
+Static Mini App:
 
 ```text
-GET    /writers/
+GET /writers/
+```
+
+Session bootstrap:
+
+```text
+POST /api/writers/session
+```
+
+The bootstrap endpoint accepts fresh Telegram `initData` and returns/sets the authenticated application session. All remaining author API routes require the valid session cookie.
+
+Author routes:
+
+```text
 GET    /api/writers/submissions
 POST   /api/writers/submissions
 GET    /api/writers/submissions/{submission_id}
@@ -467,13 +560,13 @@ GET    /api/writers/submissions/{submission_id}/history
 
 No public moderator HTTP API is required in v1; moderation uses Telegram handlers.
 
-Error responses use stable machine-readable codes plus safe human messages. Storage/stack traces are never sent to the browser.
+Error responses use stable machine-readable codes plus safe human messages. Storage errors and stack traces are never sent to the browser.
 
-State-changing endpoints support idempotency where duplicate browser retries are plausible, especially create/submit/withdraw/revision creation. Idempotency keys are scoped to verified user id + endpoint semantics and have bounded retention.
+State-changing endpoints support persistent idempotency where browser/network retries are plausible, especially create/submit/withdraw/revision creation.
 
-## 16. Rate limiting
+## 17. Rate limiting
 
-V1 uses an in-process bounded rate limiter for cheap abuse control plus hard server-side payload/upload limits. Because rate-limit state is not an authorization invariant, restart reset is acceptable.
+V1 uses an in-process bounded rate limiter for cheap abuse control plus hard server-side payload/upload limits. Since rate-limit state is not an authorization invariant, restart reset is acceptable for this single-process deployment.
 
 Separate buckets exist for:
 
@@ -481,48 +574,54 @@ Separate buckets exist for:
 - autosave/update;
 - create/revision creation;
 - upload;
-- submit/withdraw.
+- submit/withdraw;
+- session bootstrap.
 
-Persistent PostgreSQL constraints and idempotency are still required, so bypassing/resetting the convenience rate limiter cannot create duplicate durable transitions.
+Persistent PostgreSQL constraints/idempotency remain authoritative, so rate-limit reset cannot create duplicate durable transitions.
 
-## 17. Lifecycle integration
+## 18. Lifecycle integration
 
-`main.py` should follow the existing explicit lifecycle style.
+`main.py` follows the existing explicit lifecycle style.
 
 When enabled:
 
 1. validate Writers Submission config;
 2. reuse the validated PostgreSQL `DATABASE_URL`;
 3. initialize `PostgresWritersSubmissionStorage` and idempotent schema;
-4. create service;
-5. register bot entry/moderator handlers;
+4. create service/security/session components;
+5. register private entry and moderator handlers;
 6. start aiohttp runner/site;
-7. start bounded delivery worker;
+7. start bounded outbox worker;
 8. start normal bot polling;
-9. on shutdown stop worker and web runner, then close storage/pools in deterministic order.
+9. on shutdown stop worker and web runner, then close owned resources in deterministic order.
 
 No unbounded orphan tasks may survive shutdown.
 
-If the web listener cannot bind while the subsystem is enabled, startup fails rather than running a button that points to a dead Mini App.
+If the web listener cannot bind while enabled, startup fails rather than exposing a dead Mini App button.
 
-## 18. Database/bootstrap policy
+Writers Submission storage may use its own small asyncpg pool or a deliberately shared pool only if ownership/lifecycle is explicit. It must never close a pool owned by Zero Trust or Entertainment.
+
+## 19. Database/bootstrap policy
 
 Schema creation/upgrades are idempotent and versioned in the same practical style as the existing project. The implementation must not destructively rewrite unrelated Entertainment or Zero Trust tables.
 
 All multi-row state transitions use transactions.
 
-Important database invariants include:
+Important invariants include:
 
 - submission ownership cannot change;
-- `(submission_id, revision_number)` unique;
-- one active current draft pointer at most;
-- sealed revision content cannot be updated through storage methods;
+- `(submission_id, revision_number)` is unique;
+- at most one current draft pointer exists;
+- submit clears the current draft pointer;
+- sealed revision content cannot be updated through storage/service APIs;
+- attachment rows usable by a sealed revision have a Telegram `file_id`;
 - file count cannot exceed service/config rules;
 - moderation claim/decision is conditional on expected state;
-- outbox delivery event for a submitted revision is unique/idempotent;
+- outbox moderation event per submitted revision is unique/idempotent;
+- idempotency actor + operation + key is unique while retained;
 - audit events are append-only through the public storage interface.
 
-## 19. Observability and privacy
+## 20. Observability and privacy
 
 Startup diagnostics may log:
 
@@ -530,6 +629,7 @@ Startup diagnostics may log:
 - bind host/port;
 - writers chat id;
 - moderation chat id;
+- file-storage chat id;
 - moderator count;
 - upload limits;
 - outbox worker readiness;
@@ -542,44 +642,49 @@ Runtime logs must not contain:
 - bot token;
 - `DATABASE_URL`;
 - raw Telegram `initData`;
+- session cookie/token value;
 - full work text;
 - full moderation comments by default;
-- uploaded file bytes;
-- arbitrary external-link response data (links are never fetched).
+- uploaded bytes.
 
-## 20. Testing strategy
+External links are never fetched by the backend.
+
+## 21. Testing strategy
 
 Development follows RED -> GREEN for each behavior slice.
 
-### 20.1 Pure/unit tests
+### 21.1 Pure/unit tests
 
 - config parsing/fail-closed validation;
 - Telegram `initData` valid signature, wrong signature and expired auth;
-- user id is derived only from signed data;
+- application-session signature/expiry/tampering;
+- user id derived only from verified auth/session;
 - text/link validation;
 - upload extension/MIME/signature compatibility;
+- bounded DOCX container metadata validation without extraction;
 - state-machine allowed/forbidden transitions;
 - sealed revision immutability;
 - safe rendering/escaping;
 - callback-token parsing without trusting actor identity;
 - rate-limit bucket behavior.
 
-### 20.2 Service tests
+### 21.2 Service tests
 
 - author can access only their own submissions;
-- cross-user GET/PATCH/file/history access is denied;
+- cross-user GET/PATCH/file/history access denied;
 - current writers eligibility required for create/submit;
+- existing owner can view/edit own draft after leaving, but cannot submit until eligible again;
 - autosave conflict detection;
 - idempotent create/submit/withdraw/revision creation;
-- submit seals revision atomically;
+- submit seals revision atomically and clears draft pointer;
 - changes requested creates a new editable revision without mutating old content;
 - final states reject later mutation;
 - moderator allowlist enforced;
 - duplicate moderator callbacks do not duplicate decisions/notifications.
 
-### 20.3 PostgreSQL integration tests
+### 21.3 PostgreSQL integration tests
 
-Run in the existing PostgreSQL CI job or a clearly scoped extension of it.
+Run in the existing PostgreSQL CI job or a clearly scoped extension.
 
 Must cover:
 
@@ -591,55 +696,62 @@ Must cover:
 - revision uniqueness/immutability;
 - transactional submit + outbox creation;
 - retryable outbox persistence across reconstructed service/worker;
-- idempotency uniqueness;
-- file metadata persistence;
+- persistent idempotency across reconstructed service;
+- attachment metadata and Telegram file id persistence;
 - exact UUID ownership checks.
 
-### 20.4 HTTP tests
+### 21.4 HTTP tests
 
 Using aiohttp test utilities or equivalent:
 
 - static Mini App route;
+- session bootstrap with valid/invalid/expired `initData`;
+- authenticated cookie accepted;
+- tampered/expired cookie denied;
 - unauthenticated API denied;
-- invalid/expired `initData` denied;
-- payload too large rejected before persistence;
+- request body too large rejected before persistence;
 - malformed JSON safe error;
 - cross-user opaque id still denied;
 - upload count/size/type limits;
+- failed Telegram staging upload does not create ready attachment;
+- temporary upload cleanup on success/failure;
 - security headers present;
 - no permissive CORS;
 - stable API error codes.
 
-### 20.5 Telegram handler tests
+### 21.5 Telegram handler/delivery tests
 
-- WebApp button uses configured public URL;
+- writers group deep link targets private bot start flow;
+- private start flow emits configured WebApp URL;
 - non-moderator callback denied;
 - claim callback uses atomic service result;
 - decision callback is idempotent;
 - moderation card escapes user-controlled text;
-- Telegram message-edit failure does not undo DB state;
+- moderation documents reuse stored Telegram `file_id`;
+- Telegram card/message-edit failure does not undo DB state;
 - author notification failure does not undo DB state.
 
-## 21. Acceptance criteria
+## 22. Acceptance criteria
 
 Writers Submission v1 is ready to merge only when all of the following are true:
 
 1. Existing bot behavior remains green with the feature disabled.
-2. A valid writers user can create/autosave a draft and restart the process without losing it.
+2. A valid writers user can enter through private bot flow, create/autosave a draft and restart without losing it.
 3. Another Telegram user cannot read, modify, withdraw or attach files to that draft even when given its UUID.
-4. Submission creates one immutable sealed revision and one durable moderation-delivery job atomically.
-5. A duplicate submit request cannot create a second sealed revision or second moderation job.
-6. Uploaded file validation enforces count, byte and type limits and leaves no unbounded temporary files.
-7. A submitted revision cannot be modified.
-8. Two moderators claiming concurrently produce exactly one owner.
-9. Unauthorized moderators cannot claim or decide.
-10. Changes-requested workflow creates revision N+1 and preserves N byte-for-byte at the service/storage contract level.
-11. Telegram delivery failure is restart-safe and does not lose accepted work.
-12. PostgreSQL/HTTP/handler tests pass in CI alongside the full existing unit suite.
-13. No credentials, real DSN, raw `initData` or uploaded content are committed to Git.
-14. Documentation explains env, startup behavior, moderation workflow and rollback/disable path.
+4. A stale/tampered Telegram bootstrap or application session is rejected.
+5. Every ready attachment is validated, converted to Telegram `file_id`, persisted and detached from local temporary storage before it can be sealed into a submission.
+6. Submission creates one immutable sealed revision and one durable moderation-delivery job atomically.
+7. Duplicate submit cannot create a second sealed revision or second moderation job.
+8. A submitted revision cannot be modified.
+9. Two moderators claiming concurrently produce exactly one owner.
+10. Unauthorized moderators cannot claim or decide.
+11. Changes-requested creates revision N+1 and preserves N unchanged at the service/storage contract level.
+12. Telegram moderation delivery failure is restart-safe and does not lose accepted work or attached documents.
+13. PostgreSQL/HTTP/handler tests pass in CI alongside the full existing unit suite.
+14. No credentials, real DSN, raw `initData`, session secrets or uploaded content are committed to Git.
+15. Documentation explains env, private entry flow, upload staging, moderation workflow and rollback/disable path.
 
-## 22. Explicit non-goals for v1
+## 23. Explicit non-goals for v1
 
 The following are intentionally deferred:
 
@@ -648,7 +760,7 @@ The following are intentionally deferred:
 - line-level comments/annotations;
 - S3/object-storage dependency;
 - OCR/PDF rendering;
-- DOCX document parsing;
+- semantic DOCX parsing/editing;
 - automatic external-link downloading;
 - antivirus/malware scanning service integration;
 - plagiarism detection;
@@ -659,28 +771,29 @@ The following are intentionally deferred:
 - external identity provider;
 - React/Vite/Node build pipeline.
 
-These can be added as later subsystems without weakening v1 ownership and revision invariants.
+These can be added later without weakening v1 ownership/revision invariants.
 
-## 23. Rollout and rollback
+## 24. Rollout and rollback
 
 Rollout is controlled by `WRITERS_SUBMISSION_ENABLED`.
 
 Initial deployment sequence:
 
 1. deploy schema/code with feature disabled and run the full test/CI suite;
-2. configure public HTTPS URL, moderation chat and moderator allowlist;
+2. configure public HTTPS URL, moderation chat, file-storage chat and moderator allowlist;
 3. enable the feature;
-4. verify web health/startup diagnostics;
-5. submit one operator test draft/revision and verify moderation delivery/decision;
-6. expose the normal Writers entry button.
+4. verify web startup/health diagnostics;
+5. run one operator attachment upload to confirm `file_id` staging and temp cleanup;
+6. submit one operator test revision and verify moderation delivery/decision;
+7. expose the normal Writers entry link/button.
 
 Emergency rollback sets `WRITERS_SUBMISSION_ENABLED=0` and restarts the process. Existing submissions remain in PostgreSQL untouched. Disabling Writers Submission must not disable writers moderation, Zero Trust, Entertainment, Lexicon or other bot features.
 
-## 24. Implementation boundary
+## 25. Implementation boundary
 
-The implementation should add the subsystem without rewriting `writers_moderation.py`, `zero_trust/*` or unrelated Entertainment logic.
+The implementation adds the subsystem without rewriting `writers_moderation.py`, `zero_trust/*` or unrelated Entertainment logic.
 
-Necessary integration changes are expected in:
+Expected integration changes:
 
 - `main.py` lifecycle wiring;
 - `requirements.txt` (`aiohttp` explicit dependency);
