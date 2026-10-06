@@ -10,7 +10,10 @@ from uuid import uuid4
 from aiogram import Dispatcher, F
 
 from writers_submission.models import ReviewAction, SubmissionStatus
-from writers_submission.handlers import (\n    WritersSubmissionStartFilter,\n    register_writers_submission_handlers,\n)
+from writers_submission.handlers import (
+    WritersSubmissionStartFilter,
+    register_writers_submission_handlers,
+)
 
 
 MOD_CHAT_ID = -100111
