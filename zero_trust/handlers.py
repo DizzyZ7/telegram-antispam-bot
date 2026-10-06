@@ -228,18 +228,42 @@ def register_zero_trust_handlers(
                 user_id=target_user_id,
             )
         except Exception:
-            # Correct answer remains durably VERIFIED. Keep the challenge
-            # message so the same button can retry DB finalization later.
+            # Telegram access was already restored, but the durable state could
+            # not be finalized. Compensate immediately so DB=VERIFIED never
+            # coexists with silently granted chat access.
             LOGGER.exception(
                 "ZERO_TRUST_FINALIZE_FAILED challenge_id=%s chat_id=%s user_id=%s",
                 challenge_id,
                 chat_id,
                 target_user_id,
             )
-            await callback.answer(
-                "Доступ возвращен, но фиксация статуса не завершена. Нажми еще раз.",
-                show_alert=True,
-            )
+            compensated = False
+            try:
+                await app.bot.restrict_chat_member(
+                    chat_id,
+                    target_user_id,
+                    _restricted_permissions(),
+                )
+                compensated = True
+            except Exception:
+                LOGGER.exception(
+                    "ZERO_TRUST_FINALIZE_COMPENSATION_FAILED challenge_id=%s chat_id=%s user_id=%s",
+                    challenge_id,
+                    chat_id,
+                    target_user_id,
+                )
+
+            if compensated:
+                alert = (
+                    "Не удалось подтвердить проверку. Доступ снова ограничен; "
+                    "попробуй нажать еще раз позже."
+                )
+            else:
+                alert = (
+                    "Не удалось подтвердить проверку и повторно ограничить доступ. "
+                    "Сообщи администратору."
+                )
+            await callback.answer(alert, show_alert=True)
             return
 
         message_thread_id = getattr(callback.message, "message_thread_id", None)
