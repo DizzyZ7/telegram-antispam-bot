@@ -7,6 +7,7 @@ import unittest
 from writers_submission.models import (
     ConflictError,
     NotFoundError,
+    ReviewAction,
     SubmissionStatus,
     ValidationError,
 )
@@ -845,6 +846,203 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
             ),
             [],
         )
+
+
+    async def test_concurrent_moderator_claim_has_exactly_one_winner(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Конкурентная модерация"),
+            now=100,
+            idempotency_key="create-claim-race",
+        )
+        submitted = await self.storage.seal_and_submit(
+            submission_id=created.id,
+            author_user_id=77,
+            expected_version=1,
+            idempotency_key="submit-claim-race",
+            now=110,
+        )
+
+        first, second = await asyncio.gather(
+            self.storage.claim_submission(
+                submission_id=submitted.id,
+                revision_id=submitted.revision.id,
+                reviewer_user_id=9001,
+                now=120,
+            ),
+            self.storage.claim_submission(
+                submission_id=submitted.id,
+                revision_id=submitted.revision.id,
+                reviewer_user_id=9002,
+                now=120,
+            ),
+            return_exceptions=True,
+        )
+
+        results = [value for value in (first, second) if not isinstance(value, Exception)]
+        failures = [value for value in (first, second) if isinstance(value, Exception)]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], ConflictError)
+        self.assertEqual(results[0].submission.status, SubmissionStatus.IN_REVIEW)
+        self.assertIn(results[0].submission.claimed_by_user_id, {9001, 9002})
+
+    async def test_decision_and_withdraw_race_has_one_legal_winner(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Решение против отзыва"),
+            now=100,
+            idempotency_key="create-decision-withdraw-race",
+        )
+        submitted = await self.storage.seal_and_submit(
+            submission_id=created.id,
+            author_user_id=77,
+            expected_version=1,
+            idempotency_key="submit-decision-withdraw-race",
+            now=110,
+        )
+        await self.storage.claim_submission(
+            submission_id=submitted.id,
+            revision_id=submitted.revision.id,
+            reviewer_user_id=9001,
+            now=120,
+        )
+
+        decision, withdrawal = await asyncio.gather(
+            self.storage.decide_submission(
+                submission_id=submitted.id,
+                revision_id=submitted.revision.id,
+                reviewer_user_id=9001,
+                action=ReviewAction.APPROVE,
+                comment=None,
+                now=130,
+            ),
+            self.storage.withdraw_submission(
+                submission_id=submitted.id,
+                author_user_id=77,
+                idempotency_key="withdraw-race",
+                now=130,
+            ),
+            return_exceptions=True,
+        )
+
+        results = [value for value in (decision, withdrawal) if not isinstance(value, Exception)]
+        failures = [value for value in (decision, withdrawal) if isinstance(value, Exception)]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], ConflictError)
+
+        loaded = await self.storage.get_for_author(submitted.id, 77)
+        self.assertIn(
+            loaded.status,
+            {SubmissionStatus.APPROVED, SubmissionStatus.WITHDRAWN},
+        )
+
+    async def test_duplicate_decision_creates_one_author_notification(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Один notification"),
+            now=100,
+            idempotency_key="create-one-notification",
+        )
+        submitted = await self.storage.seal_and_submit(
+            submission_id=created.id,
+            author_user_id=77,
+            expected_version=1,
+            idempotency_key="submit-one-notification",
+            now=110,
+        )
+        await self.storage.claim_submission(
+            submission_id=submitted.id,
+            revision_id=submitted.revision.id,
+            reviewer_user_id=9001,
+            now=120,
+        )
+        first = await self.storage.decide_submission(
+            submission_id=submitted.id,
+            revision_id=submitted.revision.id,
+            reviewer_user_id=9001,
+            action=ReviewAction.REQUEST_CHANGES,
+            comment="Усилить финал",
+            now=130,
+        )
+        duplicate = await self.storage.decide_submission(
+            submission_id=submitted.id,
+            revision_id=submitted.revision.id,
+            reviewer_user_id=9001,
+            action=ReviewAction.REQUEST_CHANGES,
+            comment="Усилить финал",
+            now=131,
+        )
+
+        self.assertTrue(first.applied)
+        self.assertFalse(duplicate.applied)
+        assert self.storage.pool is not None
+        count = await self.storage.pool.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM writers_submission_outbox
+            WHERE submission_id = $1
+              AND revision_id = $2
+              AND event_type = 'AUTHOR_NOTIFICATION'
+            """,
+            submitted.id,
+            submitted.revision.id,
+        )
+        self.assertEqual(count, 1)
+
+        context = await self.storage.get_author_notification_context(
+            submission_id=submitted.id,
+            revision_id=submitted.revision.id,
+        )
+        self.assertEqual(context.author_user_id, 77)
+        self.assertEqual(context.action, ReviewAction.REQUEST_CHANGES)
+        self.assertEqual(context.comment, "Усилить финал")
+
+    async def test_stale_inflight_outbox_lease_becomes_claimable_again(self):
+        created = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Lease recovery"),
+            now=100,
+            idempotency_key="create-lease-recovery",
+        )
+        await self.storage.seal_and_submit(
+            submission_id=created.id,
+            author_user_id=77,
+            expected_version=1,
+            idempotency_key="submit-lease-recovery",
+            now=110,
+        )
+        first = await self.storage.claim_due_outbox(
+            worker_id="worker-a",
+            now=120,
+            lease_seconds=60,
+            limit=10,
+        )
+        self.assertEqual(len(first), 1)
+
+        before_expiry = await self.storage.claim_due_outbox(
+            worker_id="worker-b",
+            now=179,
+            lease_seconds=60,
+            limit=10,
+        )
+        self.assertEqual(before_expiry, [])
+
+        reclaimed = await self.storage.claim_due_outbox(
+            worker_id="worker-b",
+            now=180,
+            lease_seconds=60,
+            limit=10,
+        )
+        self.assertEqual(len(reclaimed), 1)
+        self.assertEqual(reclaimed[0].id, first[0].id)
+        self.assertEqual(reclaimed[0].worker_id, "worker-b")
+        self.assertEqual(reclaimed[0].attempt_count, first[0].attempt_count + 1)
 
 
 if __name__ == "__main__":
