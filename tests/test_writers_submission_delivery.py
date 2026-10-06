@@ -191,5 +191,26 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_background_loop_uses_restart_stable_epoch_clock(self):
+        epoch_now = 1_800_000_000
+        worker = WritersDeliveryWorker(
+            self.bot,
+            self.storage,
+            self.config,
+            poll_seconds=2,
+            lease_seconds=60,
+            batch_size=10,
+            worker_id="epoch-worker",
+            now_fn=lambda: epoch_now,
+        )
+        worker.run_once = AsyncMock(
+            side_effect=lambda **kwargs: worker._stop_event.set()
+        )
+
+        await worker._run_forever()
+
+        worker.run_once.assert_awaited_once_with(now=epoch_now)
+
+
 if __name__ == "__main__":
     unittest.main()
