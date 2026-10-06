@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -263,6 +264,11 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(html.escape(raw), echoed)
         self.assertNotIn(raw, echoed)
 
+
+
+    def test_default_moderation_clock_is_epoch_time(self):
+        defaults = register_writers_submission_handlers.__kwdefaults__
+        self.assertIs(defaults["now_fn"], time.time)
 
     async def test_submission_handlers_are_promoted_ahead_of_legacy_catchalls(self):
         app = make_app()
