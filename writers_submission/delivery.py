@@ -28,21 +28,33 @@ def _author_notification_text(context: Any) -> str:
     title = _escape(context.title)
     comment = getattr(context, "comment", None)
 
-    if action == ReviewAction.APPROVE.value:
+    if action in {"SUBMISSION_ACCEPTED"}:
+        lines = [
+            "📨 <b>Работа принята и отправлена на проверку</b>",
+            "",
+            f"<b>{title}</b>",
+        ]
+    elif action in {ReviewAction.APPROVE.value, "APPROVED"}:
         lines = [
             "✅ <b>Работа одобрена</b>",
             "",
             f"<b>{title}</b>",
         ]
-    elif action == ReviewAction.REQUEST_CHANGES.value:
+    elif action in {ReviewAction.REQUEST_CHANGES.value, "CHANGES_REQUESTED"}:
         lines = [
             "✏️ <b>Нужны правки</b>",
             "",
             f"<b>{title}</b>",
         ]
-    elif action == ReviewAction.REJECT.value:
+    elif action in {ReviewAction.REJECT.value, "REJECTED"}:
         lines = [
             "❌ <b>Работа отклонена</b>",
+            "",
+            f"<b>{title}</b>",
+        ]
+    elif action == "WITHDRAWN":
+        lines = [
+            "↩️ <b>Работа отозвана</b>",
             "",
             f"<b>{title}</b>",
         ]
@@ -158,7 +170,10 @@ class WritersDeliveryWorker:
         )
         for item in items:
             try:
-                await self._deliver(item, now=int(now))
+                delivery_chat_id, delivery_message_ids = await self._deliver(
+                    item,
+                    now=int(now),
+                )
             except Exception as exc:
                 if _is_permanent_telegram_error(exc):
                     await self.storage.mark_outbox_permanent_failure(
@@ -186,20 +201,30 @@ class WritersDeliveryWorker:
                 outbox_id=item.id,
                 worker_id=self.worker_id,
                 now=int(now),
+                delivery_chat_id=delivery_chat_id,
+                delivery_message_ids=delivery_message_ids,
             )
         return len(items)
 
-    async def _deliver(self, item: Any, *, now: int) -> None:
+    async def _deliver(
+        self,
+        item: Any,
+        *,
+        now: int,
+    ) -> tuple[int, tuple[int, ...]]:
         event_type = OutboxEventType(item.event_type)
         if event_type is OutboxEventType.MODERATION_CARD:
-            await self._deliver_moderation_card(item, now=now)
-            return
+            return await self._deliver_moderation_card(item, now=now)
         if event_type is OutboxEventType.AUTHOR_NOTIFICATION:
-            await self._deliver_author_notification(item)
-            return
+            return await self._deliver_author_notification(item)
         raise RuntimeError("unsupported outbox event type")
 
-    async def _deliver_moderation_card(self, item: Any, *, now: int) -> None:
+    async def _deliver_moderation_card(
+        self,
+        item: Any,
+        *,
+        now: int,
+    ) -> tuple[int, tuple[int, ...]]:
         token = await self.storage.get_or_create_moderation_token(
             submission_id=item.submission_id,
             revision_id=item.revision_id,
@@ -210,27 +235,53 @@ class WritersDeliveryWorker:
             revision_id=item.revision_id,
         )
         moderation_chat_id = int(self.config.moderation_chat_id)
+        message_ids: list[int] = []
         for attachment in context.files:
-            await self.bot.send_document(
+            sent = await self.bot.send_document(
                 chat_id=moderation_chat_id,
                 document=attachment.telegram_file_id,
                 caption=_escape(attachment.safe_filename),
                 parse_mode="HTML",
             )
-        await self.bot.send_message(
+            message_id = getattr(sent, "message_id", None)
+            if message_id is not None:
+                message_ids.append(int(message_id))
+        card = await self.bot.send_message(
             chat_id=moderation_chat_id,
             text=_moderation_text(context),
             parse_mode="HTML",
             reply_markup=build_moderation_keyboard(token),
         )
+        card_message_id = getattr(card, "message_id", None)
+        if card_message_id is not None:
+            message_ids.append(int(card_message_id))
+        return moderation_chat_id, tuple(message_ids)
 
-    async def _deliver_author_notification(self, item: Any) -> None:
+    async def _deliver_author_notification(
+        self,
+        item: Any,
+    ) -> tuple[int, tuple[int, ...]]:
+        payload = getattr(item, "payload", None)
+        if not isinstance(payload, dict):
+            payload = {}
+        notification_kind = payload.get("kind") or payload.get("action")
         context = await self.storage.get_author_notification_context(
             submission_id=item.submission_id,
             revision_id=item.revision_id,
+            notification_kind=(
+                str(notification_kind)
+                if notification_kind is not None
+                else None
+            ),
         )
-        await self.bot.send_message(
-            chat_id=int(context.author_user_id),
+        author_user_id = int(context.author_user_id)
+        sent = await self.bot.send_message(
+            chat_id=author_user_id,
             text=_author_notification_text(context),
             parse_mode="HTML",
+        )
+        message_id = getattr(sent, "message_id", None)
+        return (
+            author_user_id,
+            (int(message_id),) if message_id is not None else (),
         )
