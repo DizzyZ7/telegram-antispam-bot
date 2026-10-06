@@ -43,6 +43,30 @@ ZERO_TRUST_CHALLENGE_TTL_SECONDS=300
 
 Если Telegram временно не смог вернуть права после корректного ответа, сессия остается `verified`, а не ложно становится `passed`: ту же проверку можно повторить после восстановления Telegram API. При ошибке PostgreSQL бот не выдает доступ автоматически.
 
+## ✒️ Writers Submission Mini App
+
+Writers Submission v1 — отдельный restart-safe поток приема авторских работ. По умолчанию он выключен через `WRITERS_SUBMISSION_ENABLED=0` и не меняет существующее поведение бота.
+
+После явного включения автор открывает Mini App из личного чата с ботом через `/start writers_submit`, создает черновик, добавляет текст, HTTPS-ссылку и до трех PDF/DOCX/TXT файлов, отправляет immutable revision на проверку и видит timeline решения. Черновики, версии, audit trail, idempotency и очередь доставки сохраняются в PostgreSQL; файлы после проверки формата переводятся в Telegram `file_id` через отдельный private storage chat.
+
+Модерация выполняется в закрытом Telegram-чате кнопками «Взять на проверку / Одобрить / Нужны правки / Отклонить». Reviewer определяется только по Telegram actor и explicit allowlist, а конкурентный claim допускает ровно одного победителя.
+
+Минимальный production-конфиг:
+
+```env
+WRITERS_SUBMISSION_ENABLED=1
+WRITERS_SUBMISSION_PUBLIC_URL=https://your-public-host.example/writers/
+WRITERS_SUBMISSION_MOD_CHAT_ID=-1000000000001
+WRITERS_SUBMISSION_FILE_CHAT_ID=-1000000000002
+WRITERS_SUBMISSION_MODERATOR_IDS=123456789
+WRITERS_SUBMISSION_BIND_HOST=0.0.0.0
+WRITERS_SUBMISSION_PORT=8080
+```
+
+Также обязательны `BOT_TOKEN`, PostgreSQL `DATABASE_URL` и `WRITERS_CHAT_ID`. При включенной функции ошибка PostgreSQL/HTTP bind/config останавливает startup до polling вместо частично работающего fail-open режима.
+
+Полная настройка, smoke test и rollback: [`docs/writers-submission-v1.md`](docs/writers-submission-v1.md).
+
 ## 🧠 Дневная сводка и статистика
 
 - `/summary` или `/today` — ручная сводка дня.
