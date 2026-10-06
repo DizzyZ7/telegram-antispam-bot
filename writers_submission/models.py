@@ -173,3 +173,9 @@ class AuthorNotificationContext:
     title: str
     action: ReviewAction
     comment: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ModerationTarget:
+    submission_id: UUID
+    revision_id: UUID
