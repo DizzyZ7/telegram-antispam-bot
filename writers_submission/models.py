@@ -56,3 +56,50 @@ class ValidationError(WritersSubmissionError):
 
 class NotFoundError(WritersSubmissionError):
     """The requested owned object does not exist or is not visible to the actor."""
+
+
+from dataclasses import dataclass
+from uuid import UUID
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionRevision:
+    id: UUID
+    submission_id: UUID
+    revision_number: int
+    state: RevisionState
+    title: str
+    work_type: str
+    genre: str
+    description: str
+    body_text: str
+    external_url: str | None
+    created_at: int
+    updated_at: int
+    sealed_at: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionBundle:
+    id: UUID
+    writers_chat_id: int
+    author_user_id: int
+    status: SubmissionStatus
+    current_draft_revision_id: UUID | None
+    current_submitted_revision_id: UUID | None
+    claimed_by_user_id: int | None
+    claimed_at: int | None
+    created_at: int
+    updated_at: int
+    version: int
+    revision: SubmissionRevision
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionSummary:
+    id: UUID
+    status: SubmissionStatus
+    title: str
+    revision_number: int
+    updated_at: int
+    version: int
