@@ -268,6 +268,30 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(wrong.status, 403)
         self.service.create.assert_not_awaited()
 
+    async def test_json_transport_accepts_full_domain_body_limit(self):
+        payload = {
+            "title": "Большая работа",
+            "work_type": "Роман",
+            "genre": "Фантастика",
+            "description": "Проверка транспортного лимита",
+            "body_text": "я" * 200_000,
+            "external_url": None,
+        }
+
+        response = await self.client.post(
+            "/api/writers/submissions",
+            json=payload,
+            headers={
+                **self.auth_headers(),
+                "Idempotency-Key": "large-cyrillic-body",
+            },
+        )
+
+        self.assertEqual(response.status, 201)
+        fields = self.service.create.await_args.kwargs["fields"]
+        self.assertEqual(len(fields.body_text), 200_000)
+
+
     async def test_create_draft_allows_blank_body_before_file_upload(self):
         payload = {
             "title": "Работа файлом",
