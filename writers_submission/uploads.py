@@ -258,7 +258,7 @@ def validate_staged_file(
     if signature.startswith(b"%PDF-"):
         detected_class = "pdf"
         _validate_pdf(path)
-    elif signature.startswith((b"PK\\x03\\x04", b"PK\\x05\\x06", b"PK\\x07\\x08")):
+    elif signature.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
         _validate_docx(path)
         detected_class = "docx"
     else:
