@@ -380,6 +380,108 @@ class PostgresWritersSubmissionStorage:
             raise RuntimeError("Writers Submission PostgreSQL storage is not initialized")
         return self.pool
 
+    @staticmethod
+    async def _lock_idempotency(
+        connection: asyncpg.Connection,
+        *,
+        actor_user_id: int,
+        operation: str,
+        client_key: str,
+    ) -> None:
+        await connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            f"{int(actor_user_id)}:{operation}:{client_key}",
+        )
+
+    @staticmethod
+    async def _idempotent_result(
+        connection: asyncpg.Connection,
+        *,
+        actor_user_id: int,
+        operation: str,
+        client_key: str,
+        now: int,
+    ) -> asyncpg.Record | None:
+        row = await connection.fetchrow(
+            """
+            SELECT *
+            FROM writers_submission_idempotency
+            WHERE actor_user_id = $1
+              AND operation = $2
+              AND client_key = $3
+            """,
+            int(actor_user_id),
+            operation,
+            client_key,
+        )
+        if row is None:
+            return None
+        if int(row["expires_at"]) > int(now):
+            return row
+        await connection.execute(
+            """
+            DELETE FROM writers_submission_idempotency
+            WHERE actor_user_id = $1
+              AND operation = $2
+              AND client_key = $3
+            """,
+            int(actor_user_id),
+            operation,
+            client_key,
+        )
+        return None
+
+    @staticmethod
+    async def _record_idempotency(
+        connection: asyncpg.Connection,
+        *,
+        actor_user_id: int,
+        operation: str,
+        client_key: str,
+        submission_id: UUID,
+        revision_id: UUID | None,
+        now: int,
+    ) -> None:
+        await connection.execute(
+            """
+            INSERT INTO writers_submission_idempotency(
+                actor_user_id,
+                operation,
+                client_key,
+                result_submission_id,
+                result_revision_id,
+                response_json,
+                created_at,
+                expires_at
+            )
+            VALUES($1, $2, $3, $4, $5, '{}', $6, $7)
+            """,
+            int(actor_user_id),
+            operation,
+            client_key,
+            submission_id,
+            revision_id,
+            int(now),
+            int(now) + 7 * 24 * 60 * 60,
+        )
+
+    @staticmethod
+    async def _bundle_on_connection(
+        connection: asyncpg.Connection,
+        *,
+        submission_id: UUID,
+        author_user_id: int,
+    ) -> SubmissionBundle | None:
+        row = await connection.fetchrow(
+            _BUNDLE_SELECT
+            + """
+            WHERE s.id = $1 AND s.author_user_id = $2
+            """,
+            submission_id,
+            int(author_user_id),
+        )
+        return _bundle_from_row(row) if row is not None else None
+
     async def create_submission(
         self,
         *,
@@ -389,16 +491,48 @@ class PostgresWritersSubmissionStorage:
         now: int,
         idempotency_key: str | None,
     ) -> SubmissionBundle:
-        del idempotency_key  # Persistent idempotency is added with the service slice.
         pool = self._require_pool()
-        submission_id = uuid4()
-        revision_id = uuid4()
         now = int(now)
         author_user_id = int(author_user_id)
         writers_chat_id = int(writers_chat_id)
+        client_key = (
+            str(idempotency_key).strip()
+            if idempotency_key is not None
+            else None
+        )
+        if client_key == "":
+            client_key = None
 
         async with pool.acquire() as connection:
             async with connection.transaction():
+                if client_key is not None:
+                    await self._lock_idempotency(
+                        connection,
+                        actor_user_id=author_user_id,
+                        operation="create",
+                        client_key=client_key,
+                    )
+                    existing = await self._idempotent_result(
+                        connection,
+                        actor_user_id=author_user_id,
+                        operation="create",
+                        client_key=client_key,
+                        now=now,
+                    )
+                    if existing is not None:
+                        bundle = await self._bundle_on_connection(
+                            connection,
+                            submission_id=_uuid(existing["result_submission_id"]),
+                            author_user_id=author_user_id,
+                        )
+                        if bundle is None:
+                            raise ConflictError(
+                                "Idempotency record points to a missing submission"
+                            )
+                        return bundle
+
+                submission_id = uuid4()
+                revision_id = uuid4()
                 await connection.execute(
                     """
                     INSERT INTO writers_submissions(
@@ -476,16 +610,23 @@ class PostgresWritersSubmissionStorage:
                     json.dumps({"revision_number": 1}, separators=(",", ":")),
                     now,
                 )
-                row = await connection.fetchrow(
-                    _BUNDLE_SELECT
-                    + """
-                    WHERE s.id = $1 AND s.author_user_id = $2
-                    """,
-                    submission_id,
-                    author_user_id,
+                if client_key is not None:
+                    await self._record_idempotency(
+                        connection,
+                        actor_user_id=author_user_id,
+                        operation="create",
+                        client_key=client_key,
+                        submission_id=submission_id,
+                        revision_id=revision_id,
+                        now=now,
+                    )
+                bundle = await self._bundle_on_connection(
+                    connection,
+                    submission_id=submission_id,
+                    author_user_id=author_user_id,
                 )
-        assert row is not None
-        return _bundle_from_row(row)
+        assert bundle is not None
+        return bundle
 
     async def list_for_author(
         self,
@@ -632,3 +773,290 @@ class PostgresWritersSubmissionStorage:
                 )
         assert row is not None
         return _bundle_from_row(row)
+
+
+    async def withdraw_submission(
+        self,
+        *,
+        submission_id: UUID,
+        author_user_id: int,
+        idempotency_key: str,
+        now: int,
+    ) -> SubmissionBundle:
+        pool = self._require_pool()
+        author_user_id = int(author_user_id)
+        client_key = str(idempotency_key).strip()
+        if not client_key:
+            raise ValueError("idempotency_key is required")
+        now = int(now)
+
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                await self._lock_idempotency(
+                    connection,
+                    actor_user_id=author_user_id,
+                    operation="withdraw",
+                    client_key=client_key,
+                )
+                existing = await self._idempotent_result(
+                    connection,
+                    actor_user_id=author_user_id,
+                    operation="withdraw",
+                    client_key=client_key,
+                    now=now,
+                )
+                if existing is not None:
+                    bundle = await self._bundle_on_connection(
+                        connection,
+                        submission_id=_uuid(existing["result_submission_id"]),
+                        author_user_id=author_user_id,
+                    )
+                    if bundle is None:
+                        raise ConflictError(
+                            "Idempotency record points to a missing submission"
+                        )
+                    return bundle
+
+                row = await connection.fetchrow(
+                    """
+                    SELECT *
+                    FROM writers_submissions
+                    WHERE id = $1 AND author_user_id = $2
+                    FOR UPDATE
+                    """,
+                    submission_id,
+                    author_user_id,
+                )
+                if row is None:
+                    raise NotFoundError("Submission was not found")
+                status = SubmissionStatus(str(row["status"]))
+                if status not in {
+                    SubmissionStatus.DRAFT,
+                    SubmissionStatus.SUBMITTED,
+                    SubmissionStatus.IN_REVIEW,
+                    SubmissionStatus.CHANGES_REQUESTED,
+                }:
+                    raise ConflictError("Submission cannot be withdrawn")
+
+                revision_id = _uuid(
+                    row["current_draft_revision_id"]
+                    or row["current_submitted_revision_id"]
+                )
+                await connection.execute(
+                    """
+                    UPDATE writers_submissions
+                    SET status = 'WITHDRAWN',
+                        updated_at = $3,
+                        version = version + 1
+                    WHERE id = $1 AND author_user_id = $2
+                    """,
+                    submission_id,
+                    author_user_id,
+                    now,
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_events(
+                        submission_id,
+                        revision_id,
+                        actor_user_id,
+                        event_type,
+                        metadata_json,
+                        created_at
+                    )
+                    VALUES($1, $2, $3, 'WITHDRAWN', '{}', $4)
+                    """,
+                    submission_id,
+                    revision_id,
+                    author_user_id,
+                    now,
+                )
+                await self._record_idempotency(
+                    connection,
+                    actor_user_id=author_user_id,
+                    operation="withdraw",
+                    client_key=client_key,
+                    submission_id=submission_id,
+                    revision_id=revision_id,
+                    now=now,
+                )
+                bundle = await self._bundle_on_connection(
+                    connection,
+                    submission_id=submission_id,
+                    author_user_id=author_user_id,
+                )
+        assert bundle is not None
+        return bundle
+
+    async def create_revision(
+        self,
+        *,
+        submission_id: UUID,
+        author_user_id: int,
+        idempotency_key: str,
+        now: int,
+    ) -> SubmissionBundle:
+        pool = self._require_pool()
+        author_user_id = int(author_user_id)
+        client_key = str(idempotency_key).strip()
+        if not client_key:
+            raise ValueError("idempotency_key is required")
+        now = int(now)
+
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                await self._lock_idempotency(
+                    connection,
+                    actor_user_id=author_user_id,
+                    operation="create_revision",
+                    client_key=client_key,
+                )
+                existing = await self._idempotent_result(
+                    connection,
+                    actor_user_id=author_user_id,
+                    operation="create_revision",
+                    client_key=client_key,
+                    now=now,
+                )
+                if existing is not None:
+                    bundle = await self._bundle_on_connection(
+                        connection,
+                        submission_id=_uuid(existing["result_submission_id"]),
+                        author_user_id=author_user_id,
+                    )
+                    if bundle is None:
+                        raise ConflictError(
+                            "Idempotency record points to a missing submission"
+                        )
+                    return bundle
+
+                submission = await connection.fetchrow(
+                    """
+                    SELECT *
+                    FROM writers_submissions
+                    WHERE id = $1 AND author_user_id = $2
+                    FOR UPDATE
+                    """,
+                    submission_id,
+                    author_user_id,
+                )
+                if submission is None:
+                    raise NotFoundError("Submission was not found")
+                if (
+                    str(submission["status"])
+                    != SubmissionStatus.CHANGES_REQUESTED.value
+                ):
+                    raise ConflictError(
+                        "A new revision requires CHANGES_REQUESTED state"
+                    )
+                source_revision_id = _uuid(
+                    submission["current_submitted_revision_id"]
+                )
+                if source_revision_id is None:
+                    raise ConflictError("Submission has no sealed revision")
+
+                source = await connection.fetchrow(
+                    """
+                    SELECT *
+                    FROM writers_submission_revisions
+                    WHERE id = $1
+                      AND submission_id = $2
+                      AND state = 'SEALED'
+                    """,
+                    source_revision_id,
+                    submission_id,
+                )
+                if source is None:
+                    raise ConflictError("Submitted revision is unavailable")
+
+                revision_id = uuid4()
+                revision_number = int(source["revision_number"]) + 1
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_revisions(
+                        id,
+                        submission_id,
+                        revision_number,
+                        state,
+                        title,
+                        work_type,
+                        genre,
+                        description,
+                        body_text,
+                        external_url,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES(
+                        $1, $2, $3, 'DRAFT',
+                        $4, $5, $6, $7, $8, $9,
+                        $10, $10
+                    )
+                    """,
+                    revision_id,
+                    submission_id,
+                    revision_number,
+                    source["title"],
+                    source["work_type"],
+                    source["genre"],
+                    source["description"],
+                    source["body_text"],
+                    source["external_url"],
+                    now,
+                )
+                await connection.execute(
+                    """
+                    UPDATE writers_submissions
+                    SET status = 'DRAFT',
+                        current_draft_revision_id = $3,
+                        claimed_by_user_id = NULL,
+                        claimed_at = NULL,
+                        updated_at = $4,
+                        version = version + 1
+                    WHERE id = $1 AND author_user_id = $2
+                    """,
+                    submission_id,
+                    author_user_id,
+                    revision_id,
+                    now,
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_events(
+                        submission_id,
+                        revision_id,
+                        actor_user_id,
+                        event_type,
+                        metadata_json,
+                        created_at
+                    )
+                    VALUES($1, $2, $3, 'REVISION_CREATED', $4, $5)
+                    """,
+                    submission_id,
+                    revision_id,
+                    author_user_id,
+                    json.dumps(
+                        {
+                            "revision_number": revision_number,
+                            "source_revision_id": str(source_revision_id),
+                        },
+                        separators=(",", ":"),
+                    ),
+                    now,
+                )
+                await self._record_idempotency(
+                    connection,
+                    actor_user_id=author_user_id,
+                    operation="create_revision",
+                    client_key=client_key,
+                    submission_id=submission_id,
+                    revision_id=revision_id,
+                    now=now,
+                )
+                bundle = await self._bundle_on_connection(
+                    connection,
+                    submission_id=submission_id,
+                    author_user_id=author_user_id,
+                )
+        assert bundle is not None
+        return bundle
