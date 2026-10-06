@@ -9,7 +9,7 @@ class WritersSubmissionMainWiringTests(unittest.TestCase):
         source = Path("main.py").read_text(encoding="utf-8")
 
         self.assertIn(
-            "from writers_submission.config import WritersSubmissionConfig",
+            "from writers_submission import WritersSubmissionConfig",
             source,
         )
         self.assertIn(
