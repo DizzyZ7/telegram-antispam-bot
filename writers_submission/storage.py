@@ -1707,7 +1707,7 @@ class PostgresWritersSubmissionStorage:
                 lease_until = NULL,
                 worker_id = NULL,
                 last_error_code = NULL,
-                updated_at = $4
+                updated_at = $3
             WHERE id = $1
               AND state = 'IN_FLIGHT'
               AND worker_id = $2
@@ -1715,7 +1715,6 @@ class PostgresWritersSubmissionStorage:
             """,
             outbox_id,
             str(worker_id),
-            OutboxState.IN_FLIGHT.value,
             int(now),
         )
         if row is None:
@@ -1735,11 +1734,11 @@ class PostgresWritersSubmissionStorage:
             """
             UPDATE writers_submission_outbox
             SET state = 'RETRYABLE_FAILED',
-                next_attempt_at = $4,
+                next_attempt_at = $3,
                 lease_until = NULL,
                 worker_id = NULL,
-                last_error_code = $5,
-                updated_at = $6
+                last_error_code = $4,
+                updated_at = $5
             WHERE id = $1
               AND state = 'IN_FLIGHT'
               AND worker_id = $2
@@ -1747,7 +1746,6 @@ class PostgresWritersSubmissionStorage:
             """,
             outbox_id,
             str(worker_id),
-            OutboxState.IN_FLIGHT.value,
             int(next_attempt_at),
             str(error_code)[:120],
             int(now),
@@ -1770,8 +1768,8 @@ class PostgresWritersSubmissionStorage:
             SET state = 'PERMANENT_FAILED',
                 lease_until = NULL,
                 worker_id = NULL,
-                last_error_code = $4,
-                updated_at = $5
+                last_error_code = $3,
+                updated_at = $4
             WHERE id = $1
               AND state = 'IN_FLIGHT'
               AND worker_id = $2
@@ -1779,7 +1777,6 @@ class PostgresWritersSubmissionStorage:
             """,
             outbox_id,
             str(worker_id),
-            OutboxState.IN_FLIGHT.value,
             str(error_code)[:120],
             int(now),
         )
