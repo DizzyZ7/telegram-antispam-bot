@@ -1457,6 +1457,58 @@ class PostgresWritersSubmissionStorage:
         return [_file_from_row(row) for row in rows]
 
 
+    async def list_history_for_author(
+        self,
+        *,
+        submission_id: UUID,
+        author_user_id: int,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        owned = await self.get_for_author(submission_id, int(author_user_id))
+        if owned is None:
+            raise NotFoundError("Submission was not found")
+
+        rows = await self._require_pool().fetch(
+            """
+            SELECT id, revision_id, actor_user_id, event_type, metadata_json, created_at
+            FROM writers_submission_events
+            WHERE submission_id = $1
+            ORDER BY created_at ASC, id ASC
+            LIMIT $2
+            """,
+            submission_id,
+            max(1, min(500, int(limit))),
+        )
+        result: list[dict[str, object]] = []
+        for row in rows:
+            metadata: object = {}
+            try:
+                parsed = json.loads(str(row["metadata_json"] or "{}"))
+                if isinstance(parsed, dict):
+                    metadata = parsed
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            result.append(
+                {
+                    "id": int(row["id"]),
+                    "revision_id": (
+                        str(row["revision_id"])
+                        if row["revision_id"] is not None
+                        else None
+                    ),
+                    "actor_user_id": (
+                        int(row["actor_user_id"])
+                        if row["actor_user_id"] is not None
+                        else None
+                    ),
+                    "event_type": str(row["event_type"]),
+                    "metadata": metadata,
+                    "created_at": int(row["created_at"]),
+                }
+            )
+        return result
+
+
     async def seal_and_submit(
         self,
         *,
