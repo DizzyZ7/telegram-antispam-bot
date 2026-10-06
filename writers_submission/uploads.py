@@ -252,16 +252,27 @@ def validate_staged_file(
     if mime not in _ALLOWED_MIME[file_class]:
         raise ValidationError("file extension and MIME type do not match")
 
-    if file_class == "pdf":
+    with path.open("rb") as source:
+        signature = source.read(8)
+
+    if signature.startswith(b"%PDF-"):
+        detected_class = "pdf"
         _validate_pdf(path)
-    elif file_class == "txt":
-        _validate_txt(path)
-    else:
+    elif signature.startswith((b"PK\\x03\\x04", b"PK\\x05\\x06", b"PK\\x07\\x08")):
         _validate_docx(path)
+        detected_class = "docx"
+    else:
+        _validate_txt(path)
+        detected_class = "txt"
+
+    if detected_class != file_class:
+        raise ValidationError(
+            "file extension, MIME type and detected file class do not match"
+        )
 
     return ValidatedUpload(
         safe_filename=safe_filename,
-        file_class=file_class,
+        file_class=detected_class,
         declared_mime=mime,
         byte_size=byte_size,
         sha256=_sha256(path),
