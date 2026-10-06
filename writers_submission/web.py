@@ -147,6 +147,18 @@ def _normalized_fields(payload: dict[str, Any]) -> Any:
     )
 
 
+def _file_payload(file: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(file, "id", None),
+        "filename": getattr(file, "safe_filename", None),
+        "file_class": getattr(file, "detected_file_class", None),
+        "mime": getattr(file, "declared_mime", None),
+        "size": getattr(file, "byte_size", None),
+        "sha256": getattr(file, "sha256", None),
+        "created_at": getattr(file, "created_at", None),
+    }
+
+
 def _bundle_payload(bundle: Any) -> dict[str, Any]:
     revision = getattr(bundle, "revision", None)
     return {
@@ -436,7 +448,16 @@ def create_writers_web_app(
         user_id = limited_actor(request, "read")
         submission_id = _parse_uuid(request.match_info["submission_id"])
         result = await service.get_mine(user_id, submission_id)
-        return _json_response({"submission": _bundle_payload(result)})
+        files_method = getattr(service, "list_files", None)
+        files = []
+        if callable(files_method):
+            files = await files_method(user_id, submission_id)
+        return _json_response(
+            {
+                "submission": _bundle_payload(result),
+                "files": [_file_payload(item) for item in files],
+            }
+        )
 
     async def update_submission(request: web.Request) -> web.Response:
         require_origin(request)
