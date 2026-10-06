@@ -41,6 +41,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.storage = SimpleNamespace(
             claim_due_outbox=AsyncMock(return_value=[]),
+            get_or_create_moderation_token=AsyncMock(return_value="opaque-token"),
             get_moderation_delivery_context=AsyncMock(
                 return_value=SimpleNamespace(
                     author_user_id=77,
@@ -109,6 +110,35 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.storage.mark_outbox_retryable.assert_not_awaited()
         self.storage.mark_outbox_permanent_failure.assert_not_awaited()
+
+    async def test_moderation_card_contains_compact_opaque_controls(self):
+        item = moderation_item()
+        self.storage.claim_due_outbox.return_value = [item]
+
+        await self.worker.run_once(now=150)
+
+        self.storage.get_or_create_moderation_token.assert_awaited_once_with(
+            submission_id=item.submission_id,
+            revision_id=item.revision_id,
+            now=150,
+        )
+        kwargs = self.bot.send_message.await_args.kwargs
+        keyboard = kwargs["reply_markup"]
+        callback_data = [
+            button.callback_data
+            for row in keyboard.inline_keyboard
+            for button in row
+        ]
+        self.assertEqual(
+            callback_data,
+            [
+                "ws:c:opaque-token",
+                "ws:a:opaque-token",
+                "ws:x:opaque-token",
+                "ws:r:opaque-token",
+            ],
+        )
+        self.assertTrue(all(len(value) <= 64 for value in callback_data))
 
     async def test_transient_failure_schedules_bounded_retry_without_false_success(self):
         item = moderation_item(attempt_count=2)
