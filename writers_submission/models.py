@@ -103,3 +103,26 @@ class SubmissionSummary:
     revision_number: int
     updated_at: int
     version: int
+
+
+@dataclass(frozen=True, slots=True)
+class DraftFileContext:
+    revision_id: UUID
+    file_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionFile:
+    id: UUID
+    submission_id: UUID
+    revision_id: UUID
+    safe_filename: str
+    declared_mime: str
+    detected_file_class: str
+    byte_size: int
+    sha256: str
+    telegram_file_id: str
+    telegram_file_unique_id: str | None
+    storage_chat_id: int | None
+    storage_message_id: int | None
+    created_at: int
