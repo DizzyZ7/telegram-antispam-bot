@@ -124,9 +124,14 @@ Use one allowlisted operator plus one normal writers-community account.
 5. Restart the bot process before submission and verify the draft, attachment and timeline survive.
 6. Submit once, then repeat the same logical request/callback where practical. Confirm there is only one sealed revision and one moderation job.
 7. In the moderation chat, claim the work. If two moderators press claim concurrently, exactly one must win.
-8. Test **Нужны правки** with a comment. Verify the author sees the decision and can create revision N+1 while revision N remains unchanged.
+8. Test **Нужны правки** by replying directly to the bot's comment prompt (Telegram reply, not a new standalone message). Verify unrelated moderator chat text is ignored, a second prompt invalidates the earlier reply target, and the author can create revision N+1 while revision N stays unchanged.
 9. Submit the new revision and approve or reject it. Confirm the author notification and timeline update.
 10. Restart the worker/process with a pending delivery and verify PostgreSQL outbox retry resumes without duplicate durable state.
+
+
+### Moderation comment safety
+
+After a moderator presses **Нужны правки**, the bot posts a prompt in the moderation chat. The moderator must **reply to that exact bot message** within 10 minutes. Normal chat messages, replies to the moderation card, and replies to older prompts are intentionally not treated as review comments. If the bot cannot post the prompt, the request is not armed; press **Нужны правки** again after Telegram recovers.
 
 ## 8. Expected security properties
 
