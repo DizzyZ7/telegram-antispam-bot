@@ -8,6 +8,7 @@ from .config import WritersSubmissionConfig
 from .delivery import WritersDeliveryWorker
 from .files import WritersFileService
 from .handlers import register_writers_submission_handlers
+from .menu import install_writers_submission_menu
 from .security import SessionSigner
 from .service import WritersSubmissionService
 from .storage import PostgresWritersSubmissionStorage
@@ -152,6 +153,21 @@ async def start_writers_submission_runtime(
 
         worker_start_attempted = True
         await delivery_worker.start()
+
+        # The Telegram chat-menu button is bot-wide and appears beside the
+        # composer in private chats, without needing /start writers_submit.
+        # Publish it only after HTTP, handlers and delivery are ready.
+        # A Telegram API outage must not disable an otherwise working bot:
+        # the existing deep-link and inline button remain available.
+        try:
+            await install_writers_submission_menu(
+                app.bot,
+                public_url=str(config.public_url),
+            )
+        except Exception:
+            LOGGER.exception("WRITERS_MENU_BUTTON_SETUP_FAILED")
+        else:
+            LOGGER.info("WRITERS_MENU_BUTTON_READY")
 
         LOGGER.info(
             "WRITERS_SUBMISSION_READY bind=%s:%s",
