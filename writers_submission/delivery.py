@@ -17,6 +17,36 @@ def _escape(value: object) -> str:
     return html.escape(str(value or ""), quote=True)
 
 
+# Telegram limits text messages to 4096 characters after entity parsing.
+# Keep raw HTML, including escaped entities and astral Unicode, below this
+# conservative UTF-16-unit threshold to avoid permanently failed outbox jobs.
+_TELEGRAM_SAFE_MESSAGE_UNITS = 3900
+
+
+def _utf16_units(text: str) -> int:
+    return sum(2 if ord(character) > 0xFFFF else 1 for character in text)
+
+
+def _escaped_preview(value: object, *, max_units: int) -> str:
+    original = str(value or "").strip()
+    escaped = html.escape(original, quote=True)
+    if _utf16_units(escaped) <= max_units:
+        return escaped
+
+    # Limit before escaping complete characters: never split an HTML entity
+    # such as &amp; or an astral Unicode character.
+    parts: list[str] = []
+    used = 0
+    for character in original:
+        fragment = html.escape(character, quote=True)
+        units = _utf16_units(fragment)
+        if used + units + 1 > max_units:
+            break
+        parts.append(fragment)
+        used += units
+    return "".join(parts) + "…"
+
+
 def _action_value(value: object) -> str:
     if isinstance(value, ReviewAction):
         return value.value
@@ -25,7 +55,7 @@ def _action_value(value: object) -> str:
 
 def _author_notification_text(context: Any) -> str:
     action = _action_value(context.action)
-    title = _escape(context.title)
+    title = _escaped_preview(context.title, max_units=500)
     comment = getattr(context, "comment", None)
 
     if action in {"SUBMISSION_ACCEPTED"}:
@@ -66,7 +96,9 @@ def _author_notification_text(context: Any) -> str:
         ]
 
     if comment:
-        lines.extend(("", f"Комментарий: {_escape(comment)}"))
+        lines.extend(
+            ("", f"Комментарий: {_escaped_preview(comment, max_units=3000)}")
+        )
     return "\n".join(lines)
 
 
@@ -75,20 +107,24 @@ def _moderation_text(context: Any) -> str:
         "✒️ <b>Новая работа на модерацию</b>",
         "",
         f"Автор: <code>{int(context.author_user_id)}</code>",
-        f"Название: {_escape(context.title)}",
-        f"Тип: {_escape(context.work_type)}",
-        f"Жанр: {_escape(context.genre)}",
+        f"Название: {_escaped_preview(context.title, max_units=420)}",
+        f"Тип: {_escaped_preview(context.work_type, max_units=220)}",
+        f"Жанр: {_escaped_preview(context.genre, max_units=250)}",
         "",
-        f"Описание: {_escape(context.description)}",
+        f"Описание: {_escaped_preview(context.description, max_units=900)}",
     ]
     if getattr(context, "external_url", None):
-        lines.extend(("", f"Ссылка: {_escape(context.external_url)}"))
+        lines.extend(
+            ("", f"Ссылка: {_escaped_preview(context.external_url, max_units=900)}")
+        )
     body = str(getattr(context, "body_text", "") or "").strip()
     if body:
         preview = body[:1500]
         if len(body) > len(preview):
             preview += "…"
-        lines.extend(("", "<b>Текст:</b>", _escape(preview)))
+        lines.extend(
+            ("", "<b>Текст:</b>", _escaped_preview(preview, max_units=850))
+        )
     return "\n".join(lines)
 
 
