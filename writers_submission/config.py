@@ -132,7 +132,14 @@ class WritersSubmissionConfig:
         if writers_chat_id is None:
             raise ValueError("WRITERS_CHAT_ID is required when Writers Submission is enabled")
 
-        port = _positive_int("WRITERS_SUBMISSION_PORT", DEFAULT_PORT)
+        # Bothost publishes the internal web port through PORT. An explicit
+        # Writers-specific override still takes precedence for other hosts.
+        port_env = (
+            "WRITERS_SUBMISSION_PORT"
+            if os.getenv("WRITERS_SUBMISSION_PORT", "").strip()
+            else "PORT"
+        )
+        port = _positive_int(port_env, DEFAULT_PORT)
         if port > 65535:
             raise ValueError("WRITERS_SUBMISSION_PORT must be between 1 and 65535")
 
