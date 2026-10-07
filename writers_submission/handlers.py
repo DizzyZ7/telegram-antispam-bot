@@ -39,6 +39,7 @@ class PendingModerationComment:
     submission_id: UUID
     revision_id: UUID
     reviewer_user_id: int
+    prompt_message_id: int
     created_at: float
     expires_at: float
 
@@ -61,6 +62,7 @@ class PendingCommentStore:
         token: str,
         submission_id: UUID,
         revision_id: UUID,
+        prompt_message_id: int,
         now: float,
     ) -> PendingModerationComment:
         reviewer_user_id = int(reviewer_user_id)
@@ -74,6 +76,7 @@ class PendingCommentStore:
             submission_id=submission_id,
             revision_id=revision_id,
             reviewer_user_id=reviewer_user_id,
+            prompt_message_id=int(prompt_message_id),
             created_at=float(now),
             expires_at=float(now) + self.ttl_seconds,
         )
@@ -133,7 +136,16 @@ class PendingModerationCommentFilter(BaseFilter):
             return False
         if int(getattr(message.chat, "id", 0)) != self.moderation_chat_id:
             return False
-        return self.store.has_for_user(int(message.from_user.id))
+        item = self.store.current_for_user(int(message.from_user.id))
+        return item is not None and _is_prompt_reply(message, item)
+
+
+def _is_prompt_reply(message: Message, item: PendingModerationComment) -> bool:
+    reply = getattr(message, "reply_to_message", None)
+    return (
+        reply is not None
+        and getattr(reply, "message_id", None) == item.prompt_message_id
+    )
 
 
 def build_moderation_keyboard(token: str) -> InlineKeyboardMarkup:
@@ -276,22 +288,39 @@ def register_writers_submission_handlers(
         now = int(now_fn())
 
         if action_code == "x":
+            try:
+                prompt = await app.bot.send_message(
+                    chat_id=moderation_chat_id,
+                    text=(
+                        "✏️ Ответь реплаем на это сообщение с комментарием "
+                        "к правкам в течение 10 минут. Другие сообщения "
+                        "в чате не будут засчитаны."
+                    ),
+                    reply_to_message_id=getattr(
+                        callback.message, "message_id", None
+                    ),
+                )
+                prompt_message_id = int(getattr(prompt, "message_id", 0))
+                if prompt_message_id <= 0:
+                    raise RuntimeError("Telegram prompt has no message_id")
+            except Exception:
+                # A failed Telegram prompt must never arm a free-form
+                # message capture in the moderation chat.
+                LOGGER.exception("WRITERS_MODERATION_COMMENT_PROMPT_FAILED")
+                await callback.answer(
+                    "Не удалось запросить комментарий. Попробуй еще раз.",
+                    show_alert=True,
+                )
+                return
             pending_comments.put(
                 reviewer_user_id=actor_id,
                 token=token,
                 submission_id=target.submission_id,
                 revision_id=target.revision_id,
+                prompt_message_id=prompt_message_id,
                 now=float(now_fn()),
             )
-            await app.bot.send_message(
-                chat_id=moderation_chat_id,
-                text=(
-                    "✏️ Отправь следующим сообщением комментарий с нужными "
-                    "правками. Он будет ждать 10 минут."
-                ),
-                reply_to_message_id=getattr(callback.message, "message_id", None),
-            )
-            await callback.answer("Жду комментарий с правками")
+            await callback.answer("Жду ответ на сообщение")
             return
 
         try:
@@ -365,7 +394,7 @@ def register_writers_submission_handlers(
     async def writers_moderation_comment(message: Message) -> None:
         actor_id = int(message.from_user.id)
         item = pending_comments.current_for_user(actor_id)
-        if item is None:
+        if item is None or not _is_prompt_reply(message, item):
             return
 
         now_value = float(now_fn())
