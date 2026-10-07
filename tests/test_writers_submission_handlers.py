@@ -11,6 +11,7 @@ from aiogram import Dispatcher, F
 
 from writers_submission.models import ReviewAction, SubmissionStatus
 from writers_submission.handlers import (
+    PendingModerationCommentFilter,
     WritersSubmissionStartFilter,
     register_writers_submission_handlers,
 )
@@ -23,7 +24,11 @@ MODERATOR_ID = 9001
 def make_app():
     return SimpleNamespace(
         dp=Dispatcher(),
-        bot=SimpleNamespace(send_message=AsyncMock()),
+        bot=SimpleNamespace(
+            send_message=AsyncMock(
+                return_value=SimpleNamespace(message_id=777),
+            ),
+        ),
     )
 
 
@@ -113,11 +118,21 @@ def moderation_callback(
     )
 
 
-def comment_message(text: str, *, actor_id=MODERATOR_ID):
+def comment_message(
+    text: str,
+    *,
+    actor_id=MODERATOR_ID,
+    reply_to_message_id: int | None = 777,
+):
     return SimpleNamespace(
         chat=SimpleNamespace(id=MOD_CHAT_ID, type="supergroup"),
         from_user=user(actor_id),
         text=text,
+        reply_to_message=(
+            SimpleNamespace(message_id=reply_to_message_id)
+            if reply_to_message_id is not None
+            else None
+        ),
         answer=AsyncMock(),
     )
 
@@ -154,7 +169,7 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.app = make_app()
         self.service = make_service()
         self.config = make_config()
-        register_writers_submission_handlers(
+        self.pending_comments = register_writers_submission_handlers(
             self.app,
             self.service,
             self.config,
@@ -247,6 +262,61 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
             comment="Нужно усилить финал",
             now=100,
         )
+
+    async def test_unrelated_moderator_text_is_not_a_review_comment(self):
+        await self.callback_handler(moderation_callback("ws:x:opaque-token"))
+        filter_ = PendingModerationCommentFilter(
+            self.pending_comments, MOD_CHAT_ID
+        )
+        for reply_id in (None, 555, 776):
+            with self.subTest(reply_id=reply_id):
+                unrelated = comment_message(
+                    "Обычное обсуждение в чате",
+                    reply_to_message_id=reply_id,
+                )
+                self.assertFalse(await filter_(unrelated))
+                await self.comment_handler(unrelated)
+                self.service.decide.assert_not_awaited()
+                unrelated.answer.assert_not_awaited()
+
+        actual_reply = comment_message("Доработать финал")
+        self.assertTrue(await filter_(actual_reply))
+        await self.comment_handler(actual_reply)
+        self.service.decide.assert_awaited_once()
+
+    async def test_failed_prompt_does_not_arm_comment_capture(self):
+        self.app.bot.send_message.side_effect = RuntimeError(
+            "Telegram is unavailable"
+        )
+        callback = moderation_callback("ws:x:opaque-token")
+
+        await self.callback_handler(callback)
+
+        self.assertIsNone(
+            self.pending_comments.current_for_user(MODERATOR_ID)
+        )
+        self.service.decide.assert_not_awaited()
+        self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
+
+    async def test_new_prompt_invalidates_old_reply_anchor(self):
+        self.app.bot.send_message.side_effect = [
+            SimpleNamespace(message_id=777),
+            SimpleNamespace(message_id=888),
+        ]
+        await self.callback_handler(moderation_callback("ws:x:opaque-token"))
+        await self.callback_handler(moderation_callback("ws:x:opaque-token"))
+
+        old_reply = comment_message(
+            "Старый комментарий",
+            reply_to_message_id=777,
+        )
+        await self.comment_handler(old_reply)
+        self.service.decide.assert_not_awaited()
+
+        await self.comment_handler(
+            comment_message("Новый комментарий", reply_to_message_id=888)
+        )
+        self.service.decide.assert_awaited_once()
 
     async def test_expired_comment_state_is_rejected(self):
         callback = moderation_callback("ws:x:opaque-token")
