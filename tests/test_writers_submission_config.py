@@ -80,6 +80,20 @@ class WritersSubmissionConfigTests(unittest.TestCase):
         self.assertEqual(config.port, 8080)
         self.assertEqual(config.moderator_ids, frozenset({12345, 67890}))
 
+    def test_host_port_fallback_and_explicit_override(self):
+        for values, expected in (
+            ({"PORT": "3000"}, 3000),
+            ({"PORT": "3000", "WRITERS_SUBMISSION_PORT": "8081"}, 8081),
+        ):
+            env = {**self._enabled_env(), **values}
+            with self.subTest(values=values), patch.dict(os.environ, env, clear=True):
+                config = WritersSubmissionConfig.from_env(
+                    bot_token="token",
+                    database_url="postgresql://user:pass@db/name",
+                    writers_chat_id=-1002619489118,
+                )
+                self.assertEqual(config.port, expected)
+
     def test_public_url_requires_https_except_loopback_development(self):
         for allowed in (
             "https://example.test/writers/",
