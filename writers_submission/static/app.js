@@ -1,0 +1,711 @@
+(() => {
+  "use strict";
+
+  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  const state = {
+    items: [],
+    filter: "all",
+    current: null,
+    attachments: [],
+    timeline: [],
+    autosaveTimer: null,
+    autosavePending: false,
+    uploadPending: false,
+    reloadRequired: false,
+    bootstrapped: false,
+  };
+
+  const statusLabels = {
+    DRAFT: "Черновик",
+    SUBMITTED: "Отправлено",
+    IN_REVIEW: "На проверке",
+    APPROVED: "Одобрено",
+    CHANGES_REQUESTED: "Нужны правки",
+    REJECTED: "Отклонено",
+    WITHDRAWN: "Отозвано",
+  };
+
+  const $ = (id) => document.getElementById(id);
+
+  const views = {
+    workspace: $("workspaceView"),
+    editor: $("editorView"),
+    detail: $("detailView"),
+  };
+
+  const form = {
+    title: $("titleInput"),
+    workType: $("workTypeInput"),
+    genre: $("genreInput"),
+    description: $("descriptionInput"),
+    body: $("bodyInput"),
+    url: $("urlInput"),
+  };
+
+  function makeIdempotencyKey(prefix) {
+    const random = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return `${prefix}-${random}`;
+  }
+
+  function show(viewName) {
+    Object.entries(views).forEach(([name, element]) => {
+      element.classList.toggle("hidden", name !== viewName);
+    });
+  }
+
+  function setBanner(message, kind = "") {
+    const banner = $("connectionBanner");
+    banner.textContent = message || "";
+    banner.className = "banner";
+    if (kind) {
+      banner.classList.add(`banner-${kind}`);
+    }
+    banner.classList.toggle("hidden", !message);
+  }
+
+  function setEditorError(message) {
+    const banner = $("editorError");
+    banner.textContent = message || "";
+    banner.classList.toggle("hidden", !message);
+  }
+
+  function setBusy(active) {
+    $("busyOverlay").classList.toggle("hidden", !active);
+    $("busyOverlay").setAttribute("aria-hidden", active ? "false" : "true");
+  }
+
+  function setSaveState(text) {
+    $("saveState").textContent = text;
+  }
+
+  function setReloadRequired(active) {
+    state.reloadRequired = Boolean(active);
+    $("reloadRequired").classList.toggle("hidden", !state.reloadRequired);
+    updateActionAvailability();
+  }
+
+  function updateActionAvailability() {
+    const locked = state.reloadRequired || state.autosavePending || state.uploadPending;
+    $("submitButton").disabled = locked;
+    $("saveButton").disabled = state.reloadRequired || state.autosavePending;
+    $("fileInput").disabled = state.reloadRequired || state.uploadPending;
+  }
+
+  async function api(path, options = {}) {
+    const request = {
+      method: options.method || "GET",
+      credentials: "same-origin",
+      headers: new Headers(options.headers || {}),
+    };
+    if (options.json !== undefined) {
+      request.headers.set("Content-Type", "application/json");
+      request.body = JSON.stringify(options.json);
+    } else if (options.body !== undefined) {
+      request.body = options.body;
+    }
+
+    const response = await fetch(path, request);
+    if (response.status === 204) {
+      return null;
+    }
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (_error) {
+      payload = null;
+    }
+
+    if (response.status === 409) {
+      setReloadRequired(true);
+      const conflict = new Error("conflict");
+      conflict.code = "conflict";
+      conflict.status = 409;
+      throw conflict;
+    }
+
+    if (!response.ok) {
+      const error = new Error(
+        payload && payload.message
+          ? payload.message
+          : payload && payload.error
+            ? payload.error
+            : `HTTP ${response.status}`
+      );
+      error.code = payload && payload.error ? payload.error : "request_failed";
+      error.status = response.status;
+      throw error;
+    }
+    return payload;
+  }
+
+  async function bootstrapSession() {
+    if (!tg) {
+      throw new Error("Mini App нужно открыть внутри Telegram.");
+    }
+    tg.ready();
+    tg.expand();
+
+    const initData = window.Telegram.WebApp.initData;
+    if (!initData) {
+      throw new Error("Telegram не передал данные авторизации.");
+    }
+
+    await api("/api/writers/session", {
+      method: "POST",
+      json: { init_data: initData },
+    });
+    state.bootstrapped = true;
+  }
+
+  function safeTextElement(tag, text, className = "") {
+    const node = document.createElement(tag);
+    node.textContent = text == null ? "" : String(text);
+    if (className) {
+      node.className = className;
+    }
+    return node;
+  }
+
+  function formatDate(timestamp) {
+    const numeric = Number(timestamp);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return "";
+    }
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(numeric * 1000));
+  }
+
+  function currentFields() {
+    return {
+      title: form.title.value,
+      work_type: form.workType.value,
+      genre: form.genre.value,
+      description: form.description.value,
+      body_text: form.body.value,
+      external_url: form.url.value.trim() || null,
+      has_ready_file: state.attachments.length > 0,
+    };
+  }
+
+  function fillForm(submission) {
+    const revision = submission && submission.revision ? submission.revision : {};
+    form.title.value = revision.title || "";
+    form.workType.value = revision.work_type || "";
+    form.genre.value = revision.genre || "";
+    form.description.value = revision.description || "";
+    form.body.value = revision.body_text || "";
+    form.url.value = revision.external_url || "";
+    refreshCounters();
+  }
+
+  function refreshCounters() {
+    $("titleCounter").textContent = String(form.title.value.length);
+    $("descriptionCounter").textContent = String(form.description.value.length);
+    $("bodyCounter").textContent = String(form.body.value.length);
+  }
+
+  function statusMatches(item) {
+    const status = item.status;
+    if (state.filter === "all") {
+      return true;
+    }
+    if (state.filter === "finished") {
+      return ["APPROVED", "REJECTED", "WITHDRAWN", "CHANGES_REQUESTED"].includes(status);
+    }
+    if (state.filter === "SUBMITTED") {
+      return ["SUBMITTED", "IN_REVIEW"].includes(status);
+    }
+    return status === state.filter;
+  }
+
+  function renderWorkspace() {
+    const list = $("workList");
+    list.replaceChildren();
+
+    const filtered = state.items.filter(statusMatches);
+    $("emptyState").classList.toggle("hidden", filtered.length !== 0);
+
+    filtered.forEach((item) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "work-card";
+      card.addEventListener("click", () => openSubmission(item.id));
+
+      const top = document.createElement("div");
+      top.className = "work-card-top";
+
+      const body = document.createElement("div");
+      body.append(
+        safeTextElement("p", statusLabels[item.status] || item.status, "status-pill"),
+        safeTextElement("h2", item.title || "Без названия")
+      );
+
+      const updated = safeTextElement("span", formatDate(item.updated_at), "muted");
+      top.append(body, updated);
+      card.append(top);
+      list.append(card);
+    });
+  }
+
+  function renderAttachments() {
+    const list = $("attachmentList");
+    list.replaceChildren();
+
+    if (!state.attachments.length) {
+      list.append(safeTextElement("p", "Файлы пока не добавлены.", "muted"));
+      return;
+    }
+
+    state.attachments.forEach((file) => {
+      const row = document.createElement("div");
+      row.className = "attachment";
+
+      const label = safeTextElement(
+        "span",
+        `${file.filename || file.safe_filename || "Файл"} · ${Math.max(1, Math.round(Number(file.size || file.byte_size || 0) / 1024))} КБ`,
+        "attachment-name"
+      );
+      row.append(label);
+
+      if (state.current && state.current.status === "DRAFT" && file.id) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "button button-ghost";
+        remove.textContent = "Удалить";
+        remove.addEventListener("click", () => deleteAttachment(file.id));
+        row.append(remove);
+      }
+      list.append(row);
+    });
+  }
+
+  function renderTimeline() {
+    const timeline = $("timeline");
+    timeline.replaceChildren();
+
+    if (!state.timeline.length) {
+      timeline.append(safeTextElement("p", "История появится после первого действия.", "muted"));
+      return;
+    }
+
+    state.timeline.forEach((event) => {
+      const row = document.createElement("div");
+      row.className = "timeline-item";
+      row.append(safeTextElement("span", "", "timeline-dot"));
+
+      const content = document.createElement("div");
+      content.append(
+        safeTextElement(
+          "div",
+          event.label || event.event_type || "Событие",
+          "timeline-title"
+        ),
+        safeTextElement("div", formatDate(event.created_at), "timeline-time")
+      );
+      row.append(content);
+      timeline.append(row);
+    });
+  }
+
+  function renderDetail() {
+    if (!state.current) {
+      return;
+    }
+    const revision = state.current.revision || {};
+    $("detailStatus").textContent = statusLabels[state.current.status] || state.current.status;
+    $("detailTitle").textContent = revision.title || "Без названия";
+    $("detailDescription").textContent = revision.description || "";
+
+    const meta = $("detailMeta");
+    meta.replaceChildren();
+    [
+      ["Тип", revision.work_type || "—"],
+      ["Жанр", revision.genre || "—"],
+      ["Редакция", `№${revision.revision_number || 1}`],
+      ["Обновлено", formatDate(state.current.updated_at) || "—"],
+    ].forEach(([name, value]) => {
+      meta.append(
+        safeTextElement("dt", name),
+        safeTextElement("dd", value)
+      );
+    });
+
+    const feedback = $("detailFeedback");
+    const feedbackText = state.current.feedback || "";
+    feedback.textContent = feedbackText;
+    feedback.classList.toggle("hidden", !feedbackText);
+
+    $("revisionButton").classList.toggle(
+      "hidden",
+      state.current.status !== "CHANGES_REQUESTED"
+    );
+    $("withdrawButton").classList.toggle(
+      "hidden",
+      ["APPROVED", "REJECTED", "WITHDRAWN"].includes(state.current.status)
+    );
+    renderTimeline();
+  }
+
+  async function loadWorkspace() {
+    const payload = await api("/api/writers/submissions");
+    state.items = Array.isArray(payload.items) ? payload.items : [];
+    renderWorkspace();
+  }
+
+  async function loadHistory(submissionId) {
+    try {
+      const payload = await api(
+        `/api/writers/submissions/${encodeURIComponent(submissionId)}/history`
+      );
+      state.timeline = Array.isArray(payload.items) ? payload.items : [];
+    } catch (_error) {
+      state.timeline = [];
+    }
+  }
+
+  async function openSubmission(submissionId) {
+    setBusy(true);
+    try {
+      const payload = await api(
+        `/api/writers/submissions/${encodeURIComponent(submissionId)}`
+      );
+      state.current = payload.submission;
+      state.attachments = Array.isArray(payload.files) ? payload.files : [];
+      await loadHistory(submissionId);
+
+      if (state.current.status === "DRAFT") {
+        fillForm(state.current);
+        setReloadRequired(false);
+        renderAttachments();
+        show("editor");
+      } else {
+        renderDetail();
+        show("detail");
+      }
+    } catch (error) {
+      setBanner(error.message || "Не удалось открыть работу.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function newDraft() {
+    clearTimeout(state.autosaveTimer);
+    state.current = null;
+    state.attachments = [];
+    state.timeline = [];
+    setReloadRequired(false);
+    fillForm({ revision: {} });
+    renderAttachments();
+    setEditorError("");
+    setSaveState("Новый черновик");
+    show("editor");
+    form.title.focus();
+  }
+
+  async function createDraft() {
+    const payload = await api("/api/writers/submissions", {
+      method: "POST",
+      headers: {
+        "Idempotency-Key": makeIdempotencyKey("create"),
+      },
+      json: currentFields(),
+    });
+    state.current = payload.submission;
+    setSaveState("Сохранено");
+    return state.current;
+  }
+
+  async function autosave({ immediate = false } = {}) {
+    if (state.reloadRequired || state.autosavePending) {
+      return;
+    }
+
+    clearTimeout(state.autosaveTimer);
+    if (!immediate) {
+      state.autosaveTimer = window.setTimeout(
+        () => autosave({ immediate: true }),
+        700
+      );
+      return;
+    }
+
+    state.autosavePending = true;
+    updateActionAvailability();
+    setSaveState("Сохраняю…");
+    setEditorError("");
+
+    try {
+      if (!state.current) {
+        await createDraft();
+      } else {
+        const payload = await api(
+          `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
+          {
+            method: "PATCH",
+            json: {
+              ...currentFields(),
+              expected_version: state.current.version,
+            },
+          }
+        );
+        state.current = payload.submission;
+      }
+      setSaveState("Сохранено");
+    } catch (error) {
+      if (error.code === "conflict") {
+        setSaveState("Нужна перезагрузка");
+      } else {
+        setSaveState("Не сохранено");
+        setEditorError(error.message || "Не удалось сохранить черновик.");
+      }
+    } finally {
+      state.autosavePending = false;
+      updateActionAvailability();
+    }
+  }
+
+  async function submitCurrent() {
+    if (state.reloadRequired || state.autosavePending || state.uploadPending) {
+      return;
+    }
+    setEditorError("");
+    await autosave({ immediate: true });
+    if (!state.current || state.reloadRequired) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const payload = await api(
+        `/api/writers/submissions/${encodeURIComponent(state.current.id)}/submit`,
+        {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": makeIdempotencyKey("submit"),
+          },
+          json: {
+            expected_version: state.current.version,
+          },
+        }
+      );
+      state.current = payload.submission;
+      await loadHistory(state.current.id);
+      await loadWorkspace();
+      renderDetail();
+      show("detail");
+      if (tg && tg.HapticFeedback) {
+        tg.HapticFeedback.notificationOccurred("success");
+      }
+    } catch (error) {
+      setEditorError(error.message || "Не удалось отправить работу.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function uploadFiles(fileList) {
+    if (!state.current) {
+      await autosave({ immediate: true });
+    }
+    if (!state.current || state.reloadRequired) {
+      return;
+    }
+
+    const files = Array.from(fileList || []).slice(
+      0,
+      Math.max(0, 3 - state.attachments.length)
+    );
+    if (!files.length) {
+      return;
+    }
+
+    state.uploadPending = true;
+    updateActionAvailability();
+    setEditorError("");
+
+    try {
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append("file", file, file.name);
+        const uploaded = await api(
+          `/api/writers/submissions/${encodeURIComponent(state.current.id)}/files`,
+          {
+            method: "POST",
+            body: formData,
+          }
+        );
+        state.attachments.push(uploaded);
+        // Attaching a file increments durable submission version.
+        const refreshed = await api(
+          `/api/writers/submissions/${encodeURIComponent(state.current.id)}`
+        );
+        state.current = refreshed.submission;
+      }
+      renderAttachments();
+      setSaveState("Файлы сохранены");
+    } catch (error) {
+      setEditorError(error.message || "Не удалось загрузить файл.");
+    } finally {
+      state.uploadPending = false;
+      $("fileInput").value = "";
+      updateActionAvailability();
+    }
+  }
+
+  async function deleteAttachment(fileId) {
+    if (!state.current || state.reloadRequired) {
+      return;
+    }
+    state.uploadPending = true;
+    updateActionAvailability();
+    try {
+      await api(
+        `/api/writers/submissions/${encodeURIComponent(state.current.id)}/files/${encodeURIComponent(fileId)}`,
+        { method: "DELETE" }
+      );
+      state.attachments = state.attachments.filter((file) => file.id !== fileId);
+      const refreshed = await api(
+        `/api/writers/submissions/${encodeURIComponent(state.current.id)}`
+      );
+      state.current = refreshed.submission;
+      renderAttachments();
+    } catch (error) {
+      setEditorError(error.message || "Не удалось удалить файл.");
+    } finally {
+      state.uploadPending = false;
+      updateActionAvailability();
+    }
+  }
+
+  async function withdrawCurrent() {
+    if (!state.current) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const payload = await api(
+        `/api/writers/submissions/${encodeURIComponent(state.current.id)}/withdraw`,
+        {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": makeIdempotencyKey("withdraw"),
+          },
+          json: {},
+        }
+      );
+      state.current = payload.submission;
+      await loadWorkspace();
+      await loadHistory(state.current.id);
+      renderDetail();
+    } catch (error) {
+      setBanner(error.message || "Не удалось отозвать работу.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createRevision() {
+    if (!state.current) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const payload = await api(
+        `/api/writers/submissions/${encodeURIComponent(state.current.id)}/revisions`,
+        {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": makeIdempotencyKey("revision"),
+          },
+          json: {},
+        }
+      );
+      state.current = payload.submission;
+      state.attachments = [];
+      fillForm(state.current);
+      renderAttachments();
+      setReloadRequired(false);
+      show("editor");
+    } catch (error) {
+      setBanner(error.message || "Не удалось создать редакцию.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function bindEvents() {
+    $("newWorkButton").addEventListener("click", newDraft);
+    $("editorBackButton").addEventListener("click", async () => {
+      clearTimeout(state.autosaveTimer);
+      if (state.current && !state.reloadRequired) {
+        await autosave({ immediate: true });
+      }
+      await loadWorkspace();
+      show("workspace");
+    });
+    $("detailBackButton").addEventListener("click", async () => {
+      await loadWorkspace();
+      show("workspace");
+    });
+    $("saveButton").addEventListener("click", () => autosave({ immediate: true }));
+    $("submitButton").addEventListener("click", submitCurrent);
+    $("fileInput").addEventListener("change", (event) => uploadFiles(event.target.files));
+    $("withdrawButton").addEventListener("click", withdrawCurrent);
+    $("revisionButton").addEventListener("click", createRevision);
+    $("reloadButton").addEventListener("click", () => {
+      if (state.current) {
+        openSubmission(state.current.id);
+      }
+    });
+
+    Object.values(form).forEach((field) => {
+      field.addEventListener("input", () => {
+        refreshCounters();
+        setSaveState("Есть изменения");
+        if (state.current) {
+          autosave();
+        }
+      });
+    });
+
+    document.querySelectorAll(".tab").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach((item) => {
+          item.classList.toggle("active", item === button);
+        });
+        state.filter = button.dataset.filter || "all";
+        renderWorkspace();
+      });
+    });
+  }
+
+  async function boot() {
+    bindEvents();
+    renderAttachments();
+    setBusy(true);
+    try {
+      await bootstrapSession();
+      await loadWorkspace();
+      show("workspace");
+      setBanner("");
+    } catch (error) {
+      setBanner(
+        error.message || "Не удалось открыть Writers Submission.",
+        "error"
+      );
+    } finally {
+      setBusy(false);
+      updateActionAvailability();
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", boot);
+})();

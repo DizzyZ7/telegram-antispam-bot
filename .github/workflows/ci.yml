@@ -42,4 +42,4 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt
-      - run: python -m unittest tests.test_entertainment_storage_postgres tests.test_entertainment_storage_factory tests.test_entertainment_memory_postgres tests.test_entertainment_culture_memory_postgres tests.test_entertainment_culture_windows_postgres tests.test_entertainment_message_purge tests.test_zero_trust_postgres -v
+      - run: python -m unittest tests.test_entertainment_storage_postgres tests.test_entertainment_storage_factory tests.test_entertainment_memory_postgres tests.test_entertainment_culture_memory_postgres tests.test_entertainment_culture_windows_postgres tests.test_entertainment_message_purge tests.test_zero_trust_postgres tests.test_writers_submission_postgres -v

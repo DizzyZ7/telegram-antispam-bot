@@ -195,6 +195,8 @@ from lexicon_game_scope import (
 from lexicon_learning_unpin import LearningLexiconService, register_lexicon_learning_handlers
 from minigames import MiniGameStorage, register_minigame_handlers
 from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
+from writers_submission import WritersSubmissionConfig
+from writers_submission.runtime import start_writers_submission_runtime
 from zero_trust.config import ZeroTrustConfig
 from zero_trust.handlers import register_zero_trust_handlers
 from zero_trust.runtime import (
@@ -213,6 +215,18 @@ async def main() -> None:
 
     zero_trust_config = ZeroTrustConfig.from_env()
     log_startup_diagnostics(zero_trust_config, app.ALLOWED_CHATS)
+
+    writers_chat_raw = os.getenv("WRITERS_CHAT_ID", "").strip()
+    writers_chat_id = (
+        int(writers_chat_raw)
+        if writers_chat_raw.lstrip("-").isdigit()
+        else None
+    )
+    writers_submission_config = WritersSubmissionConfig.from_env(
+        bot_token=os.getenv("BOT_TOKEN"),
+        database_url=os.getenv("DATABASE_URL"),
+        writers_chat_id=writers_chat_id,
+    )
     zero_trust_database_url = require_database_url(
         zero_trust_config,
         os.getenv("DATABASE_URL"),
@@ -231,6 +245,7 @@ async def main() -> None:
     entertainment_supervisor: EntertainmentSupervisor | None = None
     zero_trust_storage: PostgresZeroTrustStorage | None = None
     zero_trust_service: ZeroTrustService | None = None
+    writers_submission_runtime = None
     accurate_initialized = False
     minigame_initialized = False
 
@@ -299,6 +314,13 @@ async def main() -> None:
         register_minigame_handlers(app, minigames)
         register_lexicon_learning_handlers(app, minigames)
 
+        writers_submission_runtime = await start_writers_submission_runtime(
+            app,
+            writers_submission_config,
+            database_url=os.getenv("DATABASE_URL"),
+            bot_token=os.getenv("BOT_TOKEN"),
+        )
+
         print(
             "LEXICON_ONLY_SCOPE_READY "
             f"chat_ids={','.join(str(chat_id) for chat_id in sorted(LEXICON_ONLY_CHAT_IDS))} "
@@ -314,6 +336,8 @@ async def main() -> None:
         print("ENTERTAINMENT_SUPERVISOR_READY interval_seconds=60", flush=True)
         await app.main()
     finally:
+        if writers_submission_runtime is not None:
+            await writers_submission_runtime.stop()
         if entertainment_supervisor is not None:
             await entertainment_supervisor.stop()
         if entertainment_storage is not None:

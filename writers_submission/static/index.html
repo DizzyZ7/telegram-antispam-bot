@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Writers Submission</title>
+  <link rel="stylesheet" href="/writers/app.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/writers/app.js" defer></script>
+</head>
+<body>
+  <main class="shell" aria-live="polite">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Writers</p>
+        <h1>Мои работы</h1>
+        <p class="muted">Черновики, отправка и история модерации в одном месте.</p>
+      </div>
+      <button id="newWorkButton" class="button button-primary" type="button">Новая работа</button>
+    </header>
+
+    <section id="connectionBanner" class="banner hidden" role="status"></section>
+
+    <nav class="tabs" aria-label="Фильтр работ">
+      <button class="tab active" data-filter="all" type="button">Все</button>
+      <button class="tab" data-filter="DRAFT" type="button">Черновики</button>
+      <button class="tab" data-filter="SUBMITTED" type="button">На проверке</button>
+      <button class="tab" data-filter="finished" type="button">Решенные</button>
+    </nav>
+
+    <section id="workspaceView" class="view">
+      <div id="workList" class="work-list"></div>
+      <div id="emptyState" class="empty hidden">
+        <div class="empty-icon">✒️</div>
+        <h2>Пока пусто</h2>
+        <p>Создай первую работу. Можно писать прямо здесь или приложить файл.</p>
+      </div>
+    </section>
+
+    <section id="editorView" class="view hidden">
+      <div class="view-toolbar">
+        <button id="editorBackButton" class="button button-ghost" type="button">← Назад</button>
+        <div id="saveState" class="save-state">Сохранено</div>
+      </div>
+
+      <form id="editorForm" novalidate>
+        <div class="card form-card">
+          <label class="field">
+            <span>Название</span>
+            <input id="titleInput" name="title" maxlength="160" required autocomplete="off">
+            <small><span id="titleCounter">0</span>/160</small>
+          </label>
+
+          <div class="field-row">
+            <label class="field">
+              <span>Тип работы</span>
+              <input id="workTypeInput" name="work_type" maxlength="80" placeholder="Рассказ, роман, стихотворение" required>
+            </label>
+            <label class="field">
+              <span>Жанр</span>
+              <input id="genreInput" name="genre" maxlength="120" placeholder="Фантастика, драма..." required>
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Короткое описание</span>
+            <textarea id="descriptionInput" name="description" maxlength="2000" rows="4" required></textarea>
+            <small><span id="descriptionCounter">0</span>/2000</small>
+          </label>
+
+          <label class="field">
+            <span>Текст работы</span>
+            <textarea id="bodyInput" name="body_text" maxlength="200000" rows="12" placeholder="Можно оставить пустым, если работа загружена файлом."></textarea>
+            <small><span id="bodyCounter">0</span>/200000</small>
+          </label>
+
+          <label class="field">
+            <span>Ссылка <em>необязательно</em></span>
+            <input id="urlInput" name="external_url" type="url" maxlength="2048" placeholder="https://...">
+          </label>
+        </div>
+
+        <div class="card attachments-card">
+          <div class="section-title">
+            <div>
+              <h2>Файлы</h2>
+              <p class="muted">PDF, DOCX или TXT · до 20 МБ · максимум 3</p>
+            </div>
+            <label class="button button-secondary file-button">
+              Добавить
+              <input id="fileInput" type="file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" multiple>
+            </label>
+          </div>
+          <div id="attachmentList" class="attachment-list"></div>
+        </div>
+
+        <div id="editorError" class="banner banner-error hidden" role="alert"></div>
+        <div id="reloadRequired" class="banner banner-warning hidden" role="alert">
+          Черновик изменился в другой вкладке. Перезагрузи работу, чтобы не затереть новую версию.
+          <button id="reloadButton" class="button button-ghost" type="button">Перезагрузить</button>
+        </div>
+
+        <div class="sticky-actions">
+          <button id="saveButton" class="button button-secondary" type="button">Сохранить черновик</button>
+          <button id="submitButton" class="button button-primary" type="button">Отправить на проверку</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="detailView" class="view hidden">
+      <div class="view-toolbar">
+        <button id="detailBackButton" class="button button-ghost" type="button">← Назад</button>
+      </div>
+      <article class="card detail-card">
+        <div class="section-title">
+          <div>
+            <p id="detailStatus" class="status-pill"></p>
+            <h2 id="detailTitle"></h2>
+          </div>
+        </div>
+        <dl id="detailMeta" class="detail-meta"></dl>
+        <p id="detailDescription" class="detail-description"></p>
+        <div id="detailFeedback" class="feedback hidden"></div>
+      </article>
+
+      <section class="card timeline-card">
+        <h2>Timeline</h2>
+        <div id="timeline" class="timeline"></div>
+      </section>
+
+      <div class="sticky-actions detail-actions">
+        <button id="revisionButton" class="button button-primary hidden" type="button">Создать новую редакцию</button>
+        <button id="withdrawButton" class="button button-danger hidden" type="button">Отозвать работу</button>
+      </div>
+    </section>
+
+    <div id="busyOverlay" class="busy hidden" aria-hidden="true">
+      <div class="spinner"></div>
+      <span>Секунду…</span>
+    </div>
+  </main>
+</body>
+</html>
