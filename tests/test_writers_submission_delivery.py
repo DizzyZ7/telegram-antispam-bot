@@ -148,6 +148,48 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(all(len(value) <= 64 for value in callback_data))
 
+    async def test_maximum_size_moderation_fields_fit_telegram_limit(self):
+        item = moderation_item()
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.title = "<&😀" * 1000
+        context.work_type = "&" * 500
+        context.genre = "<" * 500
+        context.description = "<script>&😀" * 1000
+        context.external_url = "https://example.test/?q=" + "&key=value" * 500
+        context.body_text = "<b>😀&" * 50_000
+        original_body = context.body_text
+        self.storage.claim_due_outbox.return_value = [item]
+
+        await self.worker.run_once(now=175)
+
+        sent = self.bot.send_message.await_args.kwargs["text"]
+        self.assertLessEqual(len(sent.encode("utf-16-le")) // 2, 3900)
+        self.assertIn("…", sent)
+        self.assertNotIn("<script>", sent)
+        self.assertEqual(context.body_text, original_body)
+        self.storage.mark_outbox_delivered.assert_awaited_once()
+        self.storage.mark_outbox_permanent_failure.assert_not_awaited()
+
+    async def test_long_author_decision_comment_fits_telegram_limit(self):
+        item = author_item(kind="CHANGES_REQUESTED")
+        self.storage.claim_due_outbox.return_value = [item]
+        self.storage.get_author_notification_context.side_effect = None
+        self.storage.get_author_notification_context.return_value = SimpleNamespace(
+            author_user_id=77,
+            title="<&😀" * 1000,
+            action="CHANGES_REQUESTED",
+            comment="<script>&😀" * 1000,
+        )
+
+        await self.worker.run_once(now=180)
+
+        sent = self.bot.send_message.await_args.kwargs["text"]
+        self.assertLessEqual(len(sent.encode("utf-16-le")) // 2, 3900)
+        self.assertIn("…", sent)
+        self.assertNotIn("<script>", sent)
+        self.storage.mark_outbox_delivered.assert_awaited_once()
+        self.storage.mark_outbox_permanent_failure.assert_not_awaited()
+
     async def test_transient_failure_schedules_bounded_retry_without_false_success(self):
         item = moderation_item(attempt_count=2)
         self.storage.claim_due_outbox.return_value = [item]
