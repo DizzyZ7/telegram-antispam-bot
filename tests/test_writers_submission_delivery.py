@@ -80,8 +80,10 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.bot = SimpleNamespace(
             send_message=AsyncMock(return_value=SimpleNamespace(message_id=10)),
             send_document=AsyncMock(return_value=SimpleNamespace(message_id=11)),
+            send_photo=AsyncMock(return_value=SimpleNamespace(message_id=12)),
+            download=AsyncMock(),
         )
-        self.config = SimpleNamespace(moderation_chat_id=-100111)
+        self.config = SimpleNamespace(moderation_chat_id=-100111, owner_user_id=2039781854)
         self.worker = WritersDeliveryWorker(
             self.bot,
             self.storage,
@@ -272,6 +274,92 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
                     notification_kind=kind,
                 )
 
+
+    async def test_approved_preview_with_palette_goes_only_to_owner_dm_as_photo(self):
+        item = moderation_item()
+        item.event_type = OutboxEventType.OWNER_PREVIEW
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.title = "Однажды в Лост-Крике"
+        context.work_type = "Оридж"
+        context.genre = "Джен"
+        context.description = "Описание истории <без HTML>"
+        context.external_url = "https://ficbook.net/readfic/example"
+        context.details = {
+            "form_version": 2,
+            "size_category": "макси",
+            "rating": "R",
+            "completion": "в процессе",
+            "palette_colors": ["#FF0000", "#00FF00", "#0000FF", "#111111"],
+            "visual_mode": "palette",
+            "characters": "Джонатан Кросс/Лиам Миллер",
+            "notes": "",
+            "extra_links": ["https://t.me/ikf_channel"],
+        }
+
+        result = await self.worker.run_once(now=500)
+
+        self.assertEqual(result, 1)
+        self.bot.send_photo.assert_awaited_once()
+        kwargs = self.bot.send_photo.await_args.kwargs
+        self.assertEqual(kwargs["chat_id"], 2039781854)
+        self.assertEqual(kwargs["parse_mode"], "HTML")
+        self.assertTrue(kwargs["photo"].data.startswith(bytes.fromhex("89504e470d0a1a0a")))
+        self.assertIn("#Ориджиналы | #Макси | #Джен | #R | #ВПроцессе", kwargs["caption"])
+        self.assertIn("Основные персонажи", kwargs["caption"])
+        self.assertIn("&lt;без HTML&gt;", kwargs["caption"])
+        self.assertIn("Читать на Фикбуке", kwargs["caption"])
+        self.assertIn("ТГ-канал", kwargs["caption"])
+        self.bot.send_message.assert_not_awaited()
+        self.storage.mark_outbox_delivered.assert_awaited_once_with(
+            outbox_id=item.id, worker_id="worker-test", now=500,
+            delivery_chat_id=2039781854, delivery_message_ids=(12,),
+        )
+
+    async def test_long_owner_post_sends_image_then_complete_text_to_owner_only(self):
+        item = moderation_item()
+        item.event_type = OutboxEventType.OWNER_PREVIEW
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.work_type = "ФФ"
+        context.description = "Долгое описание. " * 100
+        context.external_url = "https://ficbook.net/readfic/hello"
+        context.details = {
+            "form_version": 2, "fandom": "Атака Титанов",
+            "size_category": "макси", "rating": "NC-17",
+            "completion": "в процессе", "visual_mode": "image",
+            "extra_links": [], "notes": "", "characters": "Эрвин/Леви",
+        }
+        context.files = (SimpleNamespace(
+            telegram_file_id="file-cover", safe_filename="cover.png",
+            detected_file_class="png",
+        ),)
+        async def download(*args, **kwargs):
+            self.assertEqual(args[0], "file-cover")
+            kwargs["destination"].write(b"photo data")
+        self.bot.download.side_effect = download
+
+        await self.worker.run_once(now=510)
+
+        self.bot.send_photo.assert_awaited_once()
+        self.bot.send_message.assert_awaited_once()
+        self.assertEqual(self.bot.send_photo.await_args.kwargs["chat_id"], 2039781854)
+        self.assertEqual(self.bot.send_message.await_args.kwargs["chat_id"], 2039781854)
+        self.assertIn("#АтакаТитанов", self.bot.send_message.await_args.kwargs["text"])
+        self.assertIn("#NC17", self.bot.send_message.await_args.kwargs["text"])
+        self.assertIn("Долгое описание.", self.bot.send_message.await_args.kwargs["text"])
+        self.storage.mark_outbox_delivered.assert_awaited_once_with(
+            outbox_id=item.id, worker_id="worker-test", now=510,
+            delivery_chat_id=2039781854, delivery_message_ids=(12, 10),
+        )
+
+    async def test_non_owner_events_never_trigger_owner_preview(self):
+        item = author_item(kind="APPROVED")
+        self.storage.claim_due_outbox.return_value = [item]
+        await self.worker.run_once(now=515)
+        self.assertEqual(self.bot.send_message.await_args.kwargs["chat_id"], 77)
+        self.bot.send_photo.assert_not_awaited()
+        self.storage.get_moderation_delivery_context.assert_not_awaited()
 
     async def test_background_loop_uses_restart_stable_epoch_clock(self):
         epoch_now = 1_800_000_000

@@ -11,6 +11,7 @@ DEFAULT_SESSION_TTL_SECONDS = 43200
 DEFAULT_MAX_FILE_BYTES = 20 * 1024 * 1024
 DEFAULT_MAX_FILES = 3
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
+DEFAULT_OWNER_USER_ID = 2039781854
 
 
 def _enabled(raw: str | None) -> bool:
@@ -95,6 +96,7 @@ class WritersSubmissionConfig:
     max_file_bytes: int
     max_files: int
     rate_limit_window_seconds: int
+    owner_user_id: int = DEFAULT_OWNER_USER_ID
 
     @classmethod
     def from_env(
@@ -175,4 +177,5 @@ class WritersSubmissionConfig:
                 "WRITERS_SUBMISSION_RATE_LIMIT_WINDOW_SECONDS",
                 DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
             ),
+            owner_user_id=_positive_int("WRITERS_SUBMISSION_OWNER_USER_ID", DEFAULT_OWNER_USER_ID),
         )

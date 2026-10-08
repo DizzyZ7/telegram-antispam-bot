@@ -44,6 +44,8 @@
     body: $("bodyInput"),
     url: $("urlInput"),
     extraLinks: $("extraLinksInput"),
+    characters: $("charactersInput"),
+    notes: $("notesInput"),
     sizeWords: $("sizeWordsInput"),
     pages: $("pagesInput"),
     parts: $("partsInput"),
@@ -224,6 +226,8 @@
         pages: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.pages) : null,
         parts: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.parts) : null,
         extra_links: form.extraLinks.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean),
+        characters: form.characters.value,
+        notes: form.notes.value,
         visual_mode: selectedChoice("visualMode"),
         palette_colors: selectedChoice("visualMode") === "palette" ? state.paletteColors.slice() : [],
       },
@@ -266,6 +270,8 @@
     form.pages.value = details.pages || "";
     form.parts.value = details.parts || "";
     form.extraLinks.value = Array.isArray(details.extra_links) ? details.extra_links.join("\n") : "";
+    form.characters.value = details.characters || "";
+    form.notes.value = details.notes || "";
     state.paletteColors = Array.isArray(details.palette_colors) && details.palette_colors.length === 4
       ? details.palette_colors.slice()
       : ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"];
@@ -507,6 +513,8 @@
       ["Страниц", (revision.details || {}).pages || "—"],
       ["Частей", (revision.details || {}).parts || "—"],
       ["Фикбук", revision.external_url || "—"],
+      ["Персонажи", (revision.details || {}).characters || "—"],
+      ["Примечания", (revision.details || {}).notes || "—"],
       ["Другие ссылки", ((revision.details || {}).extra_links || []).join(" · ") || "—"],
       ["Визуал", (revision.details || {}).visual_mode === "palette"
         ? ((revision.details || {}).palette_colors || []).join(" · ")

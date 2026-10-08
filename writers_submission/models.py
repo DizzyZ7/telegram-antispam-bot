@@ -36,6 +36,7 @@ class OutboxState(StrEnum):
 class OutboxEventType(StrEnum):
     MODERATION_CARD = "MODERATION_CARD"
     AUTHOR_NOTIFICATION = "AUTHOR_NOTIFICATION"
+    OWNER_PREVIEW = "OWNER_PREVIEW"
 
 
 class WritersSubmissionError(Exception):

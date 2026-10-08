@@ -430,7 +430,7 @@ class PostgresWritersSubmissionStorage:
                 created_at BIGINT NOT NULL,
                 updated_at BIGINT NOT NULL,
                 CONSTRAINT writers_submission_outbox_event_type_check CHECK (
-                    event_type IN ('MODERATION_CARD', 'AUTHOR_NOTIFICATION')
+                    event_type IN ('MODERATION_CARD', 'AUTHOR_NOTIFICATION', 'OWNER_PREVIEW')
                 ),
                 CONSTRAINT writers_submission_outbox_state_check CHECK (
                     state IN (
@@ -456,6 +456,27 @@ class PostgresWritersSubmissionStorage:
             """
             ALTER TABLE writers_submission_outbox
             ADD COLUMN IF NOT EXISTS delivery_message_ids_json TEXT NOT NULL DEFAULT '[]'
+            """
+        )
+        # Existing production installations carry a v1 CHECK constraint.
+        # Extend it once, preserving all outbox rows and retry state.
+        await connection.execute(
+            """
+            DO $upgrade$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'writers_submission_outbox'::regclass
+                  AND conname = 'writers_submission_outbox_event_type_check'
+                  AND pg_get_constraintdef(oid) LIKE '%OWNER_PREVIEW%'
+              ) THEN
+                ALTER TABLE writers_submission_outbox
+                  DROP CONSTRAINT IF EXISTS writers_submission_outbox_event_type_check;
+                ALTER TABLE writers_submission_outbox
+                  ADD CONSTRAINT writers_submission_outbox_event_type_check
+                  CHECK (event_type IN ('MODERATION_CARD', 'AUTHOR_NOTIFICATION', 'OWNER_PREVIEW'));
+              END IF;
+            END $upgrade$;
             """
         )
         await connection.execute(
@@ -2219,6 +2240,28 @@ class PostgresWritersSubmissionStorage:
                     ),
                     f"author:{submission_id}:{revision_id}:{action.value}",
                 )
+                # Approval never posts in a public community/channel.
+                # Its separate durable job delivers ONLY to the owner DM.
+                if action is ReviewAction.APPROVE:
+                    await connection.execute(
+                        """
+                        INSERT INTO writers_submission_outbox(
+                            id, submission_id, revision_id, event_type, state,
+                            attempt_count, next_attempt_at, payload_json,
+                            dedupe_key, created_at, updated_at
+                        )
+                        VALUES (
+                            $1, $2, $3, 'OWNER_PREVIEW', 'PENDING',
+                            0, $4, '{}', $5, $4, $4
+                        )
+                        ON CONFLICT (dedupe_key) DO NOTHING
+                        """,
+                        uuid4(),
+                        submission_id,
+                        revision_id,
+                        now,
+                        f"owner:{submission_id}:{revision_id}:APPROVED",
+                    )
                 bundle = await self._bundle_on_connection(
                     connection,
                     submission_id=submission_id,
