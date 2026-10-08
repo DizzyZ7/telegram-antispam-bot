@@ -9,6 +9,7 @@ class WritersSubmissionConfigTests(unittest.TestCase):
     def _enabled_env(self) -> dict[str, str]:
         return {
             "WRITERS_SUBMISSION_ENABLED": "1",
+            "WRITERS_SUBMISSION_MODERATION_MODE": "group",
             "WRITERS_SUBMISSION_PUBLIC_URL": "https://example.test/writers/",
             "WRITERS_SUBMISSION_MOD_CHAT_ID": "-100111",
             "WRITERS_SUBMISSION_FILE_CHAT_ID": "-100222",
@@ -62,6 +63,75 @@ class WritersSubmissionConfigTests(unittest.TestCase):
                         writers_chat_id=-1002619489118,
                     )
 
+    def test_default_mode_routes_moderation_to_owner_even_with_stale_group_env(self):
+        env = self._enabled_env()
+        env.pop("WRITERS_SUBMISSION_MODERATION_MODE")
+        # These legacy variables MUST NOT be used to deliver pending cards.
+        env["WRITERS_SUBMISSION_MOD_CHAT_ID"] = "-1002629000293"
+        env["WRITERS_SUBMISSION_MODERATOR_IDS"] = "12345,67890"
+        with patch.dict(os.environ, env, clear=True):
+            config = WritersSubmissionConfig.from_env(
+                bot_token="token", database_url="postgresql://db",
+                writers_chat_id=-1002619489118,
+            )
+        self.assertEqual(config.moderation_mode, "owner")
+        self.assertEqual(config.moderation_chat_id, 2039781854)
+        self.assertEqual(config.owner_user_id, 2039781854)
+        self.assertEqual(config.moderator_ids, frozenset({2039781854}))
+        self.assertEqual(config.file_chat_id, -100222)
+
+    def test_owner_mode_does_not_need_moderation_group_or_extra_moderators(self):
+        env = self._enabled_env()
+        for key in ("WRITERS_SUBMISSION_MODERATION_MODE",
+                    "WRITERS_SUBMISSION_MOD_CHAT_ID",
+                    "WRITERS_SUBMISSION_MODERATOR_IDS"):
+            env.pop(key)
+        with patch.dict(os.environ, env, clear=True):
+            config = WritersSubmissionConfig.from_env(
+                bot_token="token", database_url="postgresql://db",
+                writers_chat_id=-1002619489118,
+            )
+        self.assertEqual(config.moderation_chat_id, 2039781854)
+        self.assertEqual(config.moderator_ids, frozenset({2039781854}))
+
+    def test_owner_override_sets_moderation_and_approval_recipient(self):
+        env = self._enabled_env()
+        env["WRITERS_SUBMISSION_MODERATION_MODE"] = "owner"
+        env["WRITERS_SUBMISSION_OWNER_USER_ID"] = "987654321"
+        with patch.dict(os.environ, env, clear=True):
+            config = WritersSubmissionConfig.from_env(
+                bot_token="token", database_url="postgresql://db",
+                writers_chat_id=-1002619489118,
+            )
+        self.assertEqual(config.owner_user_id, 987654321)
+        self.assertEqual(config.moderation_chat_id, 987654321)
+        self.assertEqual(config.moderator_ids, frozenset({987654321}))
+
+    def test_group_mode_requires_real_negative_group_id_and_allowlist(self):
+        env = self._enabled_env()
+        env["WRITERS_SUBMISSION_MOD_CHAT_ID"] = "2039781854"
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ValueError, "must identify a group"):
+                WritersSubmissionConfig.from_env(
+                    bot_token="token", database_url="postgresql://db",
+                    writers_chat_id=-1002619489118,
+                )
+        env["WRITERS_SUBMISSION_MOD_CHAT_ID"] = "-100111"
+        env["WRITERS_SUBMISSION_MODERATOR_IDS"] = ""
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ValueError, "MODERATOR_IDS"):
+                WritersSubmissionConfig.from_env(
+                    bot_token="token", database_url="postgresql://db",
+                    writers_chat_id=-1002619489118,
+                )
+        env["WRITERS_SUBMISSION_MODERATION_MODE"] = "unknown"
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ValueError, "MODERATION_MODE"):
+                WritersSubmissionConfig.from_env(
+                    bot_token="token", database_url="postgresql://db",
+                    writers_chat_id=-1002619489118,
+                )
+
     def test_owner_private_recipient_can_be_configured(self):
         env = self._enabled_env()
         env["WRITERS_SUBMISSION_OWNER_USER_ID"] = "2039781854"
@@ -99,6 +169,8 @@ class WritersSubmissionConfigTests(unittest.TestCase):
         self.assertEqual(config.bind_host, "0.0.0.0")
         self.assertEqual(config.port, 8080)
         self.assertEqual(config.moderator_ids, frozenset({12345, 67890}))
+        self.assertEqual(config.moderation_mode, "group")
+        self.assertEqual(config.moderation_chat_id, -100111)
 
     def test_host_port_fallback_and_explicit_override(self):
         for values, expected in (

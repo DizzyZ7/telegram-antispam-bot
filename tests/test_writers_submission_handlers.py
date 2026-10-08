@@ -210,6 +210,106 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
         callback.answer.assert_awaited_once()
         self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
 
+    async def test_owner_private_chat_allows_claim_and_decision_buttons(self):
+        owner_id = 2039781854
+        owner_app = make_app()
+        owner_service = make_service()
+        owner_config = SimpleNamespace(
+            public_url="https://example.test/writers/",
+            moderation_chat_id=owner_id,
+            moderator_ids=frozenset({owner_id}),
+        )
+        register_writers_submission_handlers(owner_app, owner_service, owner_config)
+        owner_callback = handlers_by_name(owner_app, "callback_query")[
+            "writers_moderation_callback"
+        ]
+
+        take = moderation_callback("ws:c:opaque-token", actor_id=owner_id)
+        take.message.chat.id = owner_id
+        take.message.chat.type = "private"
+        await owner_callback(take)
+        owner_service.claim.assert_awaited_once()
+        self.assertEqual(
+            owner_service.claim.await_args.kwargs["reviewer_user_id"], owner_id
+        )
+
+        decision = moderation_callback("ws:a:opaque-token", actor_id=owner_id)
+        decision.message.chat.id = owner_id
+        decision.message.chat.type = "private"
+        await owner_callback(decision)
+        self.assertEqual(
+            owner_service.decide.await_args.kwargs["reviewer_user_id"], owner_id
+        )
+        self.assertEqual(
+            owner_service.decide.await_args.kwargs["action"], ReviewAction.APPROVE
+        )
+
+    async def test_owner_private_mode_rejects_stale_group_buttons_and_other_users(self):
+        owner_id = 2039781854
+        owner_app = make_app()
+        owner_service = make_service()
+        owner_config = SimpleNamespace(
+            public_url="https://example.test/writers/",
+            moderation_chat_id=owner_id,
+            moderator_ids=frozenset({owner_id}),
+        )
+        register_writers_submission_handlers(owner_app, owner_service, owner_config)
+        owner_callback = handlers_by_name(owner_app, "callback_query")[
+            "writers_moderation_callback"
+        ]
+
+        from_group = moderation_callback("ws:a:opaque-token", actor_id=owner_id)
+        await owner_callback(from_group)
+        owner_service.resolve_moderation_token.assert_not_awaited()
+        self.assertTrue(from_group.answer.await_args.kwargs["show_alert"])
+
+        wrong_user = moderation_callback("ws:a:opaque-token", actor_id=12345)
+        wrong_user.message.chat.id = owner_id
+        wrong_user.message.chat.type = "private"
+        await owner_callback(wrong_user)
+        owner_service.resolve_moderation_token.assert_not_awaited()
+        self.assertTrue(wrong_user.answer.await_args.kwargs["show_alert"])
+
+    async def test_owner_private_comment_must_reply_to_exact_prompt(self):
+        owner_id = 2039781854
+        owner_app = make_app()
+        owner_service = make_service()
+        owner_config = SimpleNamespace(
+            public_url="https://example.test/writers/",
+            moderation_chat_id=owner_id,
+            moderator_ids=frozenset({owner_id}),
+        )
+        pending = register_writers_submission_handlers(owner_app, owner_service, owner_config)
+        cb = handlers_by_name(owner_app, "callback_query")[
+            "writers_moderation_callback"
+        ]
+        comment = handlers_by_name(owner_app, "message")[
+            "writers_moderation_comment"
+        ]
+        change = moderation_callback("ws:x:opaque-token", actor_id=owner_id)
+        change.message.chat.id = owner_id
+        change.message.chat.type = "private"
+        await cb(change)
+        self.assertIsNotNone(pending.current_for_user(owner_id))
+        self.assertEqual(owner_app.bot.send_message.await_args.kwargs["chat_id"], owner_id)
+        filter_ = PendingModerationCommentFilter(pending, owner_id)
+        unrelated = comment_message("Не комментарий", actor_id=owner_id,
+                                    reply_to_message_id=None)
+        unrelated.chat.id = owner_id
+        unrelated.chat.type = "private"
+        self.assertFalse(await filter_(unrelated))
+        await comment(unrelated)
+        owner_service.decide.assert_not_awaited()
+
+        reply = comment_message("Поправить описание", actor_id=owner_id)
+        reply.chat.id = owner_id
+        reply.chat.type = "private"
+        self.assertTrue(await filter_(reply))
+        await comment(reply)
+        owner_service.decide.assert_awaited_once()
+        self.assertEqual(owner_service.decide.await_args.kwargs["comment"],
+                         "Поправить описание")
+
     async def test_claim_uses_callback_actor_not_payload_identity(self):
         callback = moderation_callback("ws:c:opaque-token")
 

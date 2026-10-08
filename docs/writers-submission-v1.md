@@ -27,9 +27,9 @@ WRITERS_CHAT_ID=-1002619489118
 
 WRITERS_SUBMISSION_ENABLED=1
 WRITERS_SUBMISSION_PUBLIC_URL=https://your-public-host.example/writers/
-WRITERS_SUBMISSION_MOD_CHAT_ID=-1000000000001
+WRITERS_SUBMISSION_MODERATION_MODE=owner
+WRITERS_SUBMISSION_OWNER_USER_ID=2039781854
 WRITERS_SUBMISSION_FILE_CHAT_ID=-1000000000002
-WRITERS_SUBMISSION_MODERATOR_IDS=123456789,987654321
 
 WRITERS_SUBMISSION_BIND_HOST=0.0.0.0
 WRITERS_SUBMISSION_PORT=8080
@@ -46,14 +46,17 @@ The hosting/reverse-proxy layer must forward that public HTTPS endpoint to `WRIT
 
 ## 3. Telegram setup
 
-Create two private operator chats:
+**Current safe default: only the owner's personal chat handles moderation.**
+The ICФ owner (Telegram user ID `2039781854`) opens a private dialog with
+`@Fosgen_AntiSpam_bot` and sends `/start` before the first application.
 
-1. **Moderation chat** — receives one moderation card per submitted revision plus its staged attachments.
-2. **File-storage chat** — stores validated file messages whose Telegram `file_id` is referenced from PostgreSQL.
+Submitted application cards, previewable attachments, moderator action buttons,
+and reply-to-comment prompts all arrive in that personal dialog. **No
+submission card is sent to the writers/reader group, the channel or the future
+admin group.** The separate private **file-storage chat** is still needed to
+persist uploaded documents by Telegram `file_id`; it is not a moderation inbox.
 
-Separate chats are recommended so file retention and moderation discussion are independent.
-
-Add the bot to both chats. The bot must be able to:
+Add the bot to the private file-storage chat. The bot must be able to:
 
 - send messages;
 - send documents;
@@ -61,9 +64,27 @@ Add the bot to both chats. The bot must be able to:
 - use inline callback buttons;
 - preferably delete its own staging messages when a database write fails after Telegram accepted a file.
 
-Set `WRITERS_SUBMISSION_MOD_CHAT_ID` and `WRITERS_SUBMISSION_FILE_CHAT_ID` to the exact private chat IDs.
+Set `WRITERS_SUBMISSION_FILE_CHAT_ID` to the private storage chat ID.
 
-Set `WRITERS_SUBMISSION_MODERATOR_IDS` to Telegram **user IDs**, not usernames. Only those signed Telegram actors can claim/approve/request changes/reject. Callback payloads do not carry a trusted reviewer identity.
+With `WRITERS_SUBMISSION_MODERATION_MODE=owner` (or omitted), the server
+forces the moderation recipient and sole allowed reviewer to
+`WRITERS_SUBMISSION_OWNER_USER_ID=2039781854`, even if outdated
+`WRITERS_SUBMISSION_MOD_CHAT_ID` / `WRITERS_SUBMISSION_MODERATOR_IDS`
+remain in Bothost ENV. This prevents accidental rerouting to a group.
+
+**Later, after the closed admin group exists**, explicitly set:
+
+```env
+WRITERS_SUBMISSION_MODERATION_MODE=group
+WRITERS_SUBMISSION_MOD_CHAT_ID=-100xxxxxxxxxx
+WRITERS_SUBMISSION_MODERATOR_IDS=123456789,987654321
+```
+
+Use actual members' **numeric Telegram user IDs** for the allowlist.
+Only negative Telegram group IDs are accepted in group mode; the bot must
+be added to the private group with message/document permissions.
+The approved promotional preview still goes personally to the owner.
+Any mode change requires a restart/redeploy.
 
 ## 4. Author entry flow
 
@@ -104,7 +125,7 @@ Temporary upload files are deleted after staging attempts. A file becomes a read
 Recommended production rollout:
 
 1. Deploy the code with `WRITERS_SUBMISSION_ENABLED=0`. Confirm the existing bot starts normally.
-2. Create/configure the moderation and file-storage chats and add the bot.
+2. Have owner `2039781854` open the bot privately and press Start; create the separate private file-storage chat and add the bot.
 3. Set every Writers Submission variable except the enable flag.
 4. Confirm the public HTTPS endpoint routes to the configured bind port.
 5. Set `WRITERS_SUBMISSION_ENABLED=1` and restart the process.
@@ -123,7 +144,7 @@ Use one allowlisted operator plus one normal writers-community account.
 4. Attach a small TXT/PDF/DOCX file; close/reopen and verify the attachment is restored.
 5. Restart the bot process before submission and verify the draft, attachment and timeline survive.
 6. Submit once, then repeat the same logical request/callback where practical. Confirm there is only one sealed revision and one moderation job.
-7. In the moderation chat, claim the work. If two moderators press claim concurrently, exactly one must win.
+7. In the owner's personal dialog, claim the work. For future group mode, concurrent claims still have one winner.
 8. Test **Нужны правки** by replying directly to the bot's comment prompt (Telegram reply, not a new standalone message). Verify unrelated moderator chat text is ignored, a second prompt invalidates the earlier reply target, and the author can create revision N+1 while revision N stays unchanged.
 9. Submit the new revision and approve or reject it. Confirm the author notification and timeline update.
 10. Restart the worker/process with a pending delivery and verify PostgreSQL outbox retry resumes without duplicate durable state.
@@ -131,7 +152,7 @@ Use one allowlisted operator plus one normal writers-community account.
 
 ### Moderation comment safety
 
-After a moderator presses **Нужны правки**, the bot posts a prompt in the moderation chat. The moderator must **reply to that exact bot message** within 10 minutes. Normal chat messages, replies to the moderation card, and replies to older prompts are intentionally not treated as review comments. If the bot cannot post the prompt, the request is not armed; press **Нужны правки** again after Telegram recovers.
+After the owner presses **Нужны правки**, the bot posts a prompt in the owner's DM (or the configured closed group in group mode). The moderator must **reply to that exact bot message** within 10 minutes. Normal chat messages, replies to the moderation card, and replies to older prompts are intentionally not treated as review comments. If the bot cannot post the prompt, the request is not armed; press **Нужны правки** again after Telegram recovers.
 
 ## 8. Expected security properties
 
@@ -255,8 +276,8 @@ visual first and then complete copyable HTML-formatted post text.
 **Critical operator requirement:** the ICФ owner must open
 `@Fosgen_AntiSpam_bot` in Telegram and press **Start** / send `/start`
 **before** the bot can DM them (Telegram bots cannot initiate private chats).
-Give the bot access to the separate file-storage and moderation chats as
-documented above.
+Give the bot access to the private file-storage chat (and later to the
+optional closed admin group, only when explicitly enabling group mode).
 
 The PostgreSQL outbox is restart-safe and the owner-preview job has a unique
 dedupe key. Telegram Bot API does not provide an atomic send+DB commit; a
@@ -270,3 +291,28 @@ the main writers chat/channel receives NOTHING. Repeat with a PNG/JPEG
 illustration and a long description, then reject a separate application and
 verify no owner preview appears. Keep PostgreSQL backed up before deploying
 the schema constraint migration.
+
+## 13. Owner-only intake: safe-by-default routing (October 2026)
+
+Until a real admin team and closed review group are ready, **ALL incoming
+Writers Submission applications are delivered to owner ID `2039781854` in
+their personal Telegram dialog**. The message looks like the existing
+"✒️ Новая работа на модерацию" card and includes author ID, title, type,
+direction, rating, size, status, color palette, description, Ficbook URL,
+attachments and the normal moderation buttons.
+
+Selecting "Одобрить" subsequently creates the separately queued, formatted
+ICФ publication preview in the **same** owner's private dialog. Nothing
+is automatically published into the public writers chat, channel, or the
+not-yet-created admin group. Authors still receive private status updates.
+
+`WRITERS_SUBMISSION_MODERATION_MODE=owner` is the default and does **not**
+require `WRITERS_SUBMISSION_MOD_CHAT_ID` or a separate
+`WRITERS_SUBMISSION_MODERATOR_IDS` value. The private
+`WRITERS_SUBMISSION_FILE_CHAT_ID` remains required for persistent uploads.
+
+Smoke test: send one new work from a writer, check its card and documents
+arrive exclusively in owner's DM, click claim/approve, check the same DM
+receives the formatted publication preview, then exercise "Нужны правки"
+by replying to the exact prompt. Confirm no cards appear in the public
+writers community or the previously configured review group.
