@@ -185,3 +185,47 @@ python -m unittest \
 ```
 
 GitHub Actions runs both of these paths automatically.
+
+## 11. Ficbook application form v2 (owner-requested)
+
+The Telegram Mini App editor now collects a structured, revisioned application:
+
+1. Work title.
+2. **ФФ / Оридж** as exclusive but reversible checkboxes; fanfiction shows a
+   **Фандом** field and requires it at submission.
+3. **Мини / Миди / Макси** as exclusive, reversible checkboxes.
+4. **Направление** (editable suggestions such as Джен/Гет/Слэш).
+5. **Рейтинг** (editable suggestions including G/PG-13/R/NC-17/NC-21).
+6. **Завершен / В процессе**; completed work requires word count, pages and
+   parts. Switching to in-progress clears these submitted counts.
+7. A required **HTTPS Ficbook URL**, with up to five optional HTTPS links
+   (Telegram, portfolio and so on).
+8. Description.
+9. One of **four RGB colors** (both color picker and individual R/G/B channels
+   with live preview) or **image** (PNG/JPEG staged as a Telegram document to
+   the configured private storage chat). Upload size/count follow the normal
+   Writers file policy.
+
+A Ficbook HTTPS link now suffices as publication content: uploading manuscript
+text or a PDF/DOCX/TXT file is **optional**. The old manuscript field remains
+under an expandable "Дополнительно" section.
+
+All form metadata is validated server-side, stored in `details_json` on
+`writers_submission_revisions`, and included in revision detail API responses.
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrates old installations without
+removing earlier submissions or revisions. Existing v1 submissions without a
+structured form remain readable and follow the legacy submission validation.
+
+The moderation card includes structured dimensions, status, optional additional
+links and the four selected RGB values. Image attachments are forwarded via the
+existing file delivery worker. The app uses safe text rendering for user values.
+
+**Deployment:** deploy the updated Python archive/real Dockerfile; restart the
+existing bot process with the current PostgreSQL. The migration runs during
+startup. Back up production PostgreSQL before a schema-changing rollout.
+
+**Checks:** try switching FF to original and back; toggle already-selected
+checkboxes off; edit each RGB channel and the color picker; save a partially
+completed draft, close and reopen; send a link-only completed work, and check
+all fields on the moderator's Telegram card. For image mode, the file must
+finish uploading before submission.
