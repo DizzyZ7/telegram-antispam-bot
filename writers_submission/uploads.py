@@ -98,7 +98,7 @@ def _external_url(value: object) -> str | None:
 _DETAILS_ALLOWED = frozenset({
     "form_version", "fandom", "size_category", "rating", "completion",
     "size_words", "pages", "parts", "extra_links", "visual_mode",
-    "palette_colors",
+    "palette_colors", "characters", "notes",
 })
 
 
@@ -112,7 +112,7 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
         raise ValidationError("unsupported submission form version")
 
     details: dict[str, object] = {"form_version": 2}
-    for name, limit in (("fandom", 160), ("rating", 40)):
+    for name, limit in (("fandom", 160), ("rating", 40), ("characters", 600), ("notes", 1500)):
         raw = value.get(name, "")
         if not isinstance(raw, str) or len(raw) > limit:
             raise ValidationError(f"{name} is invalid")
