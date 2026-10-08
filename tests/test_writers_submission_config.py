@@ -62,6 +62,26 @@ class WritersSubmissionConfigTests(unittest.TestCase):
                         writers_chat_id=-1002619489118,
                     )
 
+    def test_owner_private_recipient_can_be_configured(self):
+        env = self._enabled_env()
+        env["WRITERS_SUBMISSION_OWNER_USER_ID"] = "2039781854"
+        with patch.dict(os.environ, env, clear=True):
+            config = WritersSubmissionConfig.from_env(
+                bot_token="token",
+                database_url="postgresql://user:pass@db/name",
+                writers_chat_id=-1002619489118,
+            )
+        self.assertEqual(config.owner_user_id, 2039781854)
+
+        env["WRITERS_SUBMISSION_OWNER_USER_ID"] = "-1002629000293"
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(ValueError):
+                WritersSubmissionConfig.from_env(
+                    bot_token="token",
+                    database_url="postgresql://user:pass@db/name",
+                    writers_chat_id=-1002619489118,
+                )
+
     def test_enabled_defaults_are_exact(self):
         with patch.dict(os.environ, self._enabled_env(), clear=True):
             config = WritersSubmissionConfig.from_env(
