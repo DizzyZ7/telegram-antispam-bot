@@ -229,3 +229,44 @@ checkboxes off; edit each RGB channel and the color picker; save a partially
 completed draft, close and reopen; send a link-only completed work, and check
 all fields on the moderator's Telegram card. For image mode, the file must
 finish uploading before submission.
+
+## 12. Approved post: owner's personal inbox, not the public group/channel
+
+On a successful `APPROVE` review, the same PostgreSQL transaction enqueues a
+unique `OWNER_PREVIEW` outbox job (once per submitted revision). The delivery
+worker renders a prepared ICФ-style promotional post with title, description,
+hashtags for original/fandom, size, direction, rating and progress, characters,
+notes, Ficbook URL and optional Telegram/other HTTPS links.
+
+The recipient is exclusively the Telegram **private chat** belonging to the
+ICФ owner **2039781854** (overridable by `WRITERS_SUBMISSION_OWNER_USER_ID`).
+**Do not publish in `WRITERS_CHAT_ID`, a channel, or the moderation group.**
+The original author still receives their private decision notification.
+Reject/request-changes never generate an owner's promotional post.
+
+When the author selected RGB colors, a four-color PNG is generated
+deterministically and attached as a Telegram photo. When they uploaded a
+PNG/JPEG illustration, the photo is downloaded from private Telegram storage
+and sent to the owner as an image (or as a document if it exceeds Telegram's
+photo limit). If the post fits the Telegram photo-caption limit, it is delivered
+as one photo with the full caption. For longer posts, the owner receives the
+visual first and then complete copyable HTML-formatted post text.
+
+**Critical operator requirement:** the ICФ owner must open
+`@Fosgen_AntiSpam_bot` in Telegram and press **Start** / send `/start`
+**before** the bot can DM them (Telegram bots cannot initiate private chats).
+Give the bot access to the separate file-storage and moderation chats as
+documented above.
+
+The PostgreSQL outbox is restart-safe and the owner-preview job has a unique
+dedupe key. Telegram Bot API does not provide an atomic send+DB commit; a
+process crash between sending and marking delivered can still cause a retry
+and a duplicated Telegram message. Verify owner delivery logs and outbox
+state if recovering from such a crash.
+
+**Smoketest:** create a v2 application with notes, characters and a palette;
+submit, claim and approve; verify the owner receives the preview in DM and
+the main writers chat/channel receives NOTHING. Repeat with a PNG/JPEG
+illustration and a long description, then reject a separate application and
+verify no owner preview appears. Keep PostgreSQL backed up before deploying
+the schema constraint migration.
