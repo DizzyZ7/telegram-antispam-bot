@@ -34,15 +34,24 @@ WRITERS_SUBMISSION_PUBLIC_URL=https://bot-1783536415-4824-dizzy.bothost.tech/wri
 WRITERS_SUBMISSION_BIND_HOST=0.0.0.0
 # Optional when PORT is already 3000:
 WRITERS_SUBMISSION_PORT=3000
-# Required actual private Telegram chat/user IDs:
-WRITERS_SUBMISSION_MOD_CHAT_ID=-100...
+# Current owner-only moderation (without any admin group):
+WRITERS_SUBMISSION_MODERATION_MODE=owner
+WRITERS_SUBMISSION_OWNER_USER_ID=2039781854
+# Separate private attachment-storage chat, required:
 WRITERS_SUBMISSION_FILE_CHAT_ID=-100...
-WRITERS_SUBMISSION_MODERATOR_IDS=...
+# ONLY after creating the future private admin review group:
+# WRITERS_SUBMISSION_MODERATION_MODE=group
+# WRITERS_SUBMISSION_MOD_CHAT_ID=-100...
+# WRITERS_SUBMISSION_MODERATOR_IDS=...
 ```
 
 `BOT_TOKEN`, `DATABASE_URL` and `WRITERS_CHAT_ID` are also required.
-Never use the placeholder chat/user IDs. If any required setting is missing,
-keep `WRITERS_SUBMISSION_ENABLED=0` until it is set. The app uses `PORT`
+Never use the placeholder file-storage ID. In owner mode, the owner must
+send `/start` to the bot in private before the bot can deliver application
+cards or approved posts. The old group/moderator environment values are
+ignored unless `WRITERS_SUBMISSION_MODERATION_MODE=group` is explicitly set.
+If a required setting is missing, keep `WRITERS_SUBMISSION_ENABLED=0`
+until it is set. The app uses `PORT`
 when `WRITERS_SUBMISSION_PORT` is not explicitly set.
 
 The public URL must route to the same internal port as the Writers aiohttp
@@ -70,7 +79,12 @@ not terminate the otherwise healthy bot process.
   browser; the UI should load (authentication requires Telegram WebApp).
 - In the bot's private Telegram chat, open the composer menu and click
   **✒️ Отправить заявку**.
-- Verify a writer can save a draft and moderators receive a review card.
+- Verify a writer can save a draft and the **owner's DM (2039781854)**
+  receives the original application card and files, then the ready-to-post
+  promo after approval. No message should land in the public writers group
+  or the future admin group while moderation mode is `owner`.
+- Confirm `WRITERS_MODERATION_ROUTE_READY mode=owner
+  destination_chat_id=2039781854` in the runtime log.
 
 If the bot is still built from `node:20-alpine`, its startup template is
 not yet corrected. Resolve that in Bothost before modifying application code.
