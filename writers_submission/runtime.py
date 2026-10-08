@@ -172,8 +172,11 @@ async def start_writers_submission_runtime(
         LOGGER.info(
             "WRITERS_MODERATION_ROUTE_READY mode=%s destination_chat_id=%s reviewers=%s",
             getattr(config, "moderation_mode", "group"),
-            config.moderation_chat_id,
-            ",".join(str(value) for value in sorted(config.moderator_ids)),
+            getattr(config, "moderation_chat_id", None),
+            ",".join(
+                str(value)
+                for value in sorted(getattr(config, "moderator_ids", ()))
+            ),
         )
         LOGGER.info(
             "WRITERS_SUBMISSION_READY bind=%s:%s",
