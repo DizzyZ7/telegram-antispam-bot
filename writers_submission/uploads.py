@@ -213,7 +213,7 @@ def validate_submission_fields(
         and not normalized.external_url
     ):
         raise ValidationError(
-            "submission requires an HTTPS link, body text or a ready file"
+            "submission payload requires an HTTPS link, body text or a ready file"
         )
     return normalized
 
