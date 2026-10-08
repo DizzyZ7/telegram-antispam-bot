@@ -1124,6 +1124,73 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.action, ReviewAction.REQUEST_CHANGES)
         self.assertEqual(context.comment, "Усилить финал")
 
+    async def test_approval_enqueues_one_owner_only_preview_atomically(self):
+        created = await self.storage.create_submission(
+            author_user_id=77, writers_chat_id=-1002619489118,
+            fields=fields("Пост для владельца ИКФ"), now=100,
+            idempotency_key="owner-preview-create",
+        )
+        submitted = await self.storage.seal_and_submit(
+            submission_id=created.id, author_user_id=77,
+            expected_version=created.version,
+            idempotency_key="owner-preview-submit", now=110,
+        )
+        await self.storage.claim_submission(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+            reviewer_user_id=9001, now=120,
+        )
+        first = await self.storage.decide_submission(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+            reviewer_user_id=9001, action=ReviewAction.APPROVE,
+            comment=None, now=130,
+        )
+        repeated = await self.storage.decide_submission(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+            reviewer_user_id=9001, action=ReviewAction.APPROVE,
+            comment=None, now=140,
+        )
+        self.assertTrue(first.applied)
+        self.assertFalse(repeated.applied)
+        assert self.storage.pool is not None
+        rows = await self.storage.pool.fetch(
+            "SELECT event_type, dedupe_key FROM writers_submission_outbox "
+            "WHERE submission_id=$1 ORDER BY created_at, event_type",
+            submitted.id,
+        )
+        owner = [r for r in rows if r["event_type"] == "OWNER_PREVIEW"]
+        self.assertEqual(len(owner), 1)
+        self.assertEqual(owner[0]["dedupe_key"], f"owner:{submitted.id}:{submitted.revision.id}:APPROVED")
+        self.assertEqual(
+            len([r for r in rows if r["event_type"] == "AUTHOR_NOTIFICATION"]),
+            2,  # submission received + author decision
+        )
+
+    async def test_rejected_submission_has_no_owner_preview(self):
+        created = await self.storage.create_submission(
+            author_user_id=77, writers_chat_id=-1002619489118,
+            fields=fields("Не одобрять"), now=100,
+            idempotency_key="no-owner-create",
+        )
+        submitted = await self.storage.seal_and_submit(
+            submission_id=created.id, author_user_id=77,
+            expected_version=created.version, idempotency_key="no-owner-submit",
+            now=110,
+        )
+        await self.storage.claim_submission(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+            reviewer_user_id=9001, now=120,
+        )
+        await self.storage.decide_submission(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+            reviewer_user_id=9001, action=ReviewAction.REJECT, comment=None, now=130,
+        )
+        count = await self.storage.pool.fetchval(
+            "SELECT COUNT(*) FROM writers_submission_outbox "
+            "WHERE submission_id=$1 AND event_type='OWNER_PREVIEW'",
+            submitted.id,
+        )
+        self.assertEqual(count, 0)
+
     async def test_stale_inflight_outbox_lease_becomes_claimable_again(self):
         created = await self.storage.create_submission(
             author_user_id=77,
