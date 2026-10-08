@@ -5,10 +5,14 @@ import html
 import logging
 import time
 from contextlib import suppress
+from io import BytesIO
+
+from aiogram.types import BufferedInputFile
 from typing import Any
 
 from .handlers import build_moderation_keyboard
 from .models import OutboxEventType, ReviewAction
+from .promo import render_owner_promo, render_palette_png
 
 LOGGER = logging.getLogger(__name__)
 
@@ -274,6 +278,8 @@ class WritersDeliveryWorker:
             return await self._deliver_moderation_card(item, now=now)
         if event_type is OutboxEventType.AUTHOR_NOTIFICATION:
             return await self._deliver_author_notification(item)
+        if event_type is OutboxEventType.OWNER_PREVIEW:
+            return await self._deliver_owner_preview(item)
         raise RuntimeError("unsupported outbox event type")
 
     async def _deliver_moderation_card(
@@ -342,3 +348,78 @@ class WritersDeliveryWorker:
             author_user_id,
             (int(message_id),) if message_id is not None else (),
         )
+
+    async def _deliver_owner_preview(
+        self,
+        item: Any,
+    ) -> tuple[int, tuple[int, ...]]:
+        """A review-approved publication draft is sent to owner DM only.
+
+        Do not use WRITERS_CHAT_ID / moderation_chat_id as the destination,
+        and do not auto-publish into a channel.
+        """
+        owner_id = int(getattr(self.config, "owner_user_id", 2039781854))
+        if owner_id <= 0:
+            raise ValueError("Writers owner Telegram ID must be positive")
+        context = await self.storage.get_moderation_delivery_context(
+            submission_id=item.submission_id,
+            revision_id=item.revision_id,
+        )
+        post = render_owner_promo(context)
+        details = context.details or {}
+        visual_mode = details.get("visual_mode")
+        photo = None
+        if visual_mode == "palette":
+            photo = BufferedInputFile(
+                render_palette_png(details.get("palette_colors", [])),
+                filename="writers-palette.png",
+            )
+        elif visual_mode == "image":
+            image = next(
+                (f for f in context.files if f.detected_file_class in {"png", "jpeg"}),
+                None,
+            )
+            if image is None:
+                raise ValueError("Approved work has no illustration attachment")
+            image_bytes = BytesIO()
+            await self.bot.download(image.telegram_file_id, destination=image_bytes)
+            data = image_bytes.getvalue()
+            if not data:
+                raise RuntimeError("Telegram returned empty approved illustration")
+            photo = BufferedInputFile(data, filename=image.safe_filename)
+
+        message_ids: list[int] = []
+        if photo is not None:
+            # Photo caption has a separate 1024-character Telegram limit.
+            # Long ICФ posts are sent as a photo plus a complete copyable text.
+            caption = post if _utf16_units(post) <= 950 else "🖼️ Обложка одобренной работы. Готовый пост — следующим сообщением."
+            if isinstance(photo, BufferedInputFile) and len(photo.data) > 10 * 1024 * 1024:
+                photo_message = await self.bot.send_document(
+                    chat_id=owner_id,
+                    document=photo,
+                    caption="Иллюстрация к одобренной работе (размер более 10 МБ).",
+                )
+                caption = None
+            else:
+                photo_message = await self.bot.send_photo(
+                    chat_id=owner_id,
+                    photo=photo,
+                    caption=caption,
+                    parse_mode="HTML",
+                )
+            message_id = getattr(photo_message, "message_id", None)
+            if message_id is not None:
+                message_ids.append(int(message_id))
+            if caption == post:
+                return owner_id, tuple(message_ids)
+
+        published_text = await self.bot.send_message(
+            chat_id=owner_id,
+            text=post,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        message_id = getattr(published_text, "message_id", None)
+        if message_id is not None:
+            message_ids.append(int(message_id))
+        return owner_id, tuple(message_ids)
