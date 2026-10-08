@@ -121,6 +121,29 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.storage.mark_outbox_retryable.assert_not_awaited()
         self.storage.mark_outbox_permanent_failure.assert_not_awaited()
 
+    async def test_moderation_card_and_attachment_go_to_owner_dm_not_group(self):
+        # Delivery consumes the effective destination from validated config.
+        # A stale group value in the hosting ENV must not be consulted here.
+        self.config.moderation_chat_id = 2039781854
+        item = moderation_item()
+        self.storage.claim_due_outbox.return_value = [item]
+
+        await self.worker.run_once(now=145)
+
+        self.bot.send_document.assert_awaited_once()
+        self.assertEqual(
+            self.bot.send_document.await_args.kwargs["chat_id"], 2039781854
+        )
+        self.bot.send_message.assert_awaited_once()
+        card = self.bot.send_message.await_args.kwargs
+        self.assertEqual(card["chat_id"], 2039781854)
+        self.assertIn("Новая работа на модерацию", card["text"])
+        self.assertTrue(card["reply_markup"].inline_keyboard)
+        self.storage.mark_outbox_delivered.assert_awaited_once_with(
+            outbox_id=item.id, worker_id="worker-test", now=145,
+            delivery_chat_id=2039781854, delivery_message_ids=(11, 10),
+        )
+
     async def test_moderation_card_contains_compact_opaque_controls(self):
         item = moderation_item()
         self.storage.claim_due_outbox.return_value = [item]
