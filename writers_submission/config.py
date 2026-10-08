@@ -12,6 +12,7 @@ DEFAULT_MAX_FILE_BYTES = 20 * 1024 * 1024
 DEFAULT_MAX_FILES = 3
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 DEFAULT_OWNER_USER_ID = 2039781854
+DEFAULT_MODERATION_MODE = "owner"
 
 
 def _enabled(raw: str | None) -> bool:
@@ -97,6 +98,7 @@ class WritersSubmissionConfig:
     max_files: int
     rate_limit_window_seconds: int
     owner_user_id: int = DEFAULT_OWNER_USER_ID
+    moderation_mode: str = DEFAULT_MODERATION_MODE
 
     @classmethod
     def from_env(
@@ -145,12 +147,37 @@ class WritersSubmissionConfig:
         if port > 65535:
             raise ValueError("WRITERS_SUBMISSION_PORT must be between 1 and 65535")
 
+        owner_user_id = _positive_int(
+            "WRITERS_SUBMISSION_OWNER_USER_ID", DEFAULT_OWNER_USER_ID
+        )
+        mode = (
+            os.getenv("WRITERS_SUBMISSION_MODERATION_MODE", DEFAULT_MODERATION_MODE)
+            .strip().casefold()
+        )
+        if mode not in {"owner", "group"}:
+            raise ValueError(
+                "WRITERS_SUBMISSION_MODERATION_MODE must be owner or group"
+            )
+        if mode == "owner":
+            # Ignore stale group/moderator variables from older deployments:
+            # approved work and the *original moderation card* both go to
+            # the owner's private DM, where only the owner may act.
+            moderation_chat_id = owner_user_id
+            moderator_ids = frozenset({owner_user_id})
+        else:
+            moderation_chat_id = _required_int("WRITERS_SUBMISSION_MOD_CHAT_ID")
+            if moderation_chat_id >= 0:
+                raise ValueError(
+                    "WRITERS_SUBMISSION_MOD_CHAT_ID must identify a group"
+                )
+            moderator_ids = _moderator_ids()
+
         return cls(
             enabled=True,
             public_url=_validated_public_url(),
-            moderation_chat_id=_required_int("WRITERS_SUBMISSION_MOD_CHAT_ID"),
+            moderation_chat_id=moderation_chat_id,
             file_chat_id=_required_int("WRITERS_SUBMISSION_FILE_CHAT_ID"),
-            moderator_ids=_moderator_ids(),
+            moderator_ids=moderator_ids,
             writers_chat_id=int(writers_chat_id),
             bind_host=(
                 os.getenv("WRITERS_SUBMISSION_BIND_HOST", DEFAULT_BIND_HOST).strip()
@@ -177,5 +204,6 @@ class WritersSubmissionConfig:
                 "WRITERS_SUBMISSION_RATE_LIMIT_WINDOW_SECONDS",
                 DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
             ),
-            owner_user_id=_positive_int("WRITERS_SUBMISSION_OWNER_USER_ID", DEFAULT_OWNER_USER_ID),
+            owner_user_id=owner_user_id,
+            moderation_mode=mode,
         )
