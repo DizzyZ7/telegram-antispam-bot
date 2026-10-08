@@ -466,3 +466,120 @@ textarea {
     padding: 22px;
   }
 }
+
+/* Ficbook application form: accessible reversible checkboxes, conditional rows,
+   RGB palette editing and private illustration preview. */
+.choice-field {
+  min-width: 0;
+  margin: 2px 0 18px;
+  padding: 0;
+  border: 0;
+}
+.choice-field legend {
+  padding: 0;
+  margin-bottom: 10px;
+  font-weight: 750;
+}
+.choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+.choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 45px;
+  padding: 9px 13px;
+  border-radius: 13px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 650;
+}
+.choice:has(input:checked) {
+  background: color-mix(in srgb, var(--accent) 13%, var(--surface));
+  border-color: var(--accent);
+}
+.choice input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
+}
+.conditional {
+  margin-bottom: 17px;
+}
+.palette-preview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  margin: 12px 0;
+  overflow: hidden;
+  border-radius: 14px;
+}
+.palette-swatch {
+  height: 76px;
+  border: 1px solid var(--border);
+}
+.palette-editors {
+  display: grid;
+  gap: 10px;
+}
+.palette-editor {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 11px;
+  border-radius: 13px;
+  border: 1px solid var(--border);
+}
+.palette-editor > span { font-weight: 700; min-width: 65px; }
+.palette-editor > input[type=color] {
+  width: 53px;
+  height: 38px;
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+}
+.palette-editor label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.palette-editor label input {
+  width: 60px;
+  padding: 6px;
+  min-height: 34px;
+  text-align: center;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.image-preview {
+  max-width: 100%;
+  max-height: 300px;
+  display: block;
+  margin: 12px 0;
+  border-radius: 15px;
+  border: 1px solid var(--border);
+  object-fit: contain;
+}
+.optional-text {
+  margin-top: 18px;
+  padding-top: 13px;
+  border-top: 1px solid var(--border);
+}
+.optional-text summary {
+  color: var(--link);
+  cursor: pointer;
+  margin-bottom: 13px;
+}
+@media (min-width: 680px) {
+  .palette-editors { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
