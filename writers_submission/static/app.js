@@ -202,7 +202,7 @@
 
   function positiveNumberOrNull(input) {
     const value = String(input.value || "").trim();
-    return value && /^\\d+$/.test(value) && Number(value) > 0 ? Number(value) : null;
+    return value && /^\d+$/.test(value) && Number(value) > 0 ? Number(value) : null;
   }
 
   function currentFields() {
@@ -223,7 +223,7 @@
         size_words: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.sizeWords) : null,
         pages: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.pages) : null,
         parts: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.parts) : null,
-        extra_links: form.extraLinks.value.split(/\\r?\\n/).map((v) => v.trim()).filter(Boolean),
+        extra_links: form.extraLinks.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean),
         visual_mode: selectedChoice("visualMode"),
         palette_colors: selectedChoice("visualMode") === "palette" ? state.paletteColors.slice() : [],
       },
@@ -265,7 +265,7 @@
     form.sizeWords.value = details.size_words || "";
     form.pages.value = details.pages || "";
     form.parts.value = details.parts || "";
-    form.extraLinks.value = Array.isArray(details.extra_links) ? details.extra_links.join("\\n") : "";
+    form.extraLinks.value = Array.isArray(details.extra_links) ? details.extra_links.join("\n") : "";
     state.paletteColors = Array.isArray(details.palette_colors) && details.palette_colors.length === 4
       ? details.palette_colors.slice()
       : ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"];
