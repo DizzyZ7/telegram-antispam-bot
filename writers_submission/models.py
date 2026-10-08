@@ -58,7 +58,7 @@ class NotFoundError(WritersSubmissionError):
     """The requested owned object does not exist or is not visible to the actor."""
 
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID
 
 
@@ -77,6 +77,7 @@ class SubmissionRevision:
     created_at: int
     updated_at: int
     sealed_at: int | None
+    details: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +166,7 @@ class ModerationDeliveryContext:
     body_text: str
     external_url: str | None
     files: tuple[SubmissionFile, ...]
+    details: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

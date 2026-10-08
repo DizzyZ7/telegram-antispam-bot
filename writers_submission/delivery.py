@@ -103,28 +103,49 @@ def _author_notification_text(context: Any) -> str:
 
 
 def _moderation_text(context: Any) -> str:
+    details = getattr(context, "details", None) or {}
+    is_ficbook_form = details.get("form_version") == 2
     lines = [
         "✒️ <b>Новая работа на модерацию</b>",
         "",
         f"Автор: <code>{int(context.author_user_id)}</code>",
-        f"Название: {_escaped_preview(context.title, max_units=420)}",
-        f"Тип: {_escaped_preview(context.work_type, max_units=220)}",
-        f"Жанр: {_escaped_preview(context.genre, max_units=250)}",
-        "",
-        f"Описание: {_escaped_preview(context.description, max_units=900)}",
+        f"Название: {_escaped_preview(context.title, max_units=300)}",
+        f"Тип: {_escaped_preview(context.work_type, max_units=80)}",
+        f"{'Направление' if is_ficbook_form else 'Жанр'}: {_escaped_preview(context.genre, max_units=130)}",
     ]
+    if is_ficbook_form:
+        for label, key in (
+            ("Фандом", "fandom"),
+            ("Размер", "size_category"),
+            ("Рейтинг", "rating"),
+            ("Статус", "completion"),
+            ("Слов", "size_words"),
+            ("Страниц", "pages"),
+            ("Частей", "parts"),
+        ):
+            value = details.get(key)
+            if value not in (None, ""):
+                lines.append(f"{label}: {_escaped_preview(value, max_units=130)}")
+        if details.get("visual_mode") == "palette":
+            colors = details.get("palette_colors") or []
+            lines.append(f"Палитра RGB: {_escaped_preview(', '.join(colors), max_units=120)}")
+        elif details.get("visual_mode") == "image":
+            lines.append("Оформление: картинка во вложениях")
+        links = details.get("extra_links") or []
+        if links:
+            lines.append(f"Доп. ссылки: {_escaped_preview(' | '.join(links), max_units=450)}")
+    lines.extend(("", f"Описание: {_escaped_preview(context.description, max_units=620)}"))
     if getattr(context, "external_url", None):
+        label = "Фикбук" if is_ficbook_form else "Ссылка"
         lines.extend(
-            ("", f"Ссылка: {_escaped_preview(context.external_url, max_units=900)}")
+            ("", f"{label}: {_escaped_preview(context.external_url, max_units=700)}")
         )
     body = str(getattr(context, "body_text", "") or "").strip()
     if body:
-        preview = body[:1500]
+        preview = body[:1200]
         if len(body) > len(preview):
             preview += "…"
-        lines.extend(
-            ("", "<b>Текст:</b>", _escaped_preview(preview, max_units=850))
-        )
+        lines.extend(("", "<b>Текст:</b>", _escaped_preview(preview, max_units=620)))
     return "\n".join(lines)
 
 

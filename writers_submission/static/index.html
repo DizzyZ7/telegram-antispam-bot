@@ -46,50 +46,124 @@
 
       <form id="editorForm" novalidate>
         <div class="card form-card">
+          <p class="eyebrow">Анкета произведения</p>
           <label class="field">
-            <span>Название</span>
-            <input id="titleInput" name="title" maxlength="160" required autocomplete="off">
+            <span>1. Название</span>
+            <input id="titleInput" name="title" maxlength="160" required autocomplete="off" placeholder="Название работы">
             <small><span id="titleCounter">0</span>/160</small>
           </label>
 
+          <fieldset class="choice-field">
+            <legend>2. Формат</legend>
+            <div class="choice-row" data-choice-group="workType" aria-label="Фанфик или ориджинал">
+              <label class="choice"><input type="checkbox" value="ФФ"> ФФ · фанфик</label>
+              <label class="choice"><input type="checkbox" value="Оридж"> Оридж · оригинальная работа</label>
+            </div>
+          </fieldset>
+          <label class="field conditional hidden" id="fandomField">
+            <span>Фандом <em>для фанфика</em></span>
+            <input id="fandomInput" maxlength="160" placeholder="Название фандома">
+          </label>
+
+          <fieldset class="choice-field">
+            <legend>3. Размер</legend>
+            <div class="choice-row" data-choice-group="sizeCategory">
+              <label class="choice"><input type="checkbox" value="мини"> Мини</label>
+              <label class="choice"><input type="checkbox" value="миди"> Миди</label>
+              <label class="choice"><input type="checkbox" value="макси"> Макси</label>
+            </div>
+          </fieldset>
+
           <div class="field-row">
             <label class="field">
-              <span>Тип работы</span>
-              <input id="workTypeInput" name="work_type" maxlength="80" placeholder="Рассказ, роман, стихотворение" required>
+              <span>4. Направление</span>
+              <input id="directionInput" list="directionChoices" maxlength="120" placeholder="Например: Джен" required>
+              <datalist id="directionChoices">
+                <option value="Гет"><option value="Слэш"><option value="Фемслэш">
+                <option value="Джен"><option value="Смешанное"><option value="Другое">
+              </datalist>
             </label>
             <label class="field">
-              <span>Жанр</span>
-              <input id="genreInput" name="genre" maxlength="120" placeholder="Фантастика, драма..." required>
+              <span>5. Рейтинг</span>
+              <input id="ratingInput" list="ratingChoices" maxlength="40" placeholder="Например: PG-13" required>
+              <datalist id="ratingChoices">
+                <option value="G"><option value="PG-13"><option value="R">
+                <option value="NC-17"><option value="NC-21">
+              </datalist>
             </label>
           </div>
 
+          <fieldset class="choice-field">
+            <legend>6. Статус</legend>
+            <div class="choice-row" data-choice-group="completion">
+              <label class="choice"><input type="checkbox" value="завершен"> Завершен</label>
+              <label class="choice"><input type="checkbox" value="в процессе"> В процессе</label>
+            </div>
+          </fieldset>
+          <div class="field-row conditional hidden" id="finishedFields">
+            <label class="field"><span>Размер (слов)</span><input id="sizeWordsInput" type="number" min="1" max="10000000" step="1" inputmode="numeric"></label>
+            <label class="field"><span>Страниц</span><input id="pagesInput" type="number" min="1" max="10000000" step="1" inputmode="numeric"></label>
+            <label class="field"><span>Частей</span><input id="partsInput" type="number" min="1" max="10000000" step="1" inputmode="numeric"></label>
+          </div>
+
           <label class="field">
-            <span>Короткое описание</span>
-            <textarea id="descriptionInput" name="description" maxlength="2000" rows="4" required></textarea>
+            <span>7. Ссылка на Фикбук</span>
+            <input id="urlInput" name="external_url" type="url" maxlength="2048" placeholder="https://ficbook.net/readfic/..." required>
+          </label>
+          <label class="field">
+            <span>Дополнительные ссылки <em>необязательно</em></span>
+            <textarea id="extraLinksInput" rows="2" placeholder="Ссылка на Telegram, сайт и другое — по одной в строке"></textarea>
+            <small>До 5 HTTPS-ссылок</small>
+          </label>
+
+          <label class="field">
+            <span>8. Описание</span>
+            <textarea id="descriptionInput" name="description" maxlength="2000" rows="5" required placeholder="О чем эта работа?"></textarea>
             <small><span id="descriptionCounter">0</span>/2000</small>
           </label>
 
-          <label class="field">
-            <span>Текст работы</span>
-            <textarea id="bodyInput" name="body_text" maxlength="200000" rows="12" placeholder="Можно оставить пустым, если работа загружена файлом."></textarea>
-            <small><span id="bodyCounter">0</span>/200000</small>
-          </label>
+          <fieldset class="choice-field">
+            <legend>9. Визуал: палитра или картинка</legend>
+            <div class="choice-row" data-choice-group="visualMode">
+              <label class="choice"><input type="checkbox" value="palette"> 4 цвета RGB</label>
+              <label class="choice"><input type="checkbox" value="image"> Картинка</label>
+            </div>
+          </fieldset>
 
-          <label class="field">
-            <span>Ссылка <em>необязательно</em></span>
-            <input id="urlInput" name="external_url" type="url" maxlength="2048" placeholder="https://...">
-          </label>
+          <div id="paletteFields" class="conditional hidden">
+            <p class="muted">Выбери четыре цвета — можно менять их через палитру или вводить значения R, G, B.</p>
+            <div id="palettePreview" class="palette-preview" aria-label="Предпросмотр четырех выбранных цветов"></div>
+            <div id="paletteEditors" class="palette-editors"></div>
+          </div>
+
+          <div id="imageFields" class="conditional hidden">
+            <label class="field">
+              <span>Изображение для заявки · PNG или JPEG</span>
+              <input id="imageInput" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg">
+            </label>
+            <img id="imagePreview" class="image-preview hidden" alt="Предпросмотр выбранной картинки">
+            <p id="imageUploadStatus" class="muted">Изображение будет приложено к заявке. Удалить его можно ниже в списке файлов.</p>
+          </div>
+
+          <details class="optional-text">
+            <summary>Дополнительно: полный текст произведения (необязательно)</summary>
+            <label class="field">
+              <span>Текст работы</span>
+              <textarea id="bodyInput" name="body_text" maxlength="200000" rows="8" placeholder="Можно оставить пустым — достаточно ссылки на Фикбук."></textarea>
+              <small><span id="bodyCounter">0</span>/200000</small>
+            </label>
+          </details>
         </div>
 
         <div class="card attachments-card">
           <div class="section-title">
             <div>
               <h2>Файлы</h2>
-              <p class="muted">PDF, DOCX или TXT · до 20 МБ · максимум 3</p>
+              <p class="muted">PDF, DOCX, TXT, PNG или JPEG · до 20 МБ · максимум 3</p>
             </div>
             <label class="button button-secondary file-button">
               Добавить
-              <input id="fileInput" type="file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" multiple>
+              <input id="fileInput" type="file" accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,image/png,image/jpeg" multiple>
             </label>
           </div>
           <div id="attachmentList" class="attachment-list"></div>

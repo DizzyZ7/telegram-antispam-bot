@@ -26,7 +26,7 @@ from .models import (
     SubmissionSummary,
     ValidationError,
 )
-from .uploads import NormalizedSubmissionFields, ValidatedUpload
+from .uploads import NormalizedSubmissionFields, ValidatedUpload, normalize_submission_details
 
 
 def _uuid(value: object | None) -> UUID | None:
@@ -118,6 +118,7 @@ def _revision_from_row(row: asyncpg.Record) -> SubmissionRevision:
         sealed_at=(
             int(row["sealed_at"]) if row["sealed_at"] is not None else None
         ),
+        details=json.loads(str(row["details_json"] or "{}")),
     )
 
 
@@ -169,6 +170,7 @@ SELECT
     r.description,
     r.body_text,
     r.external_url,
+    r.details_json,
     r.created_at AS revision_created_at,
     r.updated_at AS revision_updated_at,
     r.sealed_at
@@ -278,6 +280,7 @@ class PostgresWritersSubmissionStorage:
                 description TEXT NOT NULL,
                 body_text TEXT NOT NULL,
                 external_url TEXT,
+                details_json TEXT NOT NULL DEFAULT '{}',
                 created_at BIGINT NOT NULL,
                 updated_at BIGINT NOT NULL,
                 sealed_at BIGINT,
@@ -289,6 +292,11 @@ class PostgresWritersSubmissionStorage:
                     UNIQUE(submission_id, revision_number)
             )
             """
+        )
+        # Idempotent migration for pre-v2 revisions; do not drop existing drafts.
+        await connection.execute(
+            "ALTER TABLE writers_submission_revisions "
+            "ADD COLUMN IF NOT EXISTS details_json TEXT NOT NULL DEFAULT '{}'"
         )
         await connection.execute(
             """
@@ -674,13 +682,14 @@ class PostgresWritersSubmissionStorage:
                         description,
                         body_text,
                         external_url,
+                        details_json,
                         created_at,
                         updated_at
                     )
                     VALUES(
                         $1, $2, 1, 'DRAFT',
-                        $3, $4, $5, $6, $7, $8,
-                        $9, $9
+                        $3, $4, $5, $6, $7, $8, $9,
+                        $10, $10
                     )
                     """,
                     revision_id,
@@ -691,6 +700,7 @@ class PostgresWritersSubmissionStorage:
                     fields.description,
                     fields.body_text,
                     fields.external_url,
+                    json.dumps(fields.details, ensure_ascii=False, separators=(",", ":")),
                     now,
                 )
                 await connection.execute(
@@ -825,7 +835,8 @@ class PostgresWritersSubmissionStorage:
                         description = $5,
                         body_text = $6,
                         external_url = $7,
-                        updated_at = $8
+                        details_json = $8,
+                        updated_at = $9
                     WHERE id = $1 AND state = 'DRAFT'
                     """,
                     revision_id,
@@ -835,6 +846,7 @@ class PostgresWritersSubmissionStorage:
                     fields.description,
                     fields.body_text,
                     fields.external_url,
+                    json.dumps(fields.details, ensure_ascii=False, separators=(",", ":")),
                     now,
                 )
                 if result != "UPDATE 1":
@@ -1126,13 +1138,14 @@ class PostgresWritersSubmissionStorage:
                         description,
                         body_text,
                         external_url,
+                        details_json,
                         created_at,
                         updated_at
                     )
                     VALUES(
                         $1, $2, $3, 'DRAFT',
-                        $4, $5, $6, $7, $8, $9,
-                        $10, $10
+                        $4, $5, $6, $7, $8, $9, $10,
+                        $11, $11
                     )
                     """,
                     revision_id,
@@ -1144,6 +1157,7 @@ class PostgresWritersSubmissionStorage:
                     source["description"],
                     source["body_text"],
                     source["external_url"],
+                    source["details_json"],
                     now,
                 )
                 await connection.execute(
@@ -1639,6 +1653,7 @@ class PostgresWritersSubmissionStorage:
                     """
                     SELECT
                         COUNT(*) AS file_count,
+                        COUNT(*) FILTER (WHERE detected_file_class IN ('png', 'jpeg')) AS image_count,
                         COUNT(*) FILTER (
                             WHERE NULLIF(BTRIM(telegram_file_id), '') IS NULL
                         ) AS invalid_file_count
@@ -1652,9 +1667,27 @@ class PostgresWritersSubmissionStorage:
                 invalid_file_count = int(file_stats["invalid_file_count"] or 0)
                 if invalid_file_count:
                     raise ValidationError("Submission has an incomplete attachment")
-                if not str(revision["body_text"]).strip() and file_count == 0:
+                raw_details = json.loads(str(revision["details_json"] or "{}"))
+                details = (
+                    normalize_submission_details(raw_details, complete=True)
+                    if raw_details else {}
+                )
+                if details and any(
+                    not str(revision[name] or "").strip()
+                    for name in ("title", "genre", "description")
+                ):
+                    raise ValidationError("title, direction and description are required")
+                if details and str(revision["work_type"]) not in {"ФФ", "Оридж"}:
+                    raise ValidationError("work_type must be ФФ or Оридж")
+                if details and str(revision["work_type"]) == "ФФ" and not details["fandom"]:
+                    raise ValidationError("fandom is required for fanfiction")
+                if details and not str(revision["external_url"] or "").strip():
+                    raise ValidationError("Ficbook URL is required")
+                if details.get("visual_mode") == "image" and not int(file_stats["image_count"] or 0):
+                    raise ValidationError("illustration image is required")
+                if not str(revision["body_text"]).strip() and file_count == 0 and not str(revision["external_url"] or "").strip():
                     raise ValidationError(
-                        "Submission requires body text or at least one ready file"
+                        "Submission requires an HTTPS link, body text or a ready file"
                     )
 
                 sealed = await connection.execute(
@@ -2216,7 +2249,8 @@ class PostgresWritersSubmissionStorage:
                 r.genre,
                 r.description,
                 r.body_text,
-                r.external_url
+                r.external_url,
+                r.details_json
             FROM writers_submissions AS s
             JOIN writers_submission_revisions AS r
               ON r.submission_id = s.id
@@ -2250,6 +2284,7 @@ class PostgresWritersSubmissionStorage:
                 else None
             ),
             files=tuple(_file_from_row(item) for item in file_rows),
+            details=json.loads(str(row["details_json"] or "{}")),
         )
 
     async def get_author_notification_context(

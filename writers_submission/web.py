@@ -143,6 +143,7 @@ def _normalized_fields(payload: dict[str, Any]) -> Any:
         description=payload.get("description"),
         body_text=payload.get("body_text", ""),
         external_url=payload.get("external_url"),
+        details=payload.get("details"),
         # Draft persistence must not trust a browser claim that a file exists.
         # Actual ready-file existence is checked from PostgreSQL at submit time.
         has_ready_file=False,
@@ -191,6 +192,7 @@ def _bundle_payload(bundle: Any) -> dict[str, Any]:
                 "description": getattr(revision, "description", None),
                 "body_text": getattr(revision, "body_text", None),
                 "external_url": getattr(revision, "external_url", None),
+                "details": getattr(revision, "details", {}),
                 "created_at": getattr(revision, "created_at", None),
                 "updated_at": getattr(revision, "updated_at", None),
                 "sealed_at": getattr(revision, "sealed_at", None),
