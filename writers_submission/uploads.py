@@ -355,17 +355,17 @@ def validate_staged_file(
     if signature.startswith(b"%PDF-"):
         detected_class = "pdf"
         _validate_pdf(path)
-    elif signature.startswith(b"\\x89PNG\\r\\n\\x1a\\n".decode("unicode_escape").encode("latin1")):
+    elif signature.startswith(bytes.fromhex("89504e470d0a1a0a")):
         # Strict PNG magic and IHDR sanity check (no decoding untrusted image data).
         with path.open("rb") as image:
             header = image.read(24)
         if len(header) < 24 or header[12:16] != b"IHDR" or int.from_bytes(header[16:20], "big") <= 0 or int.from_bytes(header[20:24], "big") <= 0:
             raise ValidationError("PNG header is invalid")
         detected_class = "png"
-    elif signature.startswith(b"\\xff\\xd8\\xff".decode("unicode_escape").encode("latin1")):
+    elif signature.startswith(bytes.fromhex("ffd8ff")):
         with path.open("rb") as image:
             image.seek(-2, 2)
-            if image.read(2) != b"\\xff\\xd9".decode("unicode_escape").encode("latin1"):
+            if image.read(2) != bytes.fromhex("ffd9"):
                 raise ValidationError("JPEG ending is invalid")
         detected_class = "jpeg"
     elif signature.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
