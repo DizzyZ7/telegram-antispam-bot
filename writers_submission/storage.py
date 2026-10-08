@@ -1672,6 +1672,11 @@ class PostgresWritersSubmissionStorage:
                     normalize_submission_details(raw_details, complete=True)
                     if raw_details else {}
                 )
+                if details and any(
+                    not str(revision[name] or "").strip()
+                    for name in ("title", "genre", "description")
+                ):
+                    raise ValidationError("title, direction and description are required")
                 if details and str(revision["work_type"]) not in {"ФФ", "Оридж"}:
                     raise ValidationError("work_type must be ФФ or Оридж")
                 if details and str(revision["work_type"]) == "ФФ" and not details["fandom"]:
