@@ -13,6 +13,8 @@
     uploadPending: false,
     reloadRequired: false,
     bootstrapped: false,
+    paletteColors: ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"],
+    imagePreviewUrl: null,
   };
 
   const statusLabels = {
@@ -35,11 +37,16 @@
 
   const form = {
     title: $("titleInput"),
-    workType: $("workTypeInput"),
-    genre: $("genreInput"),
+    direction: $("directionInput"),
+    rating: $("ratingInput"),
+    fandom: $("fandomInput"),
     description: $("descriptionInput"),
     body: $("bodyInput"),
     url: $("urlInput"),
+    extraLinks: $("extraLinksInput"),
+    sizeWords: $("sizeWordsInput"),
+    pages: $("pagesInput"),
+    parts: $("partsInput"),
   };
 
   function makeIdempotencyKey(prefix) {
@@ -182,27 +189,191 @@
     }).format(new Date(numeric * 1000));
   }
 
+  function selectedChoice(name) {
+    const checked = document.querySelector(`[data-choice-group="${name}"] input:checked`);
+    return checked ? checked.value : "";
+  }
+
+  function setChoice(name, value) {
+    document.querySelectorAll(`[data-choice-group="${name}"] input`).forEach((input) => {
+      input.checked = input.value === value;
+    });
+  }
+
+  function positiveNumberOrNull(input) {
+    const value = String(input.value || "").trim();
+    return value && /^\\d+$/.test(value) && Number(value) > 0 ? Number(value) : null;
+  }
+
   function currentFields() {
     return {
-      title: form.title.value,
-      work_type: form.workType.value,
-      genre: form.genre.value,
+      title: form.title.value.trim(),
+      work_type: selectedChoice("workType"),
+      genre: form.direction.value.trim(),
       description: form.description.value,
       body_text: form.body.value,
       external_url: form.url.value.trim() || null,
       has_ready_file: state.attachments.length > 0,
+      details: {
+        form_version: 2,
+        fandom: selectedChoice("workType") === "ФФ" ? form.fandom.value.trim() : "",
+        size_category: selectedChoice("sizeCategory"),
+        rating: form.rating.value.trim(),
+        completion: selectedChoice("completion"),
+        size_words: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.sizeWords) : null,
+        pages: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.pages) : null,
+        parts: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.parts) : null,
+        extra_links: form.extraLinks.value.split(/\\r?\\n/).map((v) => v.trim()).filter(Boolean),
+        visual_mode: selectedChoice("visualMode"),
+        palette_colors: selectedChoice("visualMode") === "palette" ? state.paletteColors.slice() : [],
+      },
     };
+  }
+
+  function updateDynamicSections() {
+    const ff = selectedChoice("workType") === "ФФ";
+    const finished = selectedChoice("completion") === "завершен";
+    const visual = selectedChoice("visualMode");
+    $("fandomField").classList.toggle("hidden", !ff);
+    $("finishedFields").classList.toggle("hidden", !finished);
+    $("paletteFields").classList.toggle("hidden", visual !== "palette");
+    $("imageFields").classList.toggle("hidden", visual !== "image");
+    form.fandom.required = ff;
+    [form.sizeWords, form.pages, form.parts].forEach((field) => { field.required = finished; });
+  }
+
+  function clearImagePreview() {
+    if (state.imagePreviewUrl) {
+      URL.revokeObjectURL(state.imagePreviewUrl);
+      state.imagePreviewUrl = null;
+    }
+    $("imagePreview").removeAttribute("src");
+    $("imagePreview").classList.add("hidden");
   }
 
   function fillForm(submission) {
     const revision = submission && submission.revision ? submission.revision : {};
+    const details = revision.details || {};
     form.title.value = revision.title || "";
-    form.workType.value = revision.work_type || "";
-    form.genre.value = revision.genre || "";
+    setChoice("workType", ["ФФ", "Оридж"].includes(revision.work_type) ? revision.work_type : "");
+    setChoice("sizeCategory", details.size_category || "");
+    setChoice("completion", details.completion || "");
+    setChoice("visualMode", details.visual_mode || "");
+    form.direction.value = revision.genre || "";
+    form.fandom.value = details.fandom || "";
+    form.rating.value = details.rating || "";
+    form.sizeWords.value = details.size_words || "";
+    form.pages.value = details.pages || "";
+    form.parts.value = details.parts || "";
+    form.extraLinks.value = Array.isArray(details.extra_links) ? details.extra_links.join("\\n") : "";
+    state.paletteColors = Array.isArray(details.palette_colors) && details.palette_colors.length === 4
+      ? details.palette_colors.slice()
+      : ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"];
     form.description.value = revision.description || "";
     form.body.value = revision.body_text || "";
     form.url.value = revision.external_url || "";
+    clearImagePreview();
+    updateDynamicSections();
+    renderPalette();
     refreshCounters();
+    updateImageStatus();
+  }
+
+  function updateImageStatus() {
+    const images = state.attachments.filter((file) => ["png", "jpeg"].includes(file.file_class));
+    $("imageUploadStatus").textContent = images.length
+      ? `Картинка загружена: ${images.map((file) => file.filename).join(", ")}`
+      : "Загрузи PNG или JPEG. Изображение сохранится во вложениях и дойдет до модераторов.";
+  }
+
+  function markChanged() {
+    refreshCounters();
+    setSaveState("Есть изменения");
+    if (state.current) { autosave(); }
+  }
+
+  function renderPalette() {
+    const preview = $("palettePreview");
+    const editors = $("paletteEditors");
+    preview.replaceChildren();
+    editors.replaceChildren();
+    state.paletteColors.forEach((hex, index) => {
+      const swatch = document.createElement("div");
+      swatch.className = "palette-swatch";
+      swatch.style.backgroundColor = hex;
+      swatch.setAttribute("aria-label", `Цвет ${index + 1}: ${hex}`);
+      swatch.title = hex;
+      preview.append(swatch);
+
+      const editor = document.createElement("div");
+      editor.className = "palette-editor";
+      const caption = document.createElement("span");
+      caption.textContent = `Цвет ${index + 1}`;
+      const picker = document.createElement("input");
+      picker.type = "color";
+      picker.value = hex;
+      picker.setAttribute("aria-label", `Выбрать цвет ${index + 1}`);
+      const channels = [];
+      for (let channel = 0; channel < 3; channel += 1) {
+        const label = document.createElement("label");
+        label.textContent = ["R", "G", "B"][channel];
+        const input = document.createElement("input");
+        input.type = "number"; input.min = "0"; input.max = "255"; input.step = "1";
+        input.inputMode = "numeric";
+        input.value = parseInt(hex.slice(channel * 2 + 1, channel * 2 + 3), 16);
+        input.setAttribute("aria-label", `Цвет ${index + 1}, канал ${label.textContent}`);
+        input.addEventListener("change", () => {
+          const values = channels.map((node) => Number(node.value));
+          if (values.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+            setEditorError("Каналы RGB должны быть целыми числами от 0 до 255.");
+            return;
+          }
+          setEditorError("");
+          state.paletteColors[index] = `#${values.map((n) => n.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+          picker.value = state.paletteColors[index];
+          swatch.style.backgroundColor = picker.value;
+          markChanged();
+        });
+        channels.push(input);
+        label.append(input);
+        editor.append(label);
+      }
+      picker.addEventListener("input", () => {
+        state.paletteColors[index] = picker.value.toUpperCase();
+        swatch.style.backgroundColor = picker.value;
+        channels.forEach((node, c) => {
+          node.value = parseInt(picker.value.slice(c * 2 + 1, c * 2 + 3), 16);
+        });
+        markChanged();
+      });
+      editor.prepend(caption, picker);
+      editors.append(editor);
+    });
+  }
+
+  function validateReadyForm() {
+    const values = currentFields();
+    if (!values.title || !values.work_type || !values.details.size_category ||
+        !values.genre || !values.details.rating || !values.details.completion ||
+        !values.description.trim() || !values.external_url || !values.external_url.startsWith("https://") ||
+        !values.details.visual_mode) {
+      throw new Error("Заполни все обязательные строки анкеты и выбери варианты галочками.");
+    }
+    if (values.work_type === "ФФ" && !values.details.fandom) {
+      throw new Error("Для фанфика укажи фандом.");
+    }
+    if (values.details.completion === "завершен" &&
+        [values.details.size_words, values.details.pages, values.details.parts].some((n) => !n)) {
+      throw new Error("Для завершенной работы укажи размер в словах, страницы и части.");
+    }
+    if (values.details.extra_links.length > 5) {
+      throw new Error("Дополнительных ссылок может быть не больше пяти.");
+    }
+    if (values.details.visual_mode === "image" &&
+        !state.attachments.some((file) => ["png", "jpeg"].includes(file.file_class))) {
+      throw new Error("Добавь картинку PNG или JPEG.");
+    }
+    return values;
   }
 
   function refreshCounters() {
