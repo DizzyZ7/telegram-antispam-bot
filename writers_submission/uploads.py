@@ -187,22 +187,24 @@ def validate_submission_fields(
     details: object = None,
     require_work_content: bool = True,
 ) -> NormalizedSubmissionFields:
+    normalized_details = normalize_submission_details(details)
+    # v2 accepts partial drafts so authors can leave the Mini App and resume
+    # even before completing the application. Submit enforces required fields.
+    partial_draft = bool(normalized_details) and not require_work_content
+
+    def text_field(value: object, name: str, max_length: int) -> str:
+        if partial_draft and value == "":
+            return ""
+        return _compact_text(value, field=name, max_length=max_length)
+
     normalized = NormalizedSubmissionFields(
-        title=_compact_text(title, field="title", max_length=TITLE_MAX),
-        work_type=_compact_text(
-            work_type,
-            field="work_type",
-            max_length=WORK_TYPE_MAX,
-        ),
-        genre=_compact_text(genre, field="genre", max_length=GENRE_MAX),
-        description=_compact_text(
-            description,
-            field="description",
-            max_length=DESCRIPTION_MAX,
-        ),
+        title=text_field(title, "title", TITLE_MAX),
+        work_type=text_field(work_type, "work_type", WORK_TYPE_MAX),
+        genre=text_field(genre, "genre", GENRE_MAX),
+        description=text_field(description, "description", DESCRIPTION_MAX),
         body_text=_body_text(body_text),
         external_url=_external_url(external_url),
-        details=normalize_submission_details(details),
+        details=normalized_details,
     )
     if (
         bool(require_work_content)
