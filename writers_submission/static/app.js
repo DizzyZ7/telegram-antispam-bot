@@ -497,8 +497,20 @@
     const meta = $("detailMeta");
     meta.replaceChildren();
     [
-      ["Тип", revision.work_type || "—"],
-      ["Жанр", revision.genre || "—"],
+      ["Формат", revision.work_type || "—"],
+      ["Размер", (revision.details || {}).size_category || "—"],
+      ["Направление", revision.genre || "—"],
+      ["Рейтинг", (revision.details || {}).rating || "—"],
+      ["Статус произведения", (revision.details || {}).completion || "—"],
+      ["Фандом", (revision.details || {}).fandom || "—"],
+      ["Размер (слов)", (revision.details || {}).size_words || "—"],
+      ["Страниц", (revision.details || {}).pages || "—"],
+      ["Частей", (revision.details || {}).parts || "—"],
+      ["Фикбук", revision.external_url || "—"],
+      ["Другие ссылки", ((revision.details || {}).extra_links || []).join(" · ") || "—"],
+      ["Визуал", (revision.details || {}).visual_mode === "palette"
+        ? ((revision.details || {}).palette_colors || []).join(" · ")
+        : ((revision.details || {}).visual_mode === "image" ? "Картинка во вложениях" : "—")],
       ["Редакция", `№${revision.revision_number || 1}`],
       ["Обновлено", formatDate(state.current.updated_at) || "—"],
     ].forEach(([name, value]) => {
@@ -630,6 +642,7 @@
         state.current = payload.submission;
       }
       setSaveState("Сохранено");
+      return true;
     } catch (error) {
       if (error.code === "conflict") {
         setSaveState("Нужна перезагрузка");
@@ -637,6 +650,7 @@
         setSaveState("Не сохранено");
         setEditorError(error.message || "Не удалось сохранить черновик.");
       }
+      return false;
     } finally {
       state.autosavePending = false;
       updateActionAvailability();
@@ -648,8 +662,14 @@
       return;
     }
     setEditorError("");
-    await autosave({ immediate: true });
-    if (!state.current || state.reloadRequired) {
+    try {
+      validateReadyForm();
+    } catch (error) {
+      setEditorError(error.message);
+      return;
+    }
+    const saved = await autosave({ immediate: true });
+    if (!saved || !state.current || state.reloadRequired) {
       return;
     }
 
@@ -721,6 +741,7 @@
         state.current = refreshed.submission;
       }
       renderAttachments();
+      updateImageStatus();
       setSaveState("Файлы сохранены");
     } catch (error) {
       setEditorError(error.message || "Не удалось загрузить файл.");
@@ -748,6 +769,7 @@
       );
       state.current = refreshed.submission;
       renderAttachments();
+      updateImageStatus();
     } catch (error) {
       setEditorError(error.message || "Не удалось удалить файл.");
     } finally {
@@ -829,6 +851,20 @@
     $("saveButton").addEventListener("click", () => autosave({ immediate: true }));
     $("submitButton").addEventListener("click", submitCurrent);
     $("fileInput").addEventListener("change", (event) => uploadFiles(event.target.files));
+    $("imageInput").addEventListener("change", async (event) => {
+      const file = (event.target.files || [])[0];
+      if (!file) { return; }
+      if (!["image/png", "image/jpeg"].includes(file.type)) {
+        setEditorError("Выбери PNG или JPEG изображение.");
+        return;
+      }
+      clearImagePreview();
+      state.imagePreviewUrl = URL.createObjectURL(file);
+      $("imagePreview").src = state.imagePreviewUrl;
+      $("imagePreview").classList.remove("hidden");
+      await uploadFiles([file]);
+      $("imageInput").value = "";
+    });
     $("withdrawButton").addEventListener("click", withdrawCurrent);
     $("revisionButton").addEventListener("click", createRevision);
     $("reloadButton").addEventListener("click", () => {
@@ -838,12 +874,19 @@
     });
 
     Object.values(form).forEach((field) => {
-      field.addEventListener("input", () => {
-        refreshCounters();
-        setSaveState("Есть изменения");
-        if (state.current) {
-          autosave();
+      field.addEventListener("input", markChanged);
+    });
+    document.querySelectorAll("[data-choice-group] input").forEach((input) => {
+      input.addEventListener("change", () => {
+        // Checkbox semantics: clicking an active choice removes its checkmark.
+        // Choosing another value clears the previous choice in this group.
+        if (input.checked) {
+          input.closest("[data-choice-group]").querySelectorAll("input").forEach((other) => {
+            if (other !== input) { other.checked = false; }
+          });
         }
+        updateDynamicSections();
+        markChanged();
       });
     });
 
@@ -861,6 +904,8 @@
   async function boot() {
     bindEvents();
     renderAttachments();
+    renderPalette();
+    updateDynamicSections();
     setBusy(true);
     try {
       await bootstrapSession();
