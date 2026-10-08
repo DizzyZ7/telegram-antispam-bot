@@ -80,6 +80,91 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(version, "1")
 
+    async def test_ficbook_form_fields_survive_restart_and_submission(self):
+        form = NormalizedSubmissionFields(
+            title="Легенда",
+            work_type="Оридж",
+            genre="Джен",
+            description="Описание",
+            body_text="",
+            external_url="https://ficbook.net/readfic/555",
+            details={
+                "form_version": 2,
+                "fandom": "",
+                "size_category": "макси",
+                "rating": "R",
+                "completion": "завершен",
+                "size_words": 123000,
+                "pages": 210,
+                "parts": 30,
+                "extra_links": ["https://t.me/example"],
+                "visual_mode": "palette",
+                "palette_colors": ["#123456", "#223344", "#334455", "#445566"],
+            },
+        )
+        draft = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=form,
+            now=100,
+            idempotency_key="ficbook-draft",
+        )
+        self.assertEqual(draft.revision.details["size_category"], "макси")
+        self.assertEqual(draft.revision.details["palette_colors"][0], "#123456")
+        await self.storage.close()
+
+        reopened = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
+        await reopened.initialize()
+        self.storage = reopened
+        loaded = await reopened.get_for_author(draft.id, 77)
+        self.assertEqual(loaded.revision.details["parts"], 30)
+        self.assertEqual(loaded.revision.external_url, "https://ficbook.net/readfic/555")
+        sealed = await reopened.seal_and_submit(
+            submission_id=draft.id,
+            author_user_id=77,
+            expected_version=loaded.version,
+            idempotency_key="ficbook-submit",
+            now=110,
+        )
+        self.assertEqual(sealed.status, SubmissionStatus.SUBMITTED)
+        moderation = await reopened.get_moderation_delivery_context(
+            submission_id=draft.id,
+            revision_id=sealed.revision.id,
+        )
+        self.assertEqual(moderation.details["rating"], "R")
+        self.assertEqual(moderation.details["extra_links"], ["https://t.me/example"])
+
+    async def test_ficbook_form_requires_image_when_image_mode_selected(self):
+        form = NormalizedSubmissionFields(
+            title="Работа",
+            work_type="Оридж",
+            genre="Джен",
+            description="Описание",
+            body_text="",
+            external_url="https://ficbook.net/readfic/555",
+            details={
+                "form_version": 2,
+                "fandom": "",
+                "size_category": "мини",
+                "rating": "G",
+                "completion": "в процессе",
+                "size_words": None, "pages": None, "parts": None,
+                "extra_links": [],
+                "visual_mode": "image",
+                "palette_colors": [],
+            },
+        )
+        draft = await self.storage.create_submission(
+            author_user_id=77, writers_chat_id=-1002619489118,
+            fields=form, now=100, idempotency_key="ficbook-image",
+        )
+        with self.assertRaisesRegex(ValidationError, "illustration"):
+            await self.storage.seal_and_submit(
+                submission_id=draft.id, author_user_id=77,
+                expected_version=draft.version,
+                idempotency_key="ficbook-image-submit", now=101,
+            )
+
     async def test_create_list_get_and_update_owned_draft(self):
         created = await self.storage.create_submission(
             author_user_id=77,
