@@ -73,25 +73,136 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
     return result
 
 
-def _png_chunk(tag: bytes, content: bytes) -> bytes:
-    body = tag + content
-    return struct.pack(">I", len(content)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+# Fixed IKF banner format, matching the community's wide geometric covers.
+# The title always occupies the lower-right zone; clients cannot move it.
+COVER_TEMPLATES = ("classic", "ribbon", "contrast", "minimal")
+COVER_SIZE = (1200, 450)
 
 
-def render_palette_png(colors: list[str] | tuple[str, ...]) -> bytes:
-    """Render the author's four RGB selections as a genuine PNG, no PIL needed."""
+def _cover_layout(template: str) -> tuple[int, int, int]:
+    if template not in COVER_TEMPLATES:
+        raise ValueError("unsupported IKF cover template")
+    return {
+        "classic": (390, 0, 0),
+        "ribbon": (325, 55, -25),
+        "contrast": (465, -50, 45),
+        "minimal": (365, 10, 15),
+    }[template]
+
+
+def _foreground_color(hex_color: str) -> str:
+    rgb = [int(hex_color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+    luminance = sum(
+        weight * (part / 12.92 if part <= 0.04045 else ((part + 0.055) / 1.055) ** 2.4)
+        for weight, part in zip((0.2126, 0.7152, 0.0722), rgb)
+    )
+    return "#161923" if luminance > 0.24 else "#F5F3ED"
+
+
+def _title_lines(draw: object, title: str, font_path: str, *, max_width: int) -> tuple[list[str], object]:
+    from PIL import ImageFont
+
+    title = "«" + (" ".join(str(title or "Название произведения").split())[:200]) + "»"
+    words = title.split()
+    for size in range(66, 23, -2):
+        font = ImageFont.truetype(font_path, size)
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            candidate = (current + " " + word).strip()
+            if draw.textbbox((0, 0), candidate, font=font)[2] <= max_width:
+                current = candidate
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+        if len(lines) <= 2 and all(
+            draw.textbbox((0, 0), line, font=font)[2] <= max_width for line in lines
+        ):
+            return lines, font
+    # Keep a long unbroken word contained, even if font must be small.
+    font = ImageFont.truetype(font_path, 23)
+    content = title
+    while content and draw.textbbox((0, 0), content, font=font)[2] > max_width:
+        content = content[:-2] + "…"
+    return [content], font
+
+
+def render_palette_png(
+    colors: list[str] | tuple[str, ...],
+    title: str = "",
+    template: str = "classic",
+) -> bytes:
+    """Build branded ICФ cover from the author's four colors and work title.
+
+    All templates keep the title anchored to the bottom-right. This is not
+    a generic palette strip; the PNG is ready to accompany an owner DM post.
+    """
     if len(colors) != 4 or any(
         not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color)
         for color in colors
     ):
         raise ValueError("four RGB colors are required")
-    width, height = 800, 320
-    rgb = [bytes.fromhex(color[1:]) for color in colors]
-    scanline = b"\x00" + b"".join(color * (width // 4) for color in rgb)
-    pixels = scanline * height
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-        + _png_chunk(b"IDAT", zlib.compress(pixels, 9))
-        + _png_chunk(b"IEND", b"")
+    offset, ribbon, slope = _cover_layout(template)
+
+    from io import BytesIO
+    from pathlib import Path
+    from PIL import Image, ImageDraw
+
+    first, second, third, fourth = colors
+    width, height = COVER_SIZE
+    image = Image.new("RGB", COVER_SIZE, first)
+    draw = ImageDraw.Draw(image)
+    # Large clean diagonals, color #1 background + three other colors.
+    draw.polygon(
+        [(0, 40), (offset + 30, 335 + slope), (0, height)], fill=second
     )
+    draw.polygon(
+        [(0, height), (0, 320 + slope), (offset + 20, 294 + slope),
+         (width, 130 + ribbon), (width, height)], fill=third
+    )
+    draw.polygon(
+        [(0, height), (0, height - 35 - ribbon // 4),
+         (offset + 10, 335 + slope), (offset + 75, 347 + slope),
+         (width, 237 + ribbon // 2), (width, height)], fill=fourth
+    )
+    line_color = _foreground_color(first)
+    for idx in range(3):
+        delta = idx * 7
+        draw.line(
+            [(offset + 5 + delta, 333 + slope + delta),
+             (width, 88 + ribbon + delta)],
+            fill=line_color, width=3,
+        )
+
+    font_path = next(
+        (str(p) for p in (
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Italic.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf"),
+        ) if p.is_file()),
+        None,
+    )
+    if font_path is None:
+        raise RuntimeError("ICФ Cyrillic serif font is missing from the Docker image")
+
+    max_width = 770
+    lines, font = _title_lines(draw, title, font_path, max_width=max_width)
+    text_color = _foreground_color(fourth)
+    line_height = font.size + 9
+    y = height - 20 - len(lines) * line_height
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        text_width = bbox[2] - bbox[0]
+        draw.text(
+            (width - 36 - text_width, y - bbox[1]),
+            line,
+            font=font,
+            fill=text_color,
+        )
+        y += line_height
+
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
