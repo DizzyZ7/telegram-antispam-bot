@@ -24,6 +24,9 @@ WRITERS_RULES_URL = os.getenv(
 )
 WARNING_COOLDOWN_SECONDS = max(10, int(os.getenv("WRITERS_WARNING_COOLDOWN_SECONDS", "60")))
 RULES_LINK_PREVIEW_OPTIONS = LinkPreviewOptions(is_disabled=True)
+# Explicit owner-approved exemptions. Only profanity deletion is skipped in
+# these three Writers forum topics; all other chats/topics stay moderated.
+WRITERS_PROFANITY_EXEMPT_TOPIC_IDS = frozenset({14637, 42817, 292358})
 LEXICON_PATH = Path(__file__).resolve().parent / "data" / "moderation_lexicon.json"
 MessageDeletedHook = Callable[[int, int], Awaitable[object]]
 
@@ -346,6 +349,8 @@ class WritersChatFilter(BaseFilter):
 
 class ProhibitedLanguageFilter(BaseFilter):
     async def __call__(self, message: Message) -> bool:
+        if getattr(message, "message_thread_id", None) in WRITERS_PROFANITY_EXEMPT_TOPIC_IDS:
+            return False
         content = message.text or message.caption or ""
         user = getattr(message, "from_user", None)
         sender_chat = getattr(message, "sender_chat", None)
