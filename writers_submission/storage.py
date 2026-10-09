@@ -2154,7 +2154,7 @@ class PostgresWritersSubmissionStorage:
                     """,
                     submission_id, revision_id, int(reviewer_user_id), int(now),
                 )
-                if result != "INSERT 1":
+                if result != "INSERT 0 1":
                     return False
                 await connection.execute(
                     """
