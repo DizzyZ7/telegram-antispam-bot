@@ -55,3 +55,27 @@ precise word/obfuscation and `WRITERS_PROFANITY_DELETE_FAILED` lines,
 redacting tokens/other secrets. Review the compiled lexicon's coverage and
 Telegram delete permissions separately. GitHub tests cannot verify the
 admin rights of a live Bothost deployment.
+
+## Censored profanity with asterisks (October 2026)
+
+In addition to ordinary obscene words and existing separated-letter detection,
+the Writers filter now matches **masked whole words** containing `*` and
+similar Unicode stars (e.g. `бл*ть`, `н*хуя`, `х*й`,
+`п***ц`, `f*ck`). Matching uses a curated set of known obscene words,
+bounded missing-letter placeholders and normalized lookalike characters.
+This avoids treating every message with an asterisk as a violation.
+
+It does **not** remove innocent Markdown emphasis, arithmetic, fully redacted
+words (`****`) or highly ambiguous two-letter masks by default. Text and
+photo/document captions are covered. Asterisks cannot reveal a completely
+hidden word with sufficient confidence; report repeated false negatives for
+targeted updates rather than banning all masked messages.
+
+The exact owner-approved forum exemptions `14637`, `42817` and `292358`
+remain in place: even masked profanity is not auto-deleted inside those
+three topics. All other Writers topics follow the same policy.
+
+**Action:** detected messages are *deleted*, not an automatic permanent ban of
+the author's Telegram account. The existing warning policy is unchanged.
+No new Bothost environment variables or external services are required; full
+rebuild/redeploy of the current GitHub `main` is sufficient.
