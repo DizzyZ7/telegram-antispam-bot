@@ -10,6 +10,7 @@ import time
 import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,39 @@ SYMBOL_OBFUSCATION_PATTERN = re.compile(
     rf"[{TOKEN_CHAR_CLASS}](?:[^\w\s]+[{TOKEN_CHAR_CLASS}])+[{TOKEN_CHAR_CLASS}]*"
     rf"(?![{TOKEN_CHAR_CLASS}])",
     re.UNICODE,
+)
+
+# Asterisks conceal letters rather than simply separating existing letters:
+# 'бл*ть' must be compared against 'блять', not collapsed to 'блть'.
+# Restrict candidates to a single word and demand visible characters on both
+# sides, avoiding ordinary Markdown, lists, footnotes and arithmetic.
+MASKED_STAR_CHARS = "*＊✱∗﹡"
+MASKED_WORD_PATTERN = re.compile(
+    rf"(?<![{TOKEN_CHAR_CLASS}])"
+    rf"[{TOKEN_CHAR_CLASS}]+(?:[{re.escape(MASKED_STAR_CHARS)}]+[{TOKEN_CHAR_CLASS}]+)+"
+    rf"(?![{TOKEN_CHAR_CLASS}])"
+)
+MASKED_STAR_RUN_PATTERN = re.compile(rf"[{re.escape(MASKED_STAR_CHARS)}]+")
+# Explicit words, not generic stems. A broad '* matches anything' rule would
+# delete innocent partially redacted names and fictional dialogue.
+MASKED_OBSCENE_WORDS = (
+    "блять", "блядь", "блядство", "блядский", "ебать", "ебал",
+    "ебаный", "ебанутый", "ебнутый", "ебучий", "заебал",
+    "заебало", "заебись", "наебал", "выебал", "пиздец",
+    "пизда", "пиздеж", "пиздеть", "пиздатый", "пиздюк",
+    "хуй", "хуя", "хуярить", "хуйня", "хуево", "нихуя",
+    "нихуево", "нахуй", "похуй", "охуеть", "охуенно",
+    "ахуеть", "сука", "сучка", "мудак", "мудила",
+    "долбоеб", "уебок", "шлюха", "говно", "гавно",
+    "дерьмо", "пидор", "пидорас", "пидарас",
+    "гандон", "дебил", "сволочь", "мразь",
+)
+MASKED_LATIN_WORDS = (
+    "blyat", "blyad", "ebat", "zaebal", "pizda",
+    "pizdec", "pizdets", "huy", "huinya", "nahuy",
+    "ohuеть", "suka", "mudak", "dolboeb", "pidor",
+    "pidoras", "govno", "gavno", "fuck", "fucking",
+    "shit", "bitch", "cunt", "asshole",
 )
 
 
@@ -249,11 +283,61 @@ def _detect_candidates(matches: list[str] | Any) -> str | None:
     return None
 
 
+
+def _masked_word_skeleton(value: str, *, latin: bool) -> str:
+    normalizer = _normalize_latin_token if latin else _normalize_mixed_token
+    return "*".join(
+        normalizer(fragment) for fragment in MASKED_STAR_RUN_PATTERN.split(value)
+    )
+
+
+@lru_cache(maxsize=512)
+def _masked_skeleton_regex(skeleton: str, *, latin: bool) -> re.Pattern[str]:
+    # Each mask run stands for 1–5 missing letters; treat any count of
+    # adjacent '*' as one placeholder, matching common Telegram censorship.
+    alphabet = "[a-z0-9]" if latin else "[а-яa-z0-9]"
+    return re.compile(re.escape(skeleton).replace(r"\*", f"{alphabet}{{1,5}}"))
+
+
+def _detect_masked_profanity(text: str) -> str | None:
+    for found in MASKED_WORD_PATTERN.finditer(text):
+        token = found.group()
+        # Bound CPU work and reject weak/ambiguous two-letter masks. The two
+        # familiar unambiguous silhouettes х*й and п***ц are intentional.
+        if len(token) > 48 or len(MASKED_STAR_RUN_PATTERN.findall(token)) > 4:
+            continue
+        pieces = MASKED_STAR_RUN_PATTERN.split(token)
+        visible = sum(len(piece) for piece in pieces)
+        mixed = _masked_word_skeleton(token, latin=False)
+        if visible < 3:
+            first, last = mixed.split("*", 1)[0], mixed.rsplit("*", 1)[-1]
+            stars = sum(char in MASKED_STAR_CHARS for char in token)
+            if not (
+                (first == "х" and last == "й")
+                or (first == "п" and last == "ц" and stars >= 2)
+            ):
+                continue
+        for latin, dictionary in (
+            (False, MASKED_OBSCENE_WORDS),
+            (True, MASKED_LATIN_WORDS),
+        ):
+            skeleton = _masked_word_skeleton(token, latin=latin)
+            pattern = _masked_skeleton_regex(skeleton, latin=latin)
+            normalizer = _normalize_latin_token if latin else _normalize_mixed_token
+            if any(pattern.fullmatch(normalizer(word)) for word in dictionary):
+                return "obscene_masked"
+    return None
+
+
 def detect_prohibited_language(text: str) -> str | None:
     for raw_token in WORD_TOKEN_PATTERN.findall(text):
         category = _detect_prohibited_token(raw_token)
         if category is not None:
             return category
+
+    category = _detect_masked_profanity(text)
+    if category is not None:
+        return category
 
     category = _detect_candidates(SPACED_TOKEN_PATTERN.findall(text))
     if category is not None:
