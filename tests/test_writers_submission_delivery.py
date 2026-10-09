@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from io import BytesIO
+from PIL import Image
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -44,6 +46,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.storage = SimpleNamespace(
             claim_due_outbox=AsyncMock(return_value=[]),
             get_or_create_moderation_token=AsyncMock(return_value="opaque-token"),
+            is_cover_payment_confirmed=AsyncMock(return_value=True),
             get_moderation_delivery_context=AsyncMock(
                 return_value=SimpleNamespace(
                     author_user_id=77,
@@ -359,7 +362,9 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         ),)
         async def download(*args, **kwargs):
             self.assertEqual(args[0], "file-cover")
-            kwargs["destination"].write(b"photo data")
+            with BytesIO() as temp:
+                Image.new("RGB", (400, 260), (30, 50, 90)).save(temp, "PNG")
+                kwargs["destination"].write(temp.getvalue())
         self.bot.download.side_effect = download
 
         await self.worker.run_once(now=510)
@@ -375,6 +380,23 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             outbox_id=item.id, worker_id="worker-test", now=510,
             delivery_chat_id=2039781854, delivery_message_ids=(12, 10),
         )
+
+    async def test_unpaid_custom_cover_never_reaches_owner_as_photo(self):
+        item = moderation_item()
+        item.event_type = OutboxEventType.OWNER_PREVIEW
+        self.storage.claim_due_outbox.return_value = [item]
+        self.storage.is_cover_payment_confirmed.return_value = False
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.details = {"visual_mode": "image", "form_version": 2,
+                           "extra_links": [], "size_category": "макси",
+                           "rating": "R", "completion": "в процессе"}
+        await self.worker.run_once(now=511)
+        self.bot.download.assert_not_awaited()
+        self.bot.send_photo.assert_not_awaited()
+        self.bot.send_document.assert_not_awaited()
+        message = self.bot.send_message.await_args.kwargs
+        self.assertEqual(message["chat_id"], 2039781854)
+        self.assertIn("ожидает подтверждения оплаты", message["text"])
 
     async def test_non_owner_events_never_trigger_owner_preview(self):
         item = author_item(kind="APPROVED")
