@@ -13,6 +13,62 @@ from .uploads import validate_staged_file
 LOGGER = logging.getLogger(__name__)
 
 
+async def require_private_staging_chat(bot: Any, config: Any) -> None:
+    """Never stage an author's private files in a public or shared chat.
+
+    A Telegram chat ID alone cannot establish privacy: inspect getChat
+    immediately before each upload to detect a public @username, channel,
+    mistaken chat, or a changed archive group configuration.
+    """
+    target_id = int(config.file_chat_id)
+    disallowed = {
+        int(value)
+        for value in (
+            getattr(config, "writers_chat_id", None),
+            getattr(config, "moderation_chat_id", None),
+        )
+        if value is not None
+    }
+    if target_id >= 0 or target_id in disallowed:
+        LOGGER.error("WRITERS_FILE_DESTINATION_BLOCKED reason=unsafe_id")
+        raise ValidationError(
+            "Файлы не отправлены: хранилище настроено небезопасно. "
+            "Сообщи администрации ИКФ."
+        )
+    try:
+        chat = await bot.get_chat(target_id)
+    except Exception as exc:
+        LOGGER.error(
+            "WRITERS_FILE_DESTINATION_CHECK_FAILED chat_id=%s type=%s",
+            target_id, type(exc).__name__,
+        )
+        raise ValidationError(
+            "Файлы не отправлены: закрытое хранилище недоступно. "
+            "Сообщи администрации ИКФ."
+        ) from exc
+
+    kind = getattr(chat, "type", None)
+    kind = str(getattr(kind, "value", kind))
+    username = str(getattr(chat, "username", "") or "").strip()
+    more_usernames = getattr(chat, "active_usernames", None)
+    if (
+        int(getattr(chat, "id", 0)) != target_id
+        or kind not in {"group", "supergroup"}
+        or username
+        or more_usernames
+    ):
+        LOGGER.error(
+            "WRITERS_FILE_DESTINATION_BLOCKED chat_id=%s chat_type=%s "
+            "has_public_username=%s",
+            target_id, kind, bool(username or more_usernames),
+        )
+        raise ValidationError(
+            "Файлы не отправлены: нужен отдельный закрытый "
+            "чат-хранилище без публичного адреса."
+        )
+
+
+
 class WritersFileService:
     def __init__(
         self,
@@ -49,6 +105,10 @@ class WritersFileService:
             )
             if int(context.file_count) >= int(self.config.max_files):
                 raise ValidationError("maximum file count reached")
+
+            # Fail closed before the very first Telegram send_document call.
+            # Wrong/changed chat IDs must never expose private artwork.
+            await require_private_staging_chat(self.bot, self.config)
 
             staging_message = await self.bot.send_document(
                 chat_id=int(self.config.file_chat_id),
