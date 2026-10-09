@@ -38,6 +38,7 @@ function harness() {
     updateUploadProgress: () => {},
     setSaveState: () => {},
     clearImagePreview: () => {},
+    clearPendingFiles: () => { state.pendingFiles = []; state.coverFileId = null; },
     setReloadRequired: v => { state.reloadRequired = v; },
     setBusy: () => {},
     loadHistory: async () => {},
