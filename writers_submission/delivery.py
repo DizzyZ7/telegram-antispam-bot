@@ -236,7 +236,22 @@ class WritersDeliveryWorker:
                     now=int(now),
                 )
             except Exception as exc:
-                if _is_permanent_telegram_error(exc):
+                # The outbox is the source of truth; author acceptance/approval
+                # notifications do NOT imply delivery of the owner's promo.
+                # Previously every delivery failure was silently swallowed.
+                permanent = _is_permanent_telegram_error(exc)
+                LOGGER.error(
+                    "WRITERS_DELIVERY_FAILED event=%s submission_id=%s "
+                    "revision_id=%s attempt=%s permanent=%s error_type=%s",
+                    getattr(item.event_type, "value", str(item.event_type)),
+                    item.submission_id,
+                    item.revision_id,
+                    item.attempt_count,
+                    permanent,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                if permanent:
                     await self.storage.mark_outbox_permanent_failure(
                         outbox_id=item.id,
                         worker_id=self.worker_id,
@@ -265,6 +280,13 @@ class WritersDeliveryWorker:
                 delivery_chat_id=delivery_chat_id,
                 delivery_message_ids=delivery_message_ids,
             )
+            if item.event_type is OutboxEventType.OWNER_PREVIEW:
+                LOGGER.info(
+                    "WRITERS_OWNER_PREVIEW_DELIVERED submission_id=%s "
+                    "revision_id=%s destination_chat_id=%s message_ids=%s",
+                    item.submission_id, item.revision_id,
+                    delivery_chat_id, delivery_message_ids,
+                )
         return len(items)
 
     async def _deliver(
@@ -371,63 +393,92 @@ class WritersDeliveryWorker:
         details = context.details or {}
         visual_mode = details.get("visual_mode")
         photo = None
-        if visual_mode == "palette":
-            photo = BufferedInputFile(
-                render_palette_png(
-                    details.get("palette_colors", []),
-                    title=context.title,
-                ),
-                filename="ikf-palette-mockup.png",
-            )
-        elif visual_mode == "image":
-            paid = await self.storage.is_cover_payment_confirmed(
-                submission_id=item.submission_id, revision_id=item.revision_id,
-            )
-            if not paid:
-                # Backward compatibility for jobs approved before this release:
-                # never automatically publish a private artwork as a paid cover.
-                post = "💎 Своя обложка ожидает подтверждения оплаты.\n\n" + post
-            else:
-                image = next(
-                    (f for f in context.files if f.detected_file_class in {"png", "jpeg"}),
-                    None,
-                )
-                if image is None:
-                    raise ValueError("Approved work has no illustration attachment")
-                image_bytes = BytesIO()
-                await self.bot.download(image.telegram_file_id, destination=image_bytes)
-                data = image_bytes.getvalue()
-                if not data:
-                    raise RuntimeError("Telegram returned empty approved illustration")
+        try:
+            if visual_mode == "palette":
                 photo = BufferedInputFile(
-                    render_custom_cover_png(data, context.title),
-                    filename="ikf-custom-cover.png",
+                    render_palette_png(
+                        details.get("palette_colors", []),
+                        title=context.title,
+                    ),
+                    filename="ikf-palette-mockup.png",
                 )
+            elif visual_mode == "image":
+                paid = await self.storage.is_cover_payment_confirmed(
+                    submission_id=item.submission_id, revision_id=item.revision_id,
+                )
+                if not paid:
+                    post = "💎 Своя обложка ожидает подтверждения оплаты.\n\n" + post
+                else:
+                    image = next(
+                        (f for f in context.files if f.detected_file_class in {"png", "jpeg"}),
+                        None,
+                    )
+                    if image is None:
+                        raise ValueError("Approved work has no illustration attachment")
+                    image_bytes = BytesIO()
+                    await self.bot.download(
+                        image.telegram_file_id,
+                        destination=image_bytes,
+                    )
+                    data = image_bytes.getvalue()
+                    if not data:
+                        raise RuntimeError("Telegram returned empty approved illustration")
+                    photo = BufferedInputFile(
+                        render_custom_cover_png(data, context.title),
+                        filename="ikf-custom-cover.png",
+                    )
+        except Exception:
+            # Failed artwork is not a reason to withhold the approved work
+            # forever. Preserve the text and notify the owner that the image
+            # needs manual review; originals remain in moderation attachments.
+            LOGGER.exception(
+                "WRITERS_OWNER_PREVIEW_IMAGE_PREP_FAILED submission_id=%s",
+                item.submission_id,
+            )
+            post = "⚠️ Не удалось подготовить макет, проверь изображение в заявке.\n\n" + post
+            photo = None
 
         message_ids: list[int] = []
         if photo is not None:
-            # Photo caption has a separate 1024-character Telegram limit.
-            # Long ICФ posts are sent as a photo plus a complete copyable text.
-            caption = post if _utf16_units(post) <= 950 else "🖼️ Обложка одобренной работы. Готовый пост — следующим сообщением."
-            if isinstance(photo, BufferedInputFile) and len(photo.data) > 10 * 1024 * 1024:
-                photo_message = await self.bot.send_document(
-                    chat_id=owner_id,
-                    document=photo,
-                    caption="Иллюстрация к одобренной работе (размер более 10 МБ).",
+            # Telegram captions allow 1024 UTF-16 units *after HTML parsing*;
+            # keep a generous margin. Full long posts go in a second message.
+            caption = (
+                post
+                if _utf16_units(post) <= 850
+                else "🖼️ Черновой макет к одобренной работе. Текст — следующим сообщением."
+            )
+            try:
+                if len(photo.data) > 10 * 1024 * 1024:
+                    photo_message = await self.bot.send_document(
+                        chat_id=owner_id,
+                        document=photo,
+                        caption="Макет к одобренной работе (как документ).",
+                    )
+                    caption = None
+                else:
+                    photo_message = await self.bot.send_photo(
+                        chat_id=owner_id,
+                        photo=photo,
+                        caption=caption,
+                        parse_mode="HTML",
+                    )
+            except Exception as exc:
+                # A forbidden DM requires the owner to /start or unblock the
+                # bot; this must remain a failed outbox job, not be hidden.
+                if "forbidden" in type(exc).__name__.casefold():
+                    raise
+                LOGGER.exception(
+                    "WRITERS_OWNER_PREVIEW_IMAGE_SEND_FAILED submission_id=%s "
+                    "fallback=text",
+                    item.submission_id,
                 )
-                caption = None
+                post = "⚠️ Telegram не принял изображение. Текст поста ниже.\n\n" + post
             else:
-                photo_message = await self.bot.send_photo(
-                    chat_id=owner_id,
-                    photo=photo,
-                    caption=caption,
-                    parse_mode="HTML",
-                )
-            message_id = getattr(photo_message, "message_id", None)
-            if message_id is not None:
-                message_ids.append(int(message_id))
-            if caption == post:
-                return owner_id, tuple(message_ids)
+                message_id = getattr(photo_message, "message_id", None)
+                if message_id is not None:
+                    message_ids.append(int(message_id))
+                if caption == post:
+                    return owner_id, tuple(message_ids)
 
         published_text = await self.bot.send_message(
             chat_id=owner_id,

@@ -414,3 +414,51 @@ perform transactions or guarantee an agreed fee.
 **Note:** In the present stage a payment confirmation means the owner has
 personally attested payment received by their own method. Do not tap the
 confirmation button merely because a user claims they paid.
+
+## 16. Approved but the owner did not receive a post — delivery diagnostics
+
+**Approval and delivery are two different durable steps.** The author can
+receive `✅ Работа одобрена` even while the independent `OWNER_PREVIEW`
+job cannot be delivered to Telegram owner DM `2039781854`. A moderator
+card keyboard warning `message is not modified` is harmless; it is NOT
+the cause of an owner DM failing.
+
+By design, **all finished promo text and any illustration go only to
+the owner's private chat**. Telegram requires the *owner account itself*
+to open `@Fosgen_AntiSpam_bot` and send `/start`. The author starting the
+bot does not grant permission to message a different Telegram account.
+
+### How to recover a missing post
+
+1. Confirm the deployed build is current and `WRITERS_MODERATION_ROUTE_READY`
+   indicates `destination_chat_id=2039781854`. Check the loaded Mini App
+   asset version to avoid confusing a cached/older container with latest main.
+2. From the **owner's own personal Telegram account** (ID `2039781854`),
+   send `/start` to the bot and ensure it is not blocked.
+3. Send `/writers_delivery`. It shows the last owner posts with
+   `DELIVERED`, `PENDING`, `RETRYABLE_FAILED`, or `PERMANENT_FAILED`
+   and the technical error code.
+4. For a failed or missing approved post, send
+   `/writers_retry <submission UUID>`, for example
+   `/writers_retry 41e49749-1b2f-420d-9e47-a9b32d2f04da`.
+   Without a UUID, the command chooses the latest failed/missing approved
+   post. Recovery does **not** resend an already delivered item.
+5. Send `/writers_delivery` again and verify `DELIVERED`. If delivery
+   fails, search Bothost logs for `WRITERS_DELIVERY_FAILED
+   event=OWNER_PREVIEW`. Errors contain submission/revision ID,
+   retry/permanent classification and exception information.
+6. After successful delivery, verify the generated post and image before
+   publishing. A future *server-side outage* can cause duplicated Telegram
+   messages if it occurs after sending and before recording delivery; check
+   the owner's chat before manually retrying.
+
+If the palette image cannot be generated, or Telegram rejects a photo, the
+worker **falls back to sending the complete approved text** with an explanation,
+instead of losing the whole post. An actual forbidden private chat remains a
+failed job until the owner unblocks/starts the bot.
+
+These commands are restricted to the configured owner ID and private chat.
+They do **not** publish to the public IKF channel or writers group. No new
+Bothost ENV values are required; changes take effect only after rebuilding
+and restarting the new GitHub `main`. Existing PostgreSQL data/outbox jobs
+are preserved.

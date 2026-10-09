@@ -4,7 +4,7 @@ import unittest
 from io import BytesIO
 from PIL import Image
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from writers_submission.delivery import WritersDeliveryWorker
@@ -397,6 +397,66 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         message = self.bot.send_message.await_args.kwargs
         self.assertEqual(message["chat_id"], 2039781854)
         self.assertIn("ожидает подтверждения оплаты", message["text"])
+
+    async def test_failed_palette_render_falls_back_to_owner_text(self):
+        item = moderation_item()
+        item.event_type = OutboxEventType.OWNER_PREVIEW
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.title = "Тест"
+        context.details = {
+            "form_version": 2, "visual_mode": "palette",
+            "palette_colors": ["#123456", "#234567", "#345678", "#456789"],
+            "size_category": "мини", "rating": "G",
+            "completion": "в процессе", "extra_links": [],
+        }
+        with patch("writers_submission.delivery.render_palette_png",
+                   side_effect=RuntimeError("test image renderer broken")):
+            with self.assertLogs("writers_submission.delivery", level="ERROR") as log:
+                await self.worker.run_once(now=518)
+        self.assertIn("WRITERS_OWNER_PREVIEW_IMAGE_PREP_FAILED", "\n".join(log.output))
+        self.bot.send_photo.assert_not_awaited()
+        self.bot.send_message.assert_awaited_once()
+        kwargs = self.bot.send_message.await_args.kwargs
+        self.assertEqual(kwargs["chat_id"], 2039781854)
+        self.assertIn("Тест", kwargs["text"])
+        self.assertIn("Не удалось подготовить макет", kwargs["text"])
+        self.storage.mark_outbox_delivered.assert_awaited_once()
+
+    async def test_failed_photo_send_falls_back_to_owner_text(self):
+        item = moderation_item()
+        item.event_type = OutboxEventType.OWNER_PREVIEW
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.title = "Тест"
+        context.details = {
+            "form_version": 2, "visual_mode": "palette",
+            "palette_colors": ["#123456", "#234567", "#345678", "#456789"],
+            "size_category": "мини", "rating": "G",
+            "completion": "в процессе", "extra_links": [],
+        }
+        self.bot.send_photo.side_effect = RuntimeError("Telegram rejected photo")
+        with self.assertLogs("writers_submission.delivery", level="ERROR") as log:
+            await self.worker.run_once(now=519)
+        self.assertIn("WRITERS_OWNER_PREVIEW_IMAGE_SEND_FAILED", "\n".join(log.output))
+        self.bot.send_message.assert_awaited_once()
+        self.assertEqual(self.bot.send_message.await_args.kwargs["chat_id"], 2039781854)
+        self.assertIn("Тест", self.bot.send_message.await_args.kwargs["text"])
+        self.storage.mark_outbox_delivered.assert_awaited_once()
+
+    async def test_forbidden_owner_dm_stays_failed_with_visible_diagnostics(self):
+        item = moderation_item()
+        item.event_type = OutboxEventType.OWNER_PREVIEW
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.title = "Тест"
+        context.details = {"visual_mode": None, "extra_links": []}
+        self.bot.send_message.side_effect = TelegramForbiddenError("bot blocked by user")
+        with self.assertLogs("writers_submission.delivery", level="ERROR") as logs:
+            await self.worker.run_once(now=520)
+        self.assertIn("WRITERS_DELIVERY_FAILED event=OWNER_PREVIEW", "\n".join(logs.output))
+        self.storage.mark_outbox_permanent_failure.assert_awaited_once()
+        self.storage.mark_outbox_delivered.assert_not_awaited()
 
     async def test_non_owner_events_never_trigger_owner_preview(self):
         item = author_item(kind="APPROVED")

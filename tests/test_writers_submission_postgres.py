@@ -1108,6 +1108,81 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_owner_preview_recovery_requeues_failure_or_missing_approval_once(self):
+        created = await self.storage.create_submission(
+            author_user_id=77, writers_chat_id=-1002619489118,
+            fields=fields("Тест восстановления ИКФ"), now=100,
+            idempotency_key="recover-owner-create",
+        )
+        submitted = await self.storage.seal_and_submit(
+            submission_id=created.id, author_user_id=77,
+            expected_version=created.version,
+            idempotency_key="recover-owner-submit", now=110,
+        )
+        await self.storage.claim_submission(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+            reviewer_user_id=9001, now=120,
+        )
+        await self.storage.decide_submission(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+            reviewer_user_id=9001, action=ReviewAction.APPROVE,
+            comment=None, now=130,
+        )
+        assert self.storage.pool is not None
+        pool = self.storage.pool
+        status = await self.storage.get_owner_preview_delivery_status()
+        self.assertEqual(status[0]["submission_id"], submitted.id)
+        self.assertEqual(status[0]["state"], "PENDING")
+
+        await pool.execute(
+            "UPDATE writers_submission_outbox "
+            "SET state='PERMANENT_FAILED', last_error_code='TelegramForbiddenError' "
+            "WHERE submission_id=$1 AND event_type='OWNER_PREVIEW'",
+            submitted.id,
+        )
+        status = await self.storage.get_owner_preview_delivery_status()
+        self.assertEqual(status[0]["last_error_code"], "TelegramForbiddenError")
+        recovered = await self.storage.retry_failed_owner_preview(
+            submission_id=submitted.id, now=140,
+        )
+        self.assertEqual(recovered, submitted.id)
+        status = await self.storage.get_owner_preview_delivery_status()
+        self.assertEqual(status[0]["state"], "PENDING")
+        self.assertEqual(status[0]["attempt_count"], 0)
+        self.assertIsNone(status[0]["last_error_code"])
+        self.assertIsNone(await self.storage.retry_failed_owner_preview(
+            submission_id=submitted.id, now=141,
+        ))
+
+        # Recover an approval created by old builds with no OWNER_PREVIEW job.
+        await pool.execute(
+            "DELETE FROM writers_submission_outbox "
+            "WHERE submission_id=$1 AND event_type='OWNER_PREVIEW'",
+            submitted.id,
+        )
+        self.assertEqual(
+            await self.storage.retry_failed_owner_preview(
+                submission_id=submitted.id, now=150,
+            ), submitted.id,
+        )
+        row = await pool.fetchrow(
+            "SELECT state, COUNT(*) OVER () AS total "
+            "FROM writers_submission_outbox "
+            "WHERE submission_id=$1 AND event_type='OWNER_PREVIEW'",
+            submitted.id,
+        )
+        self.assertEqual(row["state"], "PENDING")
+        self.assertEqual(row["total"], 1)
+        # Already-delivered posts are never repeated by the recovery command.
+        await pool.execute(
+            "UPDATE writers_submission_outbox SET state='DELIVERED' "
+            "WHERE submission_id=$1 AND event_type='OWNER_PREVIEW'",
+            submitted.id,
+        )
+        self.assertIsNone(await self.storage.retry_failed_owner_preview(
+            submission_id=submitted.id, now=160,
+        ))
+
     async def test_concurrent_moderator_claim_has_exactly_one_winner(self):
         created = await self.storage.create_submission(
             author_user_id=77,
