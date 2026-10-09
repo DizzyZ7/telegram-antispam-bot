@@ -111,6 +111,7 @@ class SubmissionSummary:
 class DraftFileContext:
     revision_id: UUID
     file_count: int
+    fields_ready_for_upload: bool = True
 
 
 @dataclass(frozen=True, slots=True)
