@@ -9,7 +9,7 @@ from typing import Any, Callable
 from uuid import UUID
 
 from aiogram import F
-from aiogram.filters import BaseFilter, CommandStart
+from aiogram.filters import BaseFilter, Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -257,6 +257,95 @@ def register_writers_submission_handlers(
             reply_markup=keyboard,
         )
 
+    @app.dp.message(Command("writers_delivery"))
+    async def writers_delivery_status(message: Message) -> None:
+        """Operational diagnostics only in the owner's Telegram private DM."""
+        if (
+            _chat_type_value(message.chat) != "private"
+            or getattr(message, "from_user", None) is None
+            or int(message.from_user.id) != int(config.owner_user_id)
+        ):
+            return
+        try:
+            items = await service.storage.get_owner_preview_delivery_status()
+        except Exception:
+            LOGGER.exception("WRITERS_OWNER_DELIVERY_STATUS_FAILED")
+            await message.answer("Не удалось прочитать очередь доставки. Проверь логи.")
+            return
+        if not items:
+            await message.answer(
+                "📬 Очередь готовых постов пока пуста. "
+                "Если заявка одобрена в старой версии, используй "
+                "/writers_retry ID_заявки."
+            )
+            return
+        lines = ["📬 Доставка готовых постов ИКФ"]
+        for item in items:
+            state = str(item["state"])
+            mark = {
+                "DELIVERED": "✅", "PENDING": "🕐",
+                "IN_FLIGHT": "🚚", "RETRYABLE_FAILED": "🔄",
+                "PERMANENT_FAILED": "❌",
+            }.get(state, "❔")
+            title = html.escape(str(item["title"])[:70])
+            detail = (
+                f" · ошибка {html.escape(str(item['last_error_code']))}"
+                if item.get("last_error_code") else ""
+            )
+            lines.append(
+                f"{mark} <b>{title}</b> · {html.escape(state)}{detail}"
+                f"\n<code>{item['submission_id']}</code>"
+            )
+        lines.append(
+            "\nЕсли ошибка исправлена, отправь "
+            "<code>/writers_retry ID_заявки</code>. "
+            "Повторно доставленные посты проверяй перед публикацией."
+        )
+        await message.answer("\n\n".join(lines), parse_mode="HTML")
+
+    @app.dp.message(Command("writers_retry"))
+    async def writers_retry_preview(message: Message) -> None:
+        if (
+            _chat_type_value(message.chat) != "private"
+            or getattr(message, "from_user", None) is None
+            or int(message.from_user.id) != int(config.owner_user_id)
+        ):
+            return
+        parts = str(message.text or "").split(maxsplit=1)
+        submission_id = None
+        if len(parts) == 2:
+            try:
+                submission_id = UUID(parts[1].strip())
+            except (ValueError, TypeError):
+                await message.answer("Формат: /writers_retry UUID_заявки")
+                return
+        try:
+            target = await service.storage.retry_failed_owner_preview(
+                submission_id=submission_id,
+                now=int(now_fn()),
+            )
+        except Exception:
+            LOGGER.exception("WRITERS_OWNER_DELIVERY_RETRY_FAILED")
+            await message.answer("Не удалось восстановить доставку. Проверь логи.")
+            return
+        if target is None:
+            await message.answer(
+                "Нет подходящей одобренной заявки с ошибкой доставки. "
+                "Уже доставленные посты автоматически не дублируются. "
+                "Проверь /writers_delivery."
+            )
+            return
+        LOGGER.warning(
+            "WRITERS_OWNER_PREVIEW_MANUAL_REQUEUED submission_id=%s owner=%s",
+            target, int(config.owner_user_id),
+        )
+        await message.answer(
+            f"🔁 Пост <code>{target}</code> поставлен в очередь повторно. "
+            "Обычно доставка занимает несколько секунд. "
+            "Статус: /writers_delivery",
+            parse_mode="HTML",
+        )
+
     @app.dp.callback_query(F.data.startswith(f"{_CALLBACK_PREFIX}:"))
     async def writers_moderation_callback(callback: CallbackQuery) -> None:
         actor_id = int(callback.from_user.id)
@@ -409,12 +498,13 @@ def register_writers_submission_handlers(
                         ) if action_code == "c" else action_code == "p",
                     )
                 )
-        except Exception:
-            # PostgreSQL/service state is authoritative. Telegram editing is UX only.
-            LOGGER.warning(
-                "WRITERS_MODERATION_CARD_EDIT_FAILED",
-                exc_info=True,
-            )
+        except Exception as exc:
+            # Telegram returns this when the claim/paid-cover keyboard is
+            # already identical; it does not affect the saved review decision.
+            if "message is not modified" in str(exc).casefold():
+                LOGGER.debug("WRITERS_MODERATION_CARD_UNCHANGED")
+            else:
+                LOGGER.warning("WRITERS_MODERATION_CARD_EDIT_FAILED", exc_info=True)
 
         await callback.answer(answer_text)
 
@@ -491,6 +581,8 @@ def register_writers_submission_handlers(
     # subsystem. Promote only our three exact handlers so the deep-link start,
     # moderator callback and pending-comment flow cannot be swallowed first.
     _promote_registered_handler(app.dp.message, writers_submission_start)
+    _promote_registered_handler(app.dp.message, writers_delivery_status)
+    _promote_registered_handler(app.dp.message, writers_retry_preview)
     _promote_registered_handler(app.dp.message, writers_moderation_comment)
     _promote_registered_handler(app.dp.callback_query, writers_moderation_callback)
 
