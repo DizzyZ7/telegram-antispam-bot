@@ -144,6 +144,78 @@ def handlers_by_name(app, observer_name):
     }
 
 
+class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.owner_id = 2039781854
+        self.app = make_app()
+        self.storage = SimpleNamespace(
+            get_owner_preview_delivery_status=AsyncMock(return_value=[
+                {"submission_id": uuid4(), "revision_id": uuid4(),
+                 "state": "PERMANENT_FAILED", "attempt_count": 1,
+                 "last_error_code": "TelegramForbiddenError", "title": "Тест"}
+            ]),
+            retry_failed_owner_preview=AsyncMock(return_value=uuid4()),
+        )
+        self.service = make_service()
+        self.service.storage = self.storage
+        config = SimpleNamespace(
+            public_url="https://example.test/writers/",
+            moderation_chat_id=self.owner_id,
+            moderator_ids=frozenset({self.owner_id}),
+            owner_user_id=self.owner_id,
+        )
+        register_writers_submission_handlers(self.app, self.service, config)
+        handlers = handlers_by_name(self.app, "message")
+        self.status = handlers["writers_delivery_status"]
+        self.retry = handlers["writers_retry_preview"]
+
+    def private_message(self, text, *, actor_id=None, private=True):
+        actor_id = self.owner_id if actor_id is None else actor_id
+        return SimpleNamespace(
+            chat=SimpleNamespace(
+                id=actor_id if private else -100111,
+                type="private" if private else "supergroup",
+            ),
+            from_user=user(actor_id),
+            text=text,
+            answer=AsyncMock(),
+        )
+
+    async def test_owner_can_inspect_failed_preview(self):
+        message = self.private_message("/writers_delivery")
+        await self.status(message)
+        self.storage.get_owner_preview_delivery_status.assert_awaited_once()
+        body = message.answer.await_args.args[0]
+        self.assertIn("Тест", body)
+        self.assertIn("PERMANENT_FAILED", body)
+        self.assertIn("TelegramForbiddenError", body)
+
+    async def test_only_owner_in_private_chat_can_requeue(self):
+        for msg in (
+            self.private_message("/writers_retry", actor_id=12345),
+            self.private_message("/writers_retry", private=False),
+        ):
+            await self.retry(msg)
+            msg.answer.assert_not_awaited()
+        self.storage.retry_failed_owner_preview.assert_not_awaited()
+
+        target = uuid4()
+        owner = self.private_message(f"/writers_retry {target}")
+        await self.retry(owner)
+        self.storage.retry_failed_owner_preview.assert_awaited_once()
+        self.assertEqual(
+            self.storage.retry_failed_owner_preview.await_args.kwargs["submission_id"],
+            target,
+        )
+        self.assertIn("поставлен в очередь", owner.answer.await_args.args[0])
+
+    async def test_retry_rejects_invalid_uuid(self):
+        owner = self.private_message("/writers_retry not-a-uuid")
+        await self.retry(owner)
+        self.storage.retry_failed_owner_preview.assert_not_awaited()
+        self.assertIn("UUID", owner.answer.await_args.args[0])
+
+
 class WritersSubmissionStartFilterTests(unittest.IsolatedAsyncioTestCase):
     async def test_start_filter_matches_only_private_writers_submit(self):
         filter_ = WritersSubmissionStartFilter()
