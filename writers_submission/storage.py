@@ -1302,17 +1302,43 @@ class PostgresWritersSubmissionStorage:
             revision_id = _uuid(submission["current_draft_revision_id"])
             if revision_id is None:
                 raise ConflictError("Submission has no current draft revision")
-            state = await connection.fetchval(
+            revision = await connection.fetchrow(
                 """
-                SELECT state
+                SELECT state, title, work_type, genre, description,
+                       external_url, details_json
                 FROM writers_submission_revisions
                 WHERE id = $1 AND submission_id = $2
                 """,
                 revision_id,
                 submission_id,
             )
-            if state != RevisionState.DRAFT.value:
+            if revision is None or revision["state"] != RevisionState.DRAFT.value:
                 raise ConflictError("Draft revision is sealed")
+            # An old cached Mini App cannot bypass deferred uploads: the
+            # server independently verifies the form BEFORE send_document.
+            ready_for_upload = False
+            try:
+                details = normalize_submission_details(
+                    json.loads(str(revision["details_json"] or "{}")),
+                    complete=True,
+                )
+                valid_link = _external_url(revision["external_url"])
+                ready_for_upload = bool(
+                    str(revision["title"] or "").strip()
+                    and str(revision["genre"] or "").strip()
+                    and str(revision["description"] or "").strip()
+                    and str(revision["work_type"] or "") in {"ФФ", "Оридж"}
+                    and valid_link
+                    and (
+                        not details
+                        or (
+                            str(details.get("rating") or "").strip()
+                            and (str(revision["work_type"]) != "ФФ" or details.get("fandom"))
+                        )
+                    )
+                )
+            except (ValueError, TypeError, ValidationError):
+                ready_for_upload = False
             count = await connection.fetchval(
                 """
                 SELECT COUNT(*)
@@ -1325,6 +1351,7 @@ class PostgresWritersSubmissionStorage:
         return DraftFileContext(
             revision_id=revision_id,
             file_count=int(count or 0),
+            fields_ready_for_upload=ready_for_upload,
         )
 
     async def add_ready_file(
