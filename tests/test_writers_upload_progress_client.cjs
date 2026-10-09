@@ -10,7 +10,7 @@ const source = fs.readFileSync(
   path.join(__dirname, "..", "writers_submission", "static", "app.js"), "utf8"
 );
 const start = source.indexOf("  function updateUploadProgress(");
-const end = source.indexOf("  async function uploadFiles(", start);
+const end = source.indexOf("  async function queueFilesLocally(", start);
 assert.ok(start >= 0 && end > start, "progress helper must be in app.js");
 
 function harness() {
@@ -149,5 +149,5 @@ test("upload markup has both accessible progress regions", () => {
   assert.ok(html.includes('id="imageUploadBar"'));
   assert.ok(html.includes('role="status"'));
   assert.ok(html.includes('aria-live="polite"'));
-  assert.ok(html.includes('app.js?v=upload-progress-v1'));
+  assert.ok(html.includes('app.js?v=defer-upload-v1'));
 });
