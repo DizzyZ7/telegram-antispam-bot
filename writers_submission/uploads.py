@@ -123,6 +123,11 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
     if value.get("form_version") != 2:
         raise ValidationError("unsupported submission form version")
 
+    # Ignore obsolete layout choices stored by older clients. Existing
+    # revisions remain readable but newly saved drafts have only two modes.
+    legacy_template = value.get("cover_template")
+    if legacy_template not in (None, "", "classic", "ribbon", "contrast", "minimal"):
+        raise ValidationError("cover_template is no longer supported")
     details: dict[str, object] = {"form_version": 2}
     for name, limit in (("fandom", 160), ("rating", 40), ("characters", 600), ("notes", 1500)):
         raw = value.get(name, "")
@@ -134,7 +139,6 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
         ("size_category", {"мини", "миди", "макси"}),
         ("completion", {"завершен", "в процессе"}),
         ("visual_mode", {"palette", "image"}),
-        ("cover_template", {"classic", "ribbon", "contrast", "minimal"}),
     ):
         raw = value.get(name, "")
         if raw and (not isinstance(raw, str) or raw not in allowed):
@@ -183,8 +187,6 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
     if details["completion"] != "завершен":
         for name in ("size_words", "pages", "parts"):
             details[name] = None
-    if not details["cover_template"]:
-        details["cover_template"] = "classic"
     if details["visual_mode"] != "palette":
         details["palette_colors"] = []
 
