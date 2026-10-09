@@ -69,6 +69,16 @@ class WritersProfanityRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await language_filter(make_message(14637, text="Пишем новую главу")))
         self.assertTrue(await language_filter(make_message(14637, text="/блять")))
 
+    async def test_anonymous_admin_profanity_is_moderated_not_skipped_as_bot(self):
+        message = make_message(14637)
+        message.from_user.is_bot = True
+        message.sender_chat = SimpleNamespace(id=WRITERS_CHAT_ID)
+        self.assertTrue(await ProhibitedLanguageFilter()(message))
+
+        # Ordinary messages from bots stay outside the human profanity filter.
+        message.sender_chat = None
+        self.assertFalse(await ProhibitedLanguageFilter()(message))
+
     async def test_newer_catchall_cannot_get_priority_over_writers_moderation(self):
         app = make_app()
         register_writers_chat_handlers(app)
