@@ -554,7 +554,7 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         message_names = [
             item.callback.__name__
-            for item in app.dp.message.handlers[:2]
+            for item in app.dp.message.handlers[:4]
         ]
         callback_names = [
             item.callback.__name__
@@ -562,7 +562,8 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(
             set(message_names),
-            {"writers_submission_start", "writers_moderation_comment"},
+            {"writers_submission_start", "writers_moderation_comment",
+             "writers_delivery_status", "writers_retry_preview"},
         )
         self.assertEqual(
             callback_names,
