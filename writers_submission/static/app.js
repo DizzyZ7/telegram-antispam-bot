@@ -106,6 +106,15 @@
     $("saveButton").disabled = state.reloadRequired || state.autosavePending;
     $("fileInput").disabled = locked;
     $("imageInput").disabled = locked;
+    if (tg) {
+      const unsaved = state.autosavePending ||
+        state.editSequence > state.savedSequence;
+      if (unsaved && typeof tg.enableClosingConfirmation === "function") {
+        tg.enableClosingConfirmation();
+      } else if (!unsaved && typeof tg.disableClosingConfirmation === "function") {
+        tg.disableClosingConfirmation();
+      }
+    }
   }
 
   async function api(path, options = {}) {
@@ -306,7 +315,10 @@
     renderIkfCover();
     state.editSequence += 1;
     setSaveState("Есть несохраненные изменения");
-    void autosave();
+    updateActionAvailability();
+    // Create an actual server-side draft on the FIRST keystroke,
+    // not after a later click on "Save" or after the user leaves.
+    void autosave({ immediate: !state.current });
   }
 
   function renderPalette() {
