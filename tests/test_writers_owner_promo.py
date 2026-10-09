@@ -5,7 +5,7 @@ import unittest
 from io import BytesIO
 from PIL import Image
 
-from writers_submission.promo import render_owner_promo, render_palette_png, render_custom_cover_png, COVER_TEMPLATES
+from writers_submission.promo import render_owner_promo, render_palette_png, render_custom_cover_png
 from writers_submission.models import ModerationDeliveryContext
 
 
@@ -60,28 +60,22 @@ class OwnerPreviewFormattingTests(unittest.TestCase):
         self.assertIn("#NC17", post)
         self.assertIn("89 страниц, 15 частей", post)
 
-    def test_all_templates_keep_title_in_lower_right_and_differ(self):
-        samples = []
-        for template in COVER_TEMPLATES:
-            with self.subTest(template=template):
-                cover = render_palette_png(
-                    ["#8797A9", "#0F1A2B", "#3B4A61", "#526C82"],
-                    title="Ничто не может нас спасти",
-                    template=template,
-                )
-                with Image.open(BytesIO(cover)) as img:
-                    self.assertEqual(img.size, (1200, 450))
-                    self.assertEqual(img.mode, "RGB")
-                    self.assertEqual(img.getpixel((120, 30)), (135, 151, 169))
-                    # Bottom-right contains title ink rather than a bare band.
-                    background = (82, 108, 130)
-                    crop = img.crop((470, 315, 1160, 439))
-                    self.assertTrue(any(pixel not in (
-                        background, (245, 243, 237), (22, 25, 35)
-                    ) for pixel in crop.getdata()) or
-                        any(pixel == (245, 243, 237) for pixel in crop.getdata()))
-                samples.append(cover)
-        self.assertEqual(len(set(samples)), 4)
+    def test_one_fixed_rough_palette_shows_four_colors_and_lower_right_title(self):
+        colors = ["#8797A9", "#0F1A2B", "#3B4A61", "#526C82"]
+        cover = render_palette_png(colors, title="Ничто не может нас спасти")
+        with Image.open(BytesIO(cover)) as img:
+            self.assertEqual(img.size, (1200, 450))
+            self.assertEqual(img.mode, "RGB")
+            self.assertEqual(img.getpixel((120, 30)), (135, 151, 169))
+            self.assertGreater(len(set(img.getdata())), 4)
+            lower_right = img.crop((460, 300, 1170, 440))
+            self.assertTrue(any(
+                pixel == (245, 243, 237) or pixel == (22, 25, 35)
+                for pixel in lower_right.getdata()
+            ))
+        self.assertEqual(
+            cover, render_palette_png(colors, title="Ничто не может нас спасти")
+        )
 
     def test_paid_photo_cover_keeps_title_in_lower_right(self):
         original = Image.new("RGB", (500, 500), (240, 80, 120))
