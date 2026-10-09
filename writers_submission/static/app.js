@@ -104,7 +104,7 @@
     const locked = state.reloadRequired || state.autosavePending ||
       state.uploadPending || state.uploadPreparing;
     $("submitButton").disabled = locked;
-    $("saveButton").disabled = state.reloadRequired || state.autosavePending;
+    $("saveButton").disabled = locked;
     $("fileInput").disabled = locked;
     $("imageInput").disabled = locked;
     if (tg) {
