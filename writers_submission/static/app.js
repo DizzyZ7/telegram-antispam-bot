@@ -1032,7 +1032,7 @@
       // draft or waiting for Telegram storage/DB confirmation.
       bar.removeAttribute("value");
       $(`${prefix}UploadPercent`).textContent =
-        phase === "error" ? "Ошибка" : "Подождите";
+        phase === "error" ? "Ошибка" : phase === "waiting" ? "Не отправлено" : "Подождите";
     }
   }
 
