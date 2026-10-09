@@ -8,6 +8,7 @@
     current: null,
     attachments: [],
     pendingFiles: [],
+    coverFileId: null,
     timeline: [],
     autosaveTimer: null,
     autosavePending: false,
@@ -248,6 +249,7 @@
         characters: form.characters.value,
         notes: form.notes.value,
         visual_mode: selectedChoice("visualMode"),
+        cover_file_id: selectedChoice("visualMode") === "image" ? state.coverFileId : null,
         palette_colors: selectedChoice("visualMode") === "palette" ? state.paletteColors.slice() : [],
       },
     };
@@ -261,6 +263,12 @@
     $("finishedFields").classList.toggle("hidden", !finished);
     $("paletteFields").classList.toggle("hidden", visual !== "palette");
     $("imageFields").classList.toggle("hidden", visual !== "image");
+    if (visual !== "image" && state.pendingFiles.some((entry) => entry.source === "image")) {
+      state.pendingFiles = state.pendingFiles.filter((entry) => entry.source !== "image");
+      clearImagePreview();
+      renderAttachments();
+      updateImageStatus();
+    }
     if (visual === "palette") { renderIkfCover(); }
     form.fandom.required = ff;
     [form.sizeWords, form.pages, form.parts].forEach((field) => { field.required = finished; });
@@ -292,6 +300,7 @@
     form.extraLinks.value = Array.isArray(details.extra_links) ? details.extra_links.join("\n") : "";
     form.characters.value = details.characters || "";
     form.notes.value = details.notes || "";
+    state.coverFileId = details.cover_file_id || null;
     state.paletteColors = Array.isArray(details.palette_colors) && details.palette_colors.length === 4
       ? details.palette_colors.slice()
       : ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"];
@@ -561,6 +570,7 @@
 
   function clearPendingFiles() {
     state.pendingFiles = [];
+    state.coverFileId = null;
     clearImagePreview();
     $("fileInput").value = "";
     $("imageInput").value = "";
@@ -1158,6 +1168,10 @@
         // re-sending a successfully stored file after interrupted refresh.
         state.pendingFiles = state.pendingFiles.filter((item) => item.id !== entry.id);
         state.attachments.push(uploaded);
+        if (source === "image") {
+          state.coverFileId = uploaded.id;
+          state.editSequence += 1;
+        }
         done += 1;
         renderAttachments();
         updateImageStatus();
@@ -1206,6 +1220,10 @@
         { method: "DELETE" }
       );
       state.attachments = state.attachments.filter((file) => file.id !== fileId);
+      if (state.coverFileId === fileId) {
+        state.coverFileId = null;
+        state.editSequence += 1;
+      }
       const refreshed = await api(
         `/api/writers/submissions/${encodeURIComponent(state.current.id)}`
       );
