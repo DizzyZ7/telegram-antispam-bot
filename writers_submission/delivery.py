@@ -371,7 +371,21 @@ class WritersDeliveryWorker:
                 # A broken preview must not hide the actual submitted form.
         for index, attachment in enumerate(context.files, 1):
             label = "📁 Вложение"
-            if details.get("visual_mode") == "image" and index == 1:
+            cover_id = str(details.get("cover_file_id") or "")
+            is_paid_cover = (
+                details.get("visual_mode") == "image"
+                and (
+                    str(getattr(attachment, "id", "")) == cover_id
+                    if cover_id else (
+                        getattr(attachment, "detected_file_class", None) in {"png", "jpeg"}
+                        and not any(
+                            getattr(previous, "detected_file_class", None) in {"png", "jpeg"}
+                            for previous in context.files[:index - 1]
+                        )
+                    )
+                )
+            )
+            if is_paid_cover:
                 label = "🖼️ Своя обложка (платная опция, проверить оплату)"
             caption = (
                 label + " · " + str(index) + " из " + str(len(context.files))
@@ -453,8 +467,16 @@ class WritersDeliveryWorker:
                 if not paid:
                     post = "💎 Своя обложка ожидает подтверждения оплаты.\n\n" + post
                 else:
+                    cover_id = str(details.get("cover_file_id") or "")
                     image = next(
-                        (f for f in context.files if f.detected_file_class in {"png", "jpeg"}),
+                        (
+                            f for f in context.files
+                            if f.detected_file_class in {"png", "jpeg"}
+                            and (
+                                str(getattr(f, "id", "")) == cover_id
+                                if cover_id else True
+                            )
+                        ),
                         None,
                     )
                     if image is None:
