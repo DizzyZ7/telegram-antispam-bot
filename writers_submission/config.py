@@ -172,11 +172,15 @@ class WritersSubmissionConfig:
                 )
             moderator_ids = _moderator_ids()
 
+        file_chat_id = _required_int("WRITERS_SUBMISSION_FILE_CHAT_ID")
+        if file_chat_id >= 0 or file_chat_id in {int(writers_chat_id), int(moderation_chat_id)}:
+            raise ValueError("WRITERS_SUBMISSION_FILE_CHAT_ID must be a separate private file storage group")
+
         return cls(
             enabled=True,
             public_url=_validated_public_url(),
             moderation_chat_id=moderation_chat_id,
-            file_chat_id=_required_int("WRITERS_SUBMISSION_FILE_CHAT_ID"),
+            file_chat_id=file_chat_id,
             moderator_ids=moderator_ids,
             writers_chat_id=int(writers_chat_id),
             bind_host=(

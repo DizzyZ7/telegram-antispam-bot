@@ -63,6 +63,41 @@ class WritersSubmissionConfigTests(unittest.TestCase):
                         writers_chat_id=-1002619489118,
                     )
 
+    def test_public_writers_chat_cannot_be_used_as_file_storage(self):
+        env = self._enabled_env()
+        env["WRITERS_SUBMISSION_MODERATION_MODE"] = "Owner"
+        env["WRITERS_SUBMISSION_MOD_CHAT_ID"] = "-1002619489118"
+        env["WRITERS_SUBMISSION_FILE_CHAT_ID"] = "-1002619489118"
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ValueError, "separate private"):
+                WritersSubmissionConfig.from_env(
+                    bot_token="token", database_url="postgresql://db",
+                    writers_chat_id=-1002619489118,
+                )
+
+    def test_same_moderation_and_storage_chat_is_rejected(self):
+        env = self._enabled_env()
+        env["WRITERS_SUBMISSION_MODERATION_MODE"] = "group"
+        env["WRITERS_SUBMISSION_MOD_CHAT_ID"] = "-100222"
+        env["WRITERS_SUBMISSION_FILE_CHAT_ID"] = "-100222"
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ValueError, "separate private"):
+                WritersSubmissionConfig.from_env(
+                    bot_token="token", database_url="postgresql://db",
+                    writers_chat_id=-1002619489118,
+                )
+
+    def test_private_file_chat_id_must_be_negative_group(self):
+        env = self._enabled_env()
+        env["WRITERS_SUBMISSION_FILE_CHAT_ID"] = "2039781854"
+        env["WRITERS_SUBMISSION_MODERATION_MODE"] = "Owner"
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ValueError, "separate private"):
+                WritersSubmissionConfig.from_env(
+                    bot_token="token", database_url="postgresql://db",
+                    writers_chat_id=-1002619489118,
+                )
+
     def test_default_mode_routes_moderation_to_owner_even_with_stale_group_env(self):
         env = self._enabled_env()
         env.pop("WRITERS_SUBMISSION_MODERATION_MODE")

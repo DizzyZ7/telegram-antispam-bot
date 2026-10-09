@@ -497,3 +497,60 @@ No new environment variables or database migrations. After uploading
 the new source, the existing Bothost custom Dockerfile must be rebuilt.
 The Mini App asset query string changes to `upload-progress-v1` to avoid
 stale Telegram WebView caching.
+
+## 18. CRITICAL: Never stage author attachments in a public writers chat
+
+**Confirmed production misconfiguration (2026-10-09):**
+
+```env
+WRITERS_CHAT_ID=-1002619489118
+WRITERS_SUBMISSION_FILE_CHAT_ID=-1002619489118  # WRONG: public writers chat
+WRITERS_SUBMISSION_MOD_CHAT_ID=-1002619489118   # stale legacy setting
+WRITERS_SUBMISSION_MODERATION_MODE=Owner
+```
+
+The upload path uses `bot.send_document(chat_id=file_chat_id)` **before**
+PostgreSQL records an attachment. With the public Writers chat as the file
+destination, members could see personal unpublished photographs/documents.
+The user reported two exposed messages: `https://t.me/chat_IKF/507092`
+and `https://t.me/chat_IKF/507103`.
+
+**Urgent steps (perform before deploying this fix):**
+
+1. Immediately stop accepting new author file uploads.
+2. Delete exposed messages `507092` and `507103` in the public chat;
+   review previous uploads and delete any other leaked documents. Deleting
+   them from the group cannot reverse copies already viewed/downloaded.
+3. Create a **separate, invite-only Telegram group** specifically for
+   private attachment storage. Limit members to the owner and the bot (and
+   explicitly authorized administrators if essential). Do **not** add
+   community writers or assign a public `@username` to this archive.
+4. Give the bot permission to post documents and delete staging messages.
+   Determine the archive group's actual **negative** Telegram chat ID.
+5. On Bothost set `WRITERS_SUBMISSION_FILE_CHAT_ID` to **that separate
+   group's actual ID**. Keep `WRITERS_CHAT_ID=-1002619489118` for
+   author membership. Keep `WRITERS_SUBMISSION_MODERATION_MODE=Owner`
+   and `WRITERS_SUBMISSION_OWNER_USER_ID=2039781854` for owner DMs.
+   Remove stale `WRITERS_SUBMISSION_MOD_CHAT_ID` from owner-mode ENV
+   (it is ignored in owner mode). **Never invent a placeholder group ID.**
+6. Rebuild/restart latest GitHub main with custom Dockerfile and keep the
+   existing PostgreSQL data. On test upload, verify the attachment appears
+   **only in the private archive**, not in the Writers group, and that
+   the author sees it attached to their draft. Test subsequent owner review.
+
+**Defense in depth:**
+- Config rejects the same numeric ID as Writers or moderation destination,
+  and requires a group-like (negative) storage chat ID. An unsafe
+  configuration fails closed at startup; the bot may not start until the
+  ENV is corrected. Correct ENV *before* redeployment.
+- Before **each** `send_document`, backend checks `getChat` and refuses
+  a public `@username`, unexpected ID, channel, private user DM, missing
+  Telegram access or reused Writers/moderation ID. If Telegram chat
+  lookup fails, the upload fails closed instead of exposing files.
+- PostgreSQL attachment records still carry `telegram_file_id`; this
+  update does not automatically destroy or alter existing author drafts.
+  Review previously exposed archive messages separately.
+
+**Do not use `WRITERS_SUBMISSION_MOD_CHAT_ID` as file storage.** In Owner
+mode moderation/approved posts go to the private owner ID and the MOD_CHAT_ID
+is obsolete; it must not be reused for staging private author images.
