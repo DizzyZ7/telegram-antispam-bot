@@ -105,6 +105,10 @@ class WritersFileService:
             )
             if int(context.file_count) >= int(self.config.max_files):
                 raise ValidationError("maximum file count reached")
+            if not getattr(context, "fields_ready_for_upload", False):
+                raise ValidationError(
+                    "Заполни обязательные поля анкеты перед отправкой файла"
+                )
 
             # Fail closed before the very first Telegram send_document call.
             # Wrong/changed chat IDs must never expose private artwork.
