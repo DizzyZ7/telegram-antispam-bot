@@ -1073,99 +1073,107 @@
     });
   }
 
-  async function uploadFiles(fileList, source = "file") {
-    if (state.reloadRequired || state.uploadPending || state.uploadPreparing) {
-      return null;
-    }
+
+  async function queueFilesLocally(fileList, source = "file") {
+    if (state.reloadRequired || state.uploadPending || state.uploadPreparing) return false;
     const originals = Array.from(fileList || []);
-    if (!originals.length) { return null; }
-    const slots = Math.max(0, 3 - state.attachments.length);
-    if (originals.length > slots) {
-      const reason = slots
-        ? `Можно добавить еще только ${slots} файл(а). Максимум 3 вложения.`
-        : "Достигнут лимит: максимум 3 вложения. Удали старый файл перед загрузкой.";
-      setEditorError(reason);
-      updateUploadProgress(source, reason, null, "error");
-      return null;
+    if (!originals.length) return false;
+    const existing = state.pendingFiles.filter((entry) => source !== "image" || entry.source !== "image");
+    if (originals.length + existing.length + state.attachments.length > 3) {
+      setEditorError("Максимум три файла на одну работу. Убери лишнее вложение.");
+      return false;
     }
     state.uploadPreparing = true;
     updateActionAvailability();
-    setEditorError("");
-    let firstUploaded = null;
-    let savedCount = 0;
     try {
-      updateUploadProgress(source, "Подготавливаю выбранные файлы…");
-      const files = await Promise.all(originals.map(prepareUploadFile));
-      updateUploadProgress(source, "Сохраняю черновик перед загрузкой…");
-      const saved = await autosave({ immediate: true });
-      if (!saved || !state.current || state.reloadRequired) {
-        throw new Error("Не удалось сохранить черновик. Файл не отправлен.");
+      const prepared = [];
+      for (const original of originals) {
+        const file = await prepareUploadFile(original);
+        prepared.push({ id: makeIdempotencyKey("local-file"), file, source });
       }
-
-      state.uploadPending = true;
+      state.pendingFiles = existing.concat(prepared);
+      if (source === "image") {
+        clearImagePreview();
+        state.imagePreviewUrl = URL.createObjectURL(prepared[0].file);
+        $("imagePreview").src = state.imagePreviewUrl;
+        $("imagePreview").classList.remove("hidden");
+      }
+      renderAttachments();
+      updateImageStatus();
+      setEditorError("");
+      updateUploadProgress(source, "Выбрано, не отправлено. Передадим вместе с заполненной анкетой.", null, "waiting");
+      return true;
+    } catch (error) {
+      setEditorError(error.message || "Не удалось подготовить файл.");
+      updateUploadProgress(source, error.message || "Ошибка выбора файла", null, "error");
+      return false;
+    } finally {
+      state.uploadPreparing = false;
       updateActionAvailability();
-      setSaveState("Загружаю файлы…");
-      for (const [index, file] of files.entries()) {
-        const position = `${index + 1} из ${files.length}`;
-        updateUploadProgress(source, `Передаю файл ${position}: ${file.name}`, 0);
+    }
+  }
+
+  async function uploadQueuedFiles() {
+    if (state.reloadRequired || state.uploadPending || state.uploadPreparing) return false;
+    if (!state.pendingFiles.length) return true;
+    if (!state.current) {
+      setEditorError("Сначала сохрани черновик.");
+      return false;
+    }
+    state.uploadPending = true;
+    updateActionAvailability();
+    const count = state.pendingFiles.length;
+    let done = 0;
+    try {
+      const ordered = [
+        ...state.pendingFiles.filter((entry) => entry.source === "image"),
+        ...state.pendingFiles.filter((entry) => entry.source !== "image"),
+      ];
+      for (const entry of ordered) {
+        const file = entry.file, source = entry.source;
+        const position = (done + 1) + " из " + count;
+        updateUploadProgress(source, "Передаю " + position + ": " + file.name, 0);
         const formData = new FormData();
         formData.append("file", file, file.name);
         const uploaded = await sendFileWithProgress(
-          `/api/writers/submissions/${encodeURIComponent(state.current.id)}/files`,
+          "/api/writers/submissions/" + encodeURIComponent(state.current.id) + "/files",
           formData,
-          (percent) => updateUploadProgress(
-            source, `Передаю файл ${position}: ${file.name}`,
-            percent,
-          ),
-          () => updateUploadProgress(
-            source, `Файл ${position} передан. Сохраняем на сервере…`,
-            100, "processing",
-          ),
+          (percent) => updateUploadProgress(source, "Передаю " + position + ": " + file.name, percent),
+          () => updateUploadProgress(source, "Передано " + position + ". Сохраняем на сервере…", 100, "processing"),
         );
-        if (!firstUploaded) { firstUploaded = file; }
+        // HTTP 201 confirms storage. Remove locally before GET to avoid
+        // re-sending a successfully stored file after interrupted refresh.
+        state.pendingFiles = state.pendingFiles.filter((item) => item.id !== entry.id);
         state.attachments.push(uploaded);
-        savedCount += 1;
-        updateUploadProgress(
-          source, `Проверяю сохранение файла ${position}…`, null, "processing",
-        );
+        done += 1;
+        renderAttachments();
+        updateImageStatus();
+        updateUploadProgress(source, "Проверяю сохранение " + position + "…", null, "processing");
         try {
           const refreshed = await api(
-            `/api/writers/submissions/${encodeURIComponent(state.current.id)}`
+            "/api/writers/submissions/" + encodeURIComponent(state.current.id)
           );
           state.current = refreshed.submission;
         } catch (_error) {
-          // POST 201 means persisted already. Never tell the author to retry
-          // uploading blindly, as that would create duplicates.
           setReloadRequired(true);
-          throw new Error(
-            "Файл сохранен, но не удалось обновить анкету. Открой ее повторно, " +
-            "чтобы убедиться, что вложение есть в списке."
-          );
+          throw new Error("Файл уже сохранен, но версия анкеты не обновилась. Открой работу заново и проверь список.");
         }
-        renderAttachments();
-        updateImageStatus();
-        updateUploadProgress(
-          source, `✓ Файл добавлен (${position}): ${file.name}`, 100, "done",
-        );
+        updateUploadProgress(source, "✓ Файл сохранен " + position + ": " + file.name, 100, "done");
       }
-      setSaveState("Файлы сохранены");
-      return firstUploaded;
+      setSaveState("Все вложения сохранены");
+      return true;
     } catch (error) {
-      const reason = error.message || "Не удалось загрузить файл.";
-      const message = savedCount
-        ? `Сохранено файлов: ${savedCount} из ${originals.length}. ${reason}`
-        : reason;
-      setEditorError(message);
-      setSaveState(savedCount ? "Не все файлы загружены" : "Ошибка загрузки файла");
-      updateUploadProgress(source, message, null, "error");
-      return null;
+      setEditorError(
+        "Сохранено файлов: " + done + " из " + count + ". " +
+        (error.message || "Ошибка передачи.") +
+        " Заявка не отправлена. Проверь вложения и повтори попытку."
+      );
+      return false;
     } finally {
+      state.uploadPending = false;
+      updateActionAvailability();
       renderAttachments();
       updateImageStatus();
-      state.uploadPending = false;
-      state.uploadPreparing = false;
-      $("fileInput").value = "";
-      updateActionAvailability();
       if (state.editSequence > state.savedSequence && !state.reloadRequired) {
         void autosave();
       }
