@@ -1,12 +1,20 @@
 # Writers profanity moderation — incident response
 
-## Writers profanity must be moderated across every forum topic
+## Writers profanity moderation and three explicit forum exemptions
 
 The Writers language filter is scoped to `WRITERS_CHAT_ID`. It blocks
 prohibited words and severe insults, then asks Telegram to delete the
-offending message and posts a rules notice (rate-limited). **No forum thread
-is exempt from profanity deletion**. Historical bypassed topic IDs 14637,
-42817 and 292358 are explicitly covered by regression tests.
+offending message and posts a rules notice (rate-limited).
+
+**By explicit owner request, exactly three forum topic IDs are exempt from
+profanity deletion: `14637`, `42817`, `292358`.** This is a language-filter
+exception, not a shutdown of Zero Trust, Mini App, Lexicon or other handlers.
+All other topics, including the main/general Writers topic (`1` or no
+`message_thread_id`), are checked normally.
+
+The lexicon explicitly includes `нихуя` and `нихуе` prefixes, so a
+message such as `НИХУЯ СЕБЕ` must be classified as obscene in the general
+topic and deleted, assuming the bot has Telegram deletion rights.
 
 The handler is re-promoted to first position after all other handlers
 (including Writers Submission Mini App, Lexicon and Entertainment) finish
@@ -20,7 +28,7 @@ exempted.
 ## Bothost smoke checklist
 
 After deploying and restarting, look for:
-- `WRITERS_TOPIC_MODERATION_READY scope=all`
+- `WRITERS_TOPIC_EXCLUSIONS_READY ids=14637,42817,292358`
 - `WRITERS_MODERATION_PRIORITY_READY first=remove_prohibited_language`
 - `WRITERS_MODERATION_READY chat_id=-1002619489118` (or your actual Writers chat)
 - `WRITERS_MODERATION_DELETE_PERMISSION_READY`
@@ -37,7 +45,7 @@ A `WRITERS_MODERATION_SCOPE_MISSING` or unexpected `chat_id` indicates
 incorrect `WRITERS_CHAT_ID` / chat access and should be fixed before
 assuming a dictionary failure.
 
-Check with a permitted test account in a temporary, designated test topic
+Check with a permitted test account in a temporary, designated non-exempt test topic
 rather than sending profanity to the public community unnecessarily.
 The filter protects only the configured Writers community, not every chat in
 `ZERO_TRUST_CHAT_IDS`. The latter controls join verification.
