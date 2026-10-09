@@ -376,9 +376,8 @@ class WritersDeliveryWorker:
                 render_palette_png(
                     details.get("palette_colors", []),
                     title=context.title,
-                    template=details.get("cover_template", "classic"),
                 ),
-                filename="ikf-cover.png",
+                filename="ikf-palette-mockup.png",
             )
         elif visual_mode == "image":
             paid = await self.storage.is_cover_payment_confirmed(
