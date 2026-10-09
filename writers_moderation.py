@@ -351,7 +351,6 @@ class ProhibitedLanguageFilter(BaseFilter):
             message.from_user
             and not message.from_user.is_bot
             and content
-            and not content.startswith("/")
             and contains_prohibited_language(content)
         )
 
@@ -371,8 +370,21 @@ def register_writers_chat_handlers(
         try:
             await message.delete()
         except Exception as exc:
-            LOGGER.warning("Could not delete prohibited message: %s", exc)
+            LOGGER.warning(
+                "WRITERS_PROFANITY_DELETE_FAILED chat_id=%s topic_id=%s message_id=%s reason=%s",
+                getattr(message.chat, "id", None),
+                getattr(message, "message_thread_id", None),
+                getattr(message, "message_id", None),
+                type(exc).__name__,
+            )
             return
+
+        LOGGER.info(
+            "WRITERS_PROFANITY_DELETED chat_id=%s topic_id=%s message_id=%s",
+            getattr(message.chat, "id", None),
+            getattr(message, "message_thread_id", None),
+            getattr(message, "message_id", None),
+        )
 
         if on_message_deleted is not None:
             try:
@@ -408,3 +420,54 @@ def register_writers_chat_handlers(
 
     module.dp.message.handlers.insert(0, module.dp.message.handlers.pop())
     return scope
+
+
+def promote_writers_moderation_handler(dispatcher: Any) -> None:
+    """Enforce moderation priority after all modules register their handlers.
+
+    aiogram stops at the first matching handler. A newly promoted catch-all
+    must never hide the Writers profanity deletion handler.
+    """
+    handlers = getattr(getattr(dispatcher, "message", None), "handlers", None)
+    if not isinstance(handlers, list):
+        raise RuntimeError("Writers moderation dispatcher is not initialized")
+    for position, record in enumerate(handlers):
+        if getattr(getattr(record, "callback", None), "__name__", "") == "remove_prohibited_language":
+            if position:
+                handlers.insert(0, handlers.pop(position))
+            LOGGER.info(
+                "WRITERS_MODERATION_PRIORITY_READY first=remove_prohibited_language handlers=%s",
+                len(handlers),
+            )
+            return
+    raise RuntimeError("Writers profanity moderation handler was not registered")
+
+
+async def report_writers_delete_permission(bot: Any, chat_id: int | None) -> None:
+    """Best-effort startup check; failures never disable moderation."""
+    if chat_id is None:
+        LOGGER.warning("WRITERS_MODERATION_SCOPE_MISSING writers_chat_id=unresolved")
+        return
+    try:
+        member = await bot.get_chat_member(chat_id=int(chat_id), user_id=int(bot.id))
+    except Exception as exc:
+        LOGGER.warning(
+            "WRITERS_MODERATION_PERMISSION_CHECK_FAILED chat_id=%s reason=%s",
+            chat_id,
+            type(exc).__name__,
+        )
+        return
+    raw_status = getattr(member, "status", "")
+    status = str(getattr(raw_status, "value", raw_status)).lower()
+    can_delete = status in {"creator", "owner"} or (
+        status == "administrator" and bool(getattr(member, "can_delete_messages", False))
+    )
+    if can_delete:
+        LOGGER.info("WRITERS_MODERATION_DELETE_PERMISSION_READY chat_id=%s", chat_id)
+    else:
+        LOGGER.error(
+            "WRITERS_MODERATION_DELETE_PERMISSION_MISSING chat_id=%s bot_status=%s "
+            "grant bot administrator role with Delete messages permission",
+            chat_id,
+            status,
+        )
