@@ -134,7 +134,7 @@ def _moderation_text(context: Any) -> str:
             colors = details.get("palette_colors") or []
             lines.append(f"Палитра RGB: {_escaped_preview(', '.join(colors), max_units=120)}")
         elif details.get("visual_mode") == "image":
-            lines.append("Оформление: картинка во вложениях")
+            lines.append("Оформление: своя обложка — платная услуга, требуется подтверждение владельцем ИКФ")
         links = details.get("extra_links") or []
         if links:
             lines.append(f"Доп. ссылки: {_escaped_preview(' | '.join(links), max_units=450)}")
@@ -313,7 +313,9 @@ class WritersDeliveryWorker:
             chat_id=moderation_chat_id,
             text=_moderation_text(context),
             parse_mode="HTML",
-            reply_markup=build_moderation_keyboard(token),
+            reply_markup=build_moderation_keyboard(
+                token, paid_cover=(context.details or {}).get("visual_mode") == "image"
+            ),
         )
         card_message_id = getattr(card, "message_id", None)
         if card_message_id is not None:
@@ -371,8 +373,12 @@ class WritersDeliveryWorker:
         photo = None
         if visual_mode == "palette":
             photo = BufferedInputFile(
-                render_palette_png(details.get("palette_colors", [])),
-                filename="writers-palette.png",
+                render_palette_png(
+                    details.get("palette_colors", []),
+                    title=context.title,
+                    template=details.get("cover_template", "classic"),
+                ),
+                filename="ikf-cover.png",
             )
         elif visual_mode == "image":
             image = next(
