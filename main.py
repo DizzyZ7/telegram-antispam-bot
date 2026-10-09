@@ -156,7 +156,11 @@ apply_runtime_rule_overlay()
 import writers_moderation
 
 sanitize_compiled_lexicon()
-print("WRITERS_TOPIC_MODERATION_READY scope=all", flush=True)
+print(
+    "WRITERS_TOPIC_EXCLUSIONS_READY ids="
+    + ",".join(str(i) for i in sorted(writers_moderation.WRITERS_PROFANITY_EXEMPT_TOPIC_IDS)),
+    flush=True,
+)
 
 import legacy_main as app
 from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
