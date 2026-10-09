@@ -119,7 +119,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             worker_id="worker-test",
             now=100,
             delivery_chat_id=-100111,
-            delivery_message_ids=(11, 10),
+            delivery_message_ids=(10, 11),
         )
         self.storage.mark_outbox_retryable.assert_not_awaited()
         self.storage.mark_outbox_permanent_failure.assert_not_awaited()
