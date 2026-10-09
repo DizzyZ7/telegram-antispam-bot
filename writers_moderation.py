@@ -322,6 +322,11 @@ def _detect_masked_profanity(text: str) -> str | None:
             (True, MASKED_LATIN_WORDS),
         ):
             skeleton = _masked_word_skeleton(token, latin=latin)
+            # A Cyrillic fragment collapses to "" under the Latin-only
+            # normalizer. Without this check, e.g. "с*ема" becomes "*"
+            # and falsely matches any short English obscenity.
+            if any(not piece for piece in skeleton.split("*")):
+                continue
             pattern = _masked_skeleton_regex(skeleton, latin=latin)
             normalizer = _normalize_latin_token if latin else _normalize_mixed_token
             if any(pattern.fullmatch(normalizer(word)) for word in dictionary):
