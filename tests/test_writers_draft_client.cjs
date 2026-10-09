@@ -63,8 +63,7 @@ test("first edit creates a real server draft automatically", async () => {
   await h.newDraft();
   h.context.textValue = "Начатая история";
   h.markChanged();
-  assert.equal(h.state.current, null);
-  h.timers.at(-1).callback();
+  // The first edit starts POST immediately without waiting for debounce.
   await drain();
   assert.equal(h.state.current.id, "draft-one");
   assert.equal(calls.length, 1);
