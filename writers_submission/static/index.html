@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Writers Submission</title>
-  <link rel="stylesheet" href="/writers/app.css?v=two-cover-modes-v1">
+  <link rel="stylesheet" href="/writers/app.css?v=upload-progress-v1">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/writers/app.js?v=two-cover-modes-v1" defer></script>
+  <script src="/writers/app.js?v=upload-progress-v1" defer></script>
 </head>
 <body>
   <main class="shell" aria-live="polite">
@@ -155,6 +155,13 @@
             <img id="imagePreview" class="image-preview hidden" alt="Предпросмотр выбранной картинки">
             <p class="muted">Стоимость и способ оплаты согласуются с администрацией ИКФ. В анкете оплата не списывается. Обложка будет использована только после подтверждения оплаты владельцем.</p>
             <p id="imageUploadStatus" class="muted">Изображение прикрепится к заявке, но не станет обложкой без подтверждения оплаты.</p>
+            <section id="imageUploadProgress" class="upload-progress hidden" role="status" aria-live="polite" aria-atomic="true">
+              <div class="upload-progress-meta">
+                <span id="imageUploadLabel">Подготовка файла…</span>
+                <strong id="imageUploadPercent"></strong>
+              </div>
+              <progress id="imageUploadBar" max="100" aria-label="Прогресс передачи файла"></progress>
+            </section>
           </div>
 
           <details class="optional-text">
@@ -179,6 +186,13 @@
             </label>
           </div>
           <div id="attachmentList" class="attachment-list"></div>
+          <section id="fileUploadProgress" class="upload-progress hidden" role="status" aria-live="polite" aria-atomic="true">
+              <div class="upload-progress-meta">
+                <span id="fileUploadLabel">Подготовка файла…</span>
+                <strong id="fileUploadPercent"></strong>
+              </div>
+              <progress id="fileUploadBar" max="100" aria-label="Прогресс передачи файла"></progress>
+            </section>
         </div>
 
         <div id="editorError" class="banner banner-error hidden" role="alert"></div>

@@ -462,3 +462,38 @@ They do **not** publish to the public IKF channel or writers group. No new
 Bothost ENV values are required; changes take effect only after rebuilding
 and restarting the new GitHub `main`. Existing PostgreSQL data/outbox jobs
 are preserved.
+
+## 17. Visible attachment upload progress in the Telegram Mini App
+
+The general **Файлы → Добавить** picker and the paid **Своя фотография**
+picker share a real, accessible native HTML `<progress>` indicator.
+Unlike ordinary `fetch`, `XMLHttpRequest.upload` reports uploaded bytes
+from the actual HTTP request, allowing a percentage during transfer.
+Both request types preserve the existing same-origin authentication cookie,
+strict server MIME/signature checks and PostgreSQL attachment version logic.
+
+Stages: **Preparing the file** (including optional on-device HEIC/WebP JPEG
+conversion, indeterminate) → **Saving draft** (indeterminate) →
+**Transferring N of M files** (real percentage where the WebView exposes
+`lengthComputable`) → **100% transmitted, server saving** (not success yet)
+→ **verifying the persisted submission** → **file added** only after HTTP
+201 and a successful GET of the updated submission.
+
+The progress section stays visible with a success/failure label. Multiple
+files upload sequentially with an individual N-of-M indication. If one
+request fails, the UI reports how many were already persisted, to discourage
+blind repeats. If the upload POST succeeds but the post-upload refresh
+fails, it warns the author that the file is already saved and the form
+must be reopened; it does not falsely report that the upload failed.
+
+Upload failures do not silently disappear: server validation, HTTP
+conflict (409), network failure, timeout and unexpected responses produce
+explicit errors. Controls remain locked throughout preparation/upload to
+avoid overlapping requests, while pending draft edits resume afterward.
+The progress display does not bypass author eligibility, file limits,
+payment confirmation or moderation rules.
+
+No new environment variables or database migrations. After uploading
+the new source, the existing Bothost custom Dockerfile must be rebuilt.
+The Mini App asset query string changes to `upload-progress-v1` to avoid
+stale Telegram WebView caching.

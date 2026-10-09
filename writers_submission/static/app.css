@@ -594,3 +594,68 @@ textarea {
 @media (min-width: 680px) {
   .palette-editors { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Actual XMLHttpRequest transfer progress; indeterminate while converting or
+   waiting for PostgreSQL/Telegram persistence. Remains visible on success. */
+.upload-progress {
+  display: grid;
+  gap: 9px;
+  margin: 14px 0;
+  padding: 13px;
+  border-radius: 13px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.upload-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.upload-progress-meta > span {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.upload-progress-meta > strong {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+}
+.upload-progress progress {
+  display: block;
+  width: 100%;
+  height: 12px;
+  border: 0;
+  overflow: hidden;
+  border-radius: 30px;
+  accent-color: var(--accent);
+  background: var(--bg);
+}
+.upload-progress progress::-webkit-progress-bar {
+  background: var(--bg);
+  border-radius: 30px;
+}
+.upload-progress progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 30px;
+}
+.upload-progress progress::-moz-progress-bar {
+  background: var(--accent);
+  border-radius: 30px;
+}
+.upload-progress[data-phase="done"] {
+  border-color: color-mix(in srgb, #25936e 58%, var(--border));
+}
+.upload-progress[data-phase="error"] {
+  border-color: var(--danger);
+}
+.upload-progress[data-phase="error"] progress {
+  accent-color: var(--danger);
+}
+.upload-progress[data-phase="error"] progress::-webkit-progress-value {
+  background: var(--danger);
+}

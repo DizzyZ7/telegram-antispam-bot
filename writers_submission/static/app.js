@@ -15,6 +15,7 @@
     savedSequence: 0,
     createKey: null,
     uploadPending: false,
+    uploadPreparing: false,
     reloadRequired: false,
     bootstrapped: false,
     paletteColors: ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"],
@@ -100,9 +101,10 @@
   }
 
   function updateActionAvailability() {
-    const locked = state.reloadRequired || state.autosavePending || state.uploadPending;
+    const locked = state.reloadRequired || state.autosavePending ||
+      state.uploadPending || state.uploadPreparing;
     $("submitButton").disabled = locked;
-    $("saveButton").disabled = state.reloadRequired || state.autosavePending;
+    $("saveButton").disabled = locked;
     $("fileInput").disabled = locked;
     $("imageInput").disabled = locked;
     if (tg) {
@@ -938,62 +940,178 @@
     return file;
   }
 
-  async function uploadFiles(fileList) {
-    if (state.reloadRequired || state.uploadPending) {
+
+  function updateUploadProgress(source, label, percent = null, phase = "active") {
+    const prefix = source === "image" ? "image" : "file";
+    const panel = $(`${prefix}UploadProgress`);
+    const bar = $(`${prefix}UploadBar`);
+    panel.classList.remove("hidden");
+    panel.dataset.phase = phase;
+    $(`${prefix}UploadLabel`).textContent = label;
+    if (Number.isFinite(percent)) {
+      const bounded = Math.max(0, Math.min(100, Math.round(percent)));
+      bar.value = bounded;
+      $(`${prefix}UploadPercent`).textContent = `${bounded}%`;
+    } else {
+      // Native HTML <progress> indeterminate while preparing, saving a
+      // draft or waiting for Telegram storage/DB confirmation.
+      bar.removeAttribute("value");
+      $(`${prefix}UploadPercent`).textContent =
+        phase === "error" ? "Ошибка" : "Подождите";
+    }
+  }
+
+  function sendFileWithProgress(path, formData, onProgress, onTransferComplete) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", path, true);
+      xhr.withCredentials = true; // Preserve the Telegram Mini App session.
+      xhr.timeout = 300000;
+      xhr.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          onProgress(event.loaded / event.total * 100);
+        } else {
+          onProgress(null);
+        }
+      });
+      xhr.upload.addEventListener("load", () => {
+        // 100% is only the network upload, not confirmation of persistence.
+        onTransferComplete();
+      });
+      xhr.onload = () => {
+        let data = null;
+        try {
+          data = JSON.parse(xhr.responseText);
+        } catch (_error) {
+          data = null;
+        }
+        if (xhr.status === 409) {
+          setReloadRequired(true);
+          const conflict = new Error("Черновик изменился в другой вкладке.");
+          conflict.code = "conflict";
+          reject(conflict);
+          return;
+        }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const message = data && (data.message || data.error);
+          const error = new Error(message || `Ошибка сервера: HTTP ${xhr.status}`);
+          error.status = xhr.status;
+          error.code = data && data.error ? data.error : "request_failed";
+          reject(error);
+          return;
+        }
+        if (!data || !data.id) {
+          reject(new Error("Сервер не подтвердил сохранение файла."));
+          return;
+        }
+        resolve(data);
+      };
+      xhr.onerror = () => reject(new Error(
+        "Не удалось передать файл: соединение прервано. Проверь интернет."
+      ));
+      xhr.ontimeout = () => reject(new Error(
+        "Сервер слишком долго обрабатывает файл. Проверь список вложений перед повтором."
+      ));
+      xhr.onabort = () => reject(new Error("Загрузка файла прервана."));
+      try {
+        xhr.send(formData);
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  async function uploadFiles(fileList, source = "file") {
+    if (state.reloadRequired || state.uploadPending || state.uploadPreparing) {
       return null;
     }
     const originals = Array.from(fileList || []);
     if (!originals.length) { return null; }
     const slots = Math.max(0, 3 - state.attachments.length);
     if (originals.length > slots) {
-      setEditorError(slots
+      const reason = slots
         ? `Можно добавить еще только ${slots} файл(а). Максимум 3 вложения.`
-        : "Достигнут лимит: максимум 3 вложения. Удали старый файл перед загрузкой.");
+        : "Достигнут лимит: максимум 3 вложения. Удали старый файл перед загрузкой.";
+      setEditorError(reason);
+      updateUploadProgress(source, reason, null, "error");
       return null;
     }
-
-    setEditorError("");
-    let files;
-    try {
-      files = await Promise.all(originals.map(prepareUploadFile));
-    } catch (error) {
-      setEditorError(error.message || "Не удалось подготовить фотографию.");
-      return null;
-    }
-
-    // Always flush pending text changes before mutating the file count/version.
-    const saved = await autosave({ immediate: true });
-    if (!saved || !state.current || state.reloadRequired) { return null; }
-
-    state.uploadPending = true;
+    state.uploadPreparing = true;
     updateActionAvailability();
-    setSaveState("Загружаю файлы…");
+    setEditorError("");
     let firstUploaded = null;
+    let savedCount = 0;
     try {
-      for (const file of files) {
+      updateUploadProgress(source, "Подготавливаю выбранные файлы…");
+      const files = await Promise.all(originals.map(prepareUploadFile));
+      updateUploadProgress(source, "Сохраняю черновик перед загрузкой…");
+      const saved = await autosave({ immediate: true });
+      if (!saved || !state.current || state.reloadRequired) {
+        throw new Error("Не удалось сохранить черновик. Файл не отправлен.");
+      }
+
+      state.uploadPending = true;
+      updateActionAvailability();
+      setSaveState("Загружаю файлы…");
+      for (const [index, file] of files.entries()) {
+        const position = `${index + 1} из ${files.length}`;
+        updateUploadProgress(source, `Передаю файл ${position}: ${file.name}`, 0);
         const formData = new FormData();
         formData.append("file", file, file.name);
-        const uploaded = await api(
+        const uploaded = await sendFileWithProgress(
           `/api/writers/submissions/${encodeURIComponent(state.current.id)}/files`,
-          { method: "POST", body: formData }
+          formData,
+          (percent) => updateUploadProgress(
+            source, `Передаю файл ${position}: ${file.name}`,
+            percent,
+          ),
+          () => updateUploadProgress(
+            source, `Файл ${position} передан. Сохраняем на сервере…`,
+            100, "processing",
+          ),
         );
         if (!firstUploaded) { firstUploaded = file; }
         state.attachments.push(uploaded);
-        const refreshed = await api(
-          `/api/writers/submissions/${encodeURIComponent(state.current.id)}`
+        savedCount += 1;
+        updateUploadProgress(
+          source, `Проверяю сохранение файла ${position}…`, null, "processing",
         );
-        state.current = refreshed.submission;
+        try {
+          const refreshed = await api(
+            `/api/writers/submissions/${encodeURIComponent(state.current.id)}`
+          );
+          state.current = refreshed.submission;
+        } catch (_error) {
+          // POST 201 means persisted already. Never tell the author to retry
+          // uploading blindly, as that would create duplicates.
+          setReloadRequired(true);
+          throw new Error(
+            "Файл сохранен, но не удалось обновить анкету. Открой ее повторно, " +
+            "чтобы убедиться, что вложение есть в списке."
+          );
+        }
+        renderAttachments();
+        updateImageStatus();
+        updateUploadProgress(
+          source, `✓ Файл добавлен (${position}): ${file.name}`, 100, "done",
+        );
       }
       setSaveState("Файлы сохранены");
       return firstUploaded;
     } catch (error) {
-      setEditorError(error.message || "Не удалось загрузить файл. Попробуй еще раз.");
-      setSaveState("Ошибка загрузки файла");
+      const reason = error.message || "Не удалось загрузить файл.";
+      const message = savedCount
+        ? `Сохранено файлов: ${savedCount} из ${originals.length}. ${reason}`
+        : reason;
+      setEditorError(message);
+      setSaveState(savedCount ? "Не все файлы загружены" : "Ошибка загрузки файла");
+      updateUploadProgress(source, message, null, "error");
       return null;
     } finally {
       renderAttachments();
       updateImageStatus();
       state.uploadPending = false;
+      state.uploadPreparing = false;
       $("fileInput").value = "";
       updateActionAvailability();
       if (state.editSequence > state.savedSequence && !state.reloadRequired) {
@@ -1112,11 +1230,13 @@
     });
     $("saveButton").addEventListener("click", () => autosave({ immediate: true }));
     $("submitButton").addEventListener("click", submitCurrent);
-    $("fileInput").addEventListener("change", (event) => uploadFiles(event.target.files));
+    $("fileInput").addEventListener("change", (event) => {
+      void uploadFiles(event.target.files, "file");
+    });
     $("imageInput").addEventListener("change", async (event) => {
       const file = (event.target.files || [])[0];
       if (!file) { return; }
-      const uploaded = await uploadFiles([file]);
+      const uploaded = await uploadFiles([file], "image");
       $("imageInput").value = "";
       if (uploaded) {
         clearImagePreview();
