@@ -47,7 +47,7 @@ class FicbookFormUiTests(unittest.TestCase):
         self.assertIn("await autosave({ immediate: true })", script)
         self.assertIn("async function uploadQueuedFiles()", script)
         self.assertIn('state.savePromise', script)
-        self.assertIn('if (uploaded) {', script)
+        self.assertIn('await queueFilesLocally([file], "image")', script)
 
     def test_only_free_palette_or_paid_photo_without_cover_styles(self):
         html = (ROOT / "index.html").read_text(encoding="utf-8")
