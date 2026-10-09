@@ -414,6 +414,97 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
             )
 
 
+    async def test_old_file_class_constraint_migrates_and_preserves_attachments(self):
+        # Reproduce a real production installation originally created before
+        # JPG/PNG were added to the form. CREATE TABLE IF NOT EXISTS alone
+        # does not change that PostgreSQL CHECK constraint.
+        draft = await self.storage.create_submission(
+            author_user_id=77,
+            writers_chat_id=-1002619489118,
+            fields=fields("Старый черновик"),
+            now=100,
+            idempotency_key="photo-migration-draft",
+        )
+        old_file = await self.storage.add_ready_file(
+            submission_id=draft.id,
+            author_user_id=77,
+            revision_id=draft.revision.id,
+            upload=ValidatedUpload(
+                safe_filename="story.txt",
+                file_class="txt",
+                declared_mime="text/plain",
+                byte_size=8,
+                sha256="a" * 64,
+            ),
+            telegram_file_id="old-story",
+            telegram_file_unique_id=None,
+            storage_chat_id=-100222,
+            storage_message_id=101,
+            max_files=3,
+            now=101,
+        )
+        assert self.storage.pool is not None
+        async with self.storage.pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE writers_submission_files "
+                "DROP CONSTRAINT writers_submission_file_class_check"
+            )
+            await conn.execute(
+                "ALTER TABLE writers_submission_files "
+                "ADD CONSTRAINT writers_submission_file_class_check "
+                "CHECK (detected_file_class IN ('pdf', 'docx', 'txt'))"
+            )
+
+        await self.storage.close()
+        migrated = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
+        await migrated.initialize()
+        self.storage = migrated
+        assert migrated.pool is not None
+        definition = await migrated.pool.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid='writers_submission_files'::regclass "
+            "AND conname='writers_submission_file_class_check'"
+        )
+        self.assertIn("png", str(definition))
+        self.assertIn("jpeg", str(definition))
+        for index, (file_class, name, mime) in enumerate((
+            ("png", "cover.png", "image/png"),
+            ("jpeg", "cover.jpg", "image/jpeg"),
+        ), start=1):
+            await migrated.add_ready_file(
+                submission_id=draft.id,
+                author_user_id=77,
+                revision_id=draft.revision.id,
+                upload=ValidatedUpload(
+                    safe_filename=name,
+                    file_class=file_class,
+                    declared_mime=mime,
+                    byte_size=512,
+                    sha256=(str(index) * 64),
+                ),
+                telegram_file_id=f"photo-{index}",
+                telegram_file_unique_id=None,
+                storage_chat_id=-100222,
+                storage_message_id=101 + index,
+                max_files=3,
+                now=101 + index,
+            )
+        files = await migrated.list_files_for_author(
+            submission_id=draft.id, author_user_id=77
+        )
+        self.assertEqual({f.detected_file_class for f in files}, {"txt", "png", "jpeg"})
+        self.assertIn(old_file.id, {f.id for f in files})
+
+        # A second startup is idempotent and also leaves all photos intact.
+        await migrated.close()
+        again = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
+        await again.initialize()
+        self.storage = again
+        files = await again.list_files_for_author(
+            submission_id=draft.id, author_user_id=77
+        )
+        self.assertEqual(len(files), 3)
+
     async def test_ready_file_is_owner_scoped_and_survives_restart(self):
         created = await self.storage.create_submission(
             author_user_id=77,
