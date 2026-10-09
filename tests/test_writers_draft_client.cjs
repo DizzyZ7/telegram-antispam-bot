@@ -27,7 +27,7 @@ function createHarness(apiImpl) {
   const form = { title: { focus() {} } };
   const context = {
     state, form,
-    views: { editor: { classList: { contains: () => false } } },
+    views: { editor: { classList: { contains: () => true } } },
     refreshCounters() {}, renderIkfCover() {}, renderAttachments() {},
     fillForm() {}, show() {}, setReloadRequired(v) { state.reloadRequired = v; },
     setEditorError(m) { errors.push(m); }, setSaveState(v) { status.push(v); },
@@ -120,7 +120,7 @@ test("failed POST retains dirty edits and idempotency key on retry", async () =>
 
 test("a failed draft-save prevents switching to another blank form", async () => {
   const h = createHarness(async () => { throw Error("No network"); });
-  h.context.views.editor.classList.contains = () => true;
+  h.context.views.editor.classList.contains = () => false;
   h.state.current = { id: "draft-one", version: 1 };
   h.context.textValue = "Очень важный текст";
   h.markChanged();
