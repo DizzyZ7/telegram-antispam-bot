@@ -24,7 +24,6 @@ os.environ.setdefault("ENTERTAINMENT_CHAT_IDS", "-1002619489118")
 BUNDLED_LEXICON_PATH = APP_DIR / "bundled_moderation_lexicon.json"
 RUNTIME_DATA_DIR = Path(os.getenv("DATA_DIR", APP_DIR / "data"))
 RUNTIME_LEXICON_PATH = RUNTIME_DATA_DIR / "moderation_lexicon.json"
-IGNORED_WRITERS_TOPIC_IDS = frozenset({14637, 42817, 292358})
 ASCII_LATIN_PATTERN = re.compile(r"[A-Za-z]")
 CYRILLIC_PATTERN = re.compile(r"[А-Яа-яЁё]")
 
@@ -151,31 +150,13 @@ def sanitize_compiled_lexicon() -> tuple[int, int]:
     return removed_latin, removed_ambiguous
 
 
-def install_ignored_topic_filter() -> None:
-    import writers_moderation as moderation
-
-    original_call = moderation.ProhibitedLanguageFilter.__call__
-
-    async def scoped_call(instance: object, message: object) -> bool:
-        if getattr(message, "message_thread_id", None) in IGNORED_WRITERS_TOPIC_IDS:
-            return False
-        return await original_call(instance, message)
-
-    moderation.ProhibitedLanguageFilter.__call__ = scoped_call
-    print(
-        "WRITERS_TOPIC_EXCLUSIONS_READY "
-        f"ids={','.join(str(value) for value in sorted(IGNORED_WRITERS_TOPIC_IDS))}",
-        flush=True,
-    )
-
-
 sync_moderation_lexicon()
 apply_runtime_rule_overlay()
 
 import writers_moderation
 
 sanitize_compiled_lexicon()
-install_ignored_topic_filter()
+print("WRITERS_TOPIC_MODERATION_READY scope=all", flush=True)
 
 import legacy_main as app
 from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
@@ -194,7 +175,12 @@ from lexicon_game_scope import (
 )
 from lexicon_learning_unpin import LearningLexiconService, register_lexicon_learning_handlers
 from minigames import MiniGameStorage, register_minigame_handlers
-from writers_moderation import MODERATION_LEXICON, register_writers_chat_handlers
+from writers_moderation import (
+    MODERATION_LEXICON,
+    promote_writers_moderation_handler,
+    register_writers_chat_handlers,
+    report_writers_delete_permission,
+)
 from writers_submission import WritersSubmissionConfig
 from writers_submission.runtime import start_writers_submission_runtime
 from zero_trust.config import ZeroTrustConfig
@@ -320,6 +306,11 @@ async def main() -> None:
             database_url=os.getenv("DATABASE_URL"),
             bot_token=os.getenv("BOT_TOKEN"),
         )
+
+        # All game, entertainment, form and legacy handlers have now registered.
+        # Profanity deletion must run before any text catch-all in writers chat.
+        promote_writers_moderation_handler(app.dp)
+        await report_writers_delete_permission(app.bot, scope.chat_id)
 
         print(
             "LEXICON_ONLY_SCOPE_READY "
