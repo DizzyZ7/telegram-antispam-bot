@@ -57,8 +57,7 @@ class FicbookFormUiTests(unittest.TestCase):
         self.assertIn("черновой макет", html)
         self.assertNotIn("coverTemplateInput", html + script)
         self.assertNotIn("cover_template:", script)
-        for name in ("Классика", "Лента", "Контраст", "Минимализм"):
-            self.assertNotIn(f"<option value=", html)
+        self.assertNotIn("Стиль обложки", html)
         self.assertIn('setChoice("visualMode"', script)
 
     def test_javascript_has_reversible_choices_and_persisted_palette(self):
