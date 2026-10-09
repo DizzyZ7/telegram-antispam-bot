@@ -2560,6 +2560,95 @@ class PostgresWritersSubmissionStorage:
             ),
         )
 
+    async def get_owner_preview_delivery_status(
+        self, *, limit: int = 8,
+    ) -> list[dict[str, object]]:
+        """Owner-only command uses this read-only operational outbox view."""
+        rows = await self._require_pool().fetch(
+            """
+            SELECT o.submission_id, o.revision_id, o.state,
+                   o.attempt_count, o.last_error_code,
+                   o.delivery_message_ids_json, r.title
+            FROM writers_submission_outbox AS o
+            JOIN writers_submission_revisions AS r ON r.id=o.revision_id
+            WHERE o.event_type='OWNER_PREVIEW'
+            ORDER BY o.created_at DESC, o.id DESC
+            LIMIT $1
+            """,
+            min(max(int(limit), 1), 20),
+        )
+        return [dict(row) for row in rows]
+
+    async def retry_failed_owner_preview(
+        self, *, submission_id: UUID | None, now: int,
+    ) -> UUID | None:
+        """Requeue one failed preview or backfill a missing approved preview.
+
+        Never re-send an already DELIVERED job implicitly. Only the Telegram
+        owner may call this via the separately authorized private command.
+        """
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                record = await conn.fetchrow(
+                    """
+                    SELECT s.id, s.current_submitted_revision_id AS revision_id,
+                           o.id AS outbox_id, o.state AS delivery_state
+                    FROM writers_submissions AS s
+                    LEFT JOIN writers_submission_outbox AS o
+                      ON o.submission_id=s.id
+                     AND o.revision_id=s.current_submitted_revision_id
+                     AND o.event_type='OWNER_PREVIEW'
+                    WHERE s.status='APPROVED'
+                      AND s.current_submitted_revision_id IS NOT NULL
+                      AND ($1::uuid IS NULL OR s.id=$1)
+                      AND (
+                        o.id IS NULL OR o.state IN (
+                          'PERMANENT_FAILED', 'RETRYABLE_FAILED'
+                        )
+                      )
+                    ORDER BY s.updated_at DESC, s.id DESC
+                    LIMIT 1
+                    FOR UPDATE OF s
+                    """,
+                    submission_id,
+                )
+                if record is None:
+                    return None
+                sub_id = _uuid(record["id"])
+                rev_id = _uuid(record["revision_id"])
+                if record["outbox_id"] is None:
+                    await conn.execute(
+                        """
+                        INSERT INTO writers_submission_outbox (
+                            id, submission_id, revision_id, event_type, state,
+                            attempt_count, next_attempt_at, payload_json,
+                            dedupe_key, created_at, updated_at
+                        ) VALUES (
+                            $1, $2, $3, 'OWNER_PREVIEW', 'PENDING',
+                            0, $4, '{}', $5, $4, $4
+                        )
+                        ON CONFLICT(dedupe_key) DO NOTHING
+                        """,
+                        uuid4(), sub_id, rev_id, int(now),
+                        f"owner:{sub_id}:{rev_id}:APPROVED",
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE writers_submission_outbox
+                        SET state='PENDING', attempt_count=0,
+                            next_attempt_at=$2, lease_until=NULL,
+                            worker_id=NULL, last_error_code=NULL,
+                            updated_at=$2
+                        WHERE id=$1
+                          AND event_type='OWNER_PREVIEW'
+                          AND state IN ('PERMANENT_FAILED','RETRYABLE_FAILED')
+                        """,
+                        record["outbox_id"], int(now),
+                    )
+                return sub_id
+
     async def claim_due_outbox(
         self,
         *,
