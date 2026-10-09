@@ -73,21 +73,9 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
     return result
 
 
-# Fixed IKF banner format, matching the community's wide geometric covers.
-# The title always occupies the lower-right zone; clients cannot move it.
-COVER_TEMPLATES = ("classic", "ribbon", "contrast", "minimal")
+# This is a SINGLE rough color mockup for the human artist, not a finished
+# cover design. Previously selected templates are intentionally ignored.
 COVER_SIZE = (1200, 450)
-
-
-def _cover_layout(template: str) -> tuple[int, int, int]:
-    if template not in COVER_TEMPLATES:
-        raise ValueError("unsupported IKF cover template")
-    return {
-        "classic": (390, 0, 0),
-        "ribbon": (325, 55, -25),
-        "contrast": (465, -50, 45),
-        "minimal": (365, 10, 15),
-    }[template]
 
 
 def _foreground_color(hex_color: str) -> str:
@@ -133,19 +121,18 @@ def _title_lines(draw: object, title: str, font_path: str, *, max_width: int) ->
 def render_palette_png(
     colors: list[str] | tuple[str, ...],
     title: str = "",
-    template: str = "classic",
 ) -> bytes:
-    """Build branded ICФ cover from the author's four colors and work title.
+    """Make a single approximate ICФ color mockup, never a final artist cover.
 
-    All templates keep the title anchored to the bottom-right. This is not
-    a generic palette strip; the PNG is ready to accompany an owner DM post.
+    The four selected RGB colors remain visible together; the lettering is
+    only a placeholder in the lower-right, subject to later artist edits.
     """
     if len(colors) != 4 or any(
         not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color)
         for color in colors
     ):
         raise ValueError("four RGB colors are required")
-    offset, ribbon, slope = _cover_layout(template)
+    offset, ribbon, slope = 390, 0, 0
 
     from io import BytesIO
     from pathlib import Path
