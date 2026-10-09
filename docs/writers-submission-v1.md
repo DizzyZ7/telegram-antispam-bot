@@ -357,3 +357,55 @@ appears. Test photo selection via (a) `Картинка` and (b) `Файлы →
 on both Android and iOS, verify the file appears in attachments after a page
 reload, then submit and verify it reaches the owner DM / review card.
 Images are subject to the existing limit of 3 files of up to 20 MB each.
+
+## 15. ICФ branded covers and paid custom image option
+
+The free standard cover is a real **1200 × 450 PNG banner** in the ICФ visual
+language: four author-selected RGB colors, diagonals, three thin parallel
+lines, and a Cyrillic serif title fixed **bottom right**. Authors can choose
+one of four layouts (Classic, Ribbon, Contrast, Minimal), but **cannot move
+the title**. The Telegram Mini App renders a live canvas preview when title,
+template or colors change. The choice is stored in immutable v2 revision
+`details_json.cover_template`, with `classic` default for old records.
+
+When an application is approved, the owner `2039781854` receives the
+finished branded cover and prepared promo text in their private chat. Neither
+the Writers community nor the channel gets an automatic post.
+
+**An author's own artwork as a cover is a paid option.** Authors can still
+attach photos/documents to an application for administrative reference;
+uploading an attachment is not itself a purchase. The paid image selection
+is labelled in the form and requires a JPEG/PNG attachment (WebP and HEIC are
+converted to JPEG on supported browsers).
+
+There is **no fabricated price, checkout or automatic charge**. Payment
+terms are agreed with the ICФ administration outside the Mini App. After
+external payment is actually verified:
+
+1. Owner claims the submitted application with the regular moderation button.
+2. Owner explicitly taps **💎 Подтвердить оплату своей обложки**.
+3. The server checks the Telegram actor against
+   `WRITERS_SUBMISSION_OWNER_USER_ID` (not just the moderator allowlist).
+   Confirmation is persisted, per submission+revision, in a separate
+   `writers_submission_cover_payments` table with actor/time audit.
+4. Only then may the claimed reviewer approve that revision. PostgreSQL
+   enforces this at the approval transaction; an author cannot forge payment
+   by manipulating public form fields.
+5. Owner receives the custom art center-cropped to ICФ format with a dark
+   title band and the title **bottom right**.
+
+For old approved jobs awaiting delivery, the owner preview worker checks
+the payment record again before sending the custom artwork. If absent,
+it sends only the post text with an explicit unpaid-cover note, not the photo.
+
+The separate payment table is created idempotently. The repository now
+installs Pillow and DejaVu Cyrillic fonts in its Python Dockerfile. **No new
+ENV settings** are required. After backing up PostgreSQL, rebuild from
+latest `main` with the custom Dockerfile. Test one free palette application
+and one paid photo application, including rejection of premature approval,
+owner payment confirmation and a successful approval. The form does not
+perform transactions or guarantee an agreed fee.
+
+**Note:** In the present stage a payment confirmation means the owner has
+personally attested payment received by their own method. Do not tap the
+confirmation button merely because a user claims they paid.
