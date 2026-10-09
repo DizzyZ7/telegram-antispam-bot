@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Writers Submission</title>
-  <link rel="stylesheet" href="/writers/app.css?v=draft-safe-v2">
+  <link rel="stylesheet" href="/writers/app.css?v=two-cover-modes-v1">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/writers/app.js?v=draft-safe-v2" defer></script>
+  <script src="/writers/app.js?v=two-cover-modes-v1" defer></script>
 </head>
 <body>
   <main class="shell" aria-live="polite">
@@ -135,24 +135,14 @@
           <fieldset class="choice-field">
             <legend>9. Оформление обложки ИКФ</legend>
             <div class="choice-row" data-choice-group="visualMode">
-              <label class="choice"><input type="checkbox" value="palette"> 4 цвета RGB · бесплатно</label>
-              <label class="choice"><input type="checkbox" value="image"> Своя обложка · платно</label>
+              <label class="choice"><input type="checkbox" value="palette"> Обычная · бесплатно (4 цвета)</label>
+              <label class="choice"><input type="checkbox" value="image"> Своя фотография · платно</label>
             </div>
           </fieldset>
 
           <div id="paletteFields" class="conditional hidden">
-            <p class="muted">Выбери четыре цвета. Название всегда располагается справа снизу, как на фирменных обложках ИКФ.</p>
-            <label class="field">
-              <span>Стиль обложки</span>
-              <select id="coverTemplateInput">
-                <option value="classic">Классика</option>
-                <option value="ribbon">Лента</option>
-                <option value="contrast">Контраст</option>
-                <option value="minimal">Минимализм</option>
-              </select>
-            </label>
-            <p class="muted">Это приблизительный макет палитры для автора и художника. Шрифт, композицию и итоговое оформление можно доработать вручную.</p>
-            <canvas id="ikfCoverPreview" width="1200" height="450" role="img" aria-label="Приблизительный макет оформления ИКФ с названием справа снизу"></canvas>
+            <p class="muted">Выбери 4 цвета и посмотри, сочетаются ли они. Это только черновой макет: художник позже доработает композицию, шрифт и обложку.</p>
+            <canvas id="ikfCoverPreview" width="1200" height="450" role="img" aria-label="Черновой макет сочетания четырех цветов, название справа снизу"></canvas>
             <div id="palettePreview" class="palette-preview" aria-label="Предпросмотр четырех выбранных цветов"></div>
             <div id="paletteEditors" class="palette-editors"></div>
           </div>

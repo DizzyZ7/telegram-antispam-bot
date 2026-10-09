@@ -522,16 +522,6 @@ textarea {
   border: 1px solid var(--border);
   background: #253750;
 }
-#coverTemplateInput {
-  width: 100%;
-  min-height: 44px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  padding: 10px 12px;
-  margin-top: 5px;
-}
 .palette-preview {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

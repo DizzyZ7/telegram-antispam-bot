@@ -101,17 +101,22 @@ class FicbookFormValidationTests(unittest.TestCase):
             with self.subTest(case=case), self.assertRaises(ValidationError):
                 normalize_submission_details(case, complete=True)
 
-    def test_ikf_cover_template_is_stored_and_whitelisted(self):
-        for template in ("classic", "ribbon", "contrast", "minimal"):
-            with self.subTest(template=template):
-                result = normalize_submission_details(details(cover_template=template), complete=True)
-                self.assertEqual(result["cover_template"], template)
-        self.assertEqual(
-            normalize_submission_details(details(), complete=True)["cover_template"],
-            "classic",
+    def test_only_two_cover_modes_and_legacy_layouts_are_ignored(self):
+        for old_style in ("classic", "ribbon", "contrast", "minimal"):
+            with self.subTest(old_style=old_style):
+                result = normalize_submission_details(
+                    details(cover_template=old_style), complete=True
+                )
+                self.assertNotIn("cover_template", result)
+                self.assertEqual(result["visual_mode"], "palette")
+                self.assertEqual(len(result["palette_colors"]), 4)
+        self.assertNotIn(
+            "cover_template", normalize_submission_details(details(), complete=True)
         )
         with self.assertRaises(ValidationError):
-            normalize_submission_details(details(cover_template="../private"), complete=True)
+            normalize_submission_details(
+                details(cover_template="../private"), complete=True
+            )
 
     def test_image_mode_clears_palette_without_erasing_other_options(self):
         result = normalize_submission_details(details(visual_mode="image"), complete=True)

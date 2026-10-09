@@ -50,7 +50,6 @@
     extraLinks: $("extraLinksInput"),
     characters: $("charactersInput"),
     notes: $("notesInput"),
-    coverTemplate: $("coverTemplateInput"),
     sizeWords: $("sizeWordsInput"),
     pages: $("pagesInput"),
     parts: $("partsInput"),
@@ -244,7 +243,6 @@
         characters: form.characters.value,
         notes: form.notes.value,
         visual_mode: selectedChoice("visualMode"),
-        cover_template: form.coverTemplate.value || "classic",
         palette_colors: selectedChoice("visualMode") === "palette" ? state.paletteColors.slice() : [],
       },
     };
@@ -280,7 +278,6 @@
     setChoice("sizeCategory", details.size_category || "");
     setChoice("completion", details.completion || "");
     setChoice("visualMode", details.visual_mode || "palette");
-    form.coverTemplate.value = details.cover_template || "classic";
     form.direction.value = revision.genre || "";
     form.fandom.value = details.fandom || "";
     form.rating.value = details.rating || "";
@@ -388,13 +385,9 @@
     if (!ctx) { return; }
     const [first, second, third, fourth] = state.paletteColors;
     const { width, height } = canvas;
-    const offsets = {
-      classic: [390, 0, 0],
-      ribbon: [325, 55, -25],
-      contrast: [465, -50, 45],
-      minimal: [365, 10, 15],
-    };
-    const [offset, ribbon, slope] = offsets[form.coverTemplate.value] || offsets.classic;
+    // One deliberately rough, fixed layout: a color-combination aid for
+    // the artist, NOT a choice of finished cover designs.
+    const [offset, ribbon, slope] = [390, 0, 0];
     const polygon = (points, color) => {
       ctx.beginPath();
       ctx.moveTo(...points[0]);
