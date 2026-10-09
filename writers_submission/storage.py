@@ -382,6 +382,21 @@ class PostgresWritersSubmissionStorage:
             ON writers_submission_moderation_tokens(submission_id, revision_id)
             """
         )
+        # Manual confirmation by ICФ owner only. This records an externally
+        # received payment, it is NOT a checkout, invoice, or payment processor.
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS writers_submission_cover_payments (
+                submission_id UUID NOT NULL
+                    REFERENCES writers_submissions(id) ON DELETE CASCADE,
+                revision_id UUID NOT NULL
+                    REFERENCES writers_submission_revisions(id) ON DELETE CASCADE,
+                confirmed_by_user_id BIGINT NOT NULL,
+                confirmed_at BIGINT NOT NULL,
+                PRIMARY KEY (submission_id, revision_id)
+            )
+            """
+        )
         await connection.execute(
             """
             CREATE TABLE IF NOT EXISTS writers_submission_reviews (
@@ -2092,6 +2107,67 @@ class PostgresWritersSubmissionStorage:
             comment=None,
         )
 
+    async def is_cover_payment_confirmed(
+        self, *, submission_id: UUID, revision_id: UUID,
+    ) -> bool:
+        confirmed = await self._require_pool().fetchval(
+            """
+            SELECT 1 FROM writers_submission_cover_payments
+            WHERE submission_id=$1 AND revision_id=$2
+            """,
+            submission_id, revision_id,
+        )
+        return bool(confirmed)
+
+    async def confirm_cover_payment(
+        self, *, submission_id: UUID, revision_id: UUID,
+        reviewer_user_id: int, now: int,
+    ) -> bool:
+        """Owner-attested offline payment for one sealed revision. Idempotent."""
+        pool = self._require_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                submission = await connection.fetchrow(
+                    """
+                    SELECT status, current_submitted_revision_id, claimed_by_user_id
+                    FROM writers_submissions WHERE id=$1 FOR UPDATE
+                    """, submission_id,
+                )
+                if submission is None or _uuid(submission["current_submitted_revision_id"]) != revision_id:
+                    raise NotFoundError("Submission revision was not found")
+                if str(submission["status"]) != SubmissionStatus.IN_REVIEW.value:
+                    raise ConflictError("Only in-review works can confirm custom cover payments")
+                if int(submission["claimed_by_user_id"] or 0) != int(reviewer_user_id):
+                    raise ConflictError("Claim this submission before confirming a payment")
+                raw = await connection.fetchval(
+                    "SELECT details_json FROM writers_submission_revisions WHERE id=$1 AND submission_id=$2",
+                    revision_id, submission_id,
+                )
+                if json.loads(str(raw or "{}")).get("visual_mode") != "image":
+                    raise ValidationError("This submission does not request a paid custom cover")
+                result = await connection.execute(
+                    """
+                    INSERT INTO writers_submission_cover_payments(
+                        submission_id, revision_id, confirmed_by_user_id, confirmed_at
+                    ) VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (submission_id, revision_id) DO NOTHING
+                    """,
+                    submission_id, revision_id, int(reviewer_user_id), int(now),
+                )
+                if result != "INSERT 0 1":
+                    return False
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_events(
+                        submission_id, revision_id, actor_user_id,
+                        event_type, metadata_json, created_at
+                    )
+                    VALUES ($1, $2, $3, 'COVER_PAYMENT_CONFIRMED', '{}', $4)
+                    """,
+                    submission_id, revision_id, int(reviewer_user_id), int(now),
+                )
+                return True
+
     async def decide_submission(
         self,
         *,
@@ -2173,6 +2249,26 @@ class PostgresWritersSubmissionStorage:
                     raise ConflictError("Submission is not in review")
                 if int(submission["claimed_by_user_id"] or 0) != reviewer_user_id:
                     raise ConflictError("Only the claimant can decide this submission")
+
+                if action is ReviewAction.APPROVE:
+                    revision_details = await connection.fetchval(
+                        """
+                        SELECT details_json FROM writers_submission_revisions
+                        WHERE id=$1 AND submission_id=$2
+                        """, revision_id, submission_id,
+                    )
+                    cover = json.loads(str(revision_details or "{}"))
+                    if cover.get("visual_mode") == "image":
+                        confirmed = await connection.fetchval(
+                            """
+                            SELECT 1 FROM writers_submission_cover_payments
+                            WHERE submission_id=$1 AND revision_id=$2
+                            """, submission_id, revision_id,
+                        )
+                        if not confirmed:
+                            raise ValidationError(
+                                "Paid custom cover must be confirmed by the owner before approval"
+                            )
 
                 updated = await connection.execute(
                     """

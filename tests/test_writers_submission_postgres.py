@@ -1282,6 +1282,86 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(count, 0)
 
+    async def test_custom_cover_requires_manually_recorded_owner_payment(self):
+        form = NormalizedSubmissionFields(
+            title="Платная обложка",
+            work_type="Оридж",
+            genre="Джен",
+            description="Описание заявки",
+            body_text="",
+            external_url="https://ficbook.net/readfic/555",
+            details={
+                "form_version": 2,
+                "size_category": "мини",
+                "rating": "G",
+                "completion": "в процессе",
+                "visual_mode": "image",
+                "palette_colors": [],
+            },
+        )
+        draft = await self.storage.create_submission(
+            author_user_id=77, writers_chat_id=-1002619489118,
+            fields=form, now=100, idempotency_key="paid-cover-create",
+        )
+        await self.storage.add_ready_file(
+            submission_id=draft.id, author_user_id=77,
+            revision_id=draft.revision.id,
+            upload=ValidatedUpload(
+                safe_filename="photo.jpg", file_class="jpeg",
+                declared_mime="image/jpeg", byte_size=128,
+                sha256="b" * 64,
+            ),
+            telegram_file_id="owner-paid-cover", telegram_file_unique_id=None,
+            storage_chat_id=-100222, storage_message_id=200,
+            max_files=3, now=105,
+        )
+        fresh = await self.storage.get_for_author(draft.id, 77)
+        submitted = await self.storage.seal_and_submit(
+            submission_id=draft.id, author_user_id=77,
+            expected_version=fresh.version,
+            idempotency_key="paid-cover-submit", now=110,
+        )
+        await self.storage.claim_submission(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+            reviewer_user_id=2039781854, now=120,
+        )
+        self.assertFalse(await self.storage.is_cover_payment_confirmed(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+        ))
+        with self.assertRaisesRegex(ValidationError, "Paid custom cover"):
+            await self.storage.decide_submission(
+                submission_id=submitted.id, revision_id=submitted.revision.id,
+                reviewer_user_id=2039781854, action=ReviewAction.APPROVE,
+                comment=None, now=130,
+            )
+        self.assertEqual(
+            (await self.storage.get_for_author(submitted.id, 77)).status,
+            SubmissionStatus.IN_REVIEW,
+        )
+        self.assertTrue(await self.storage.confirm_cover_payment(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+            reviewer_user_id=2039781854, now=140,
+        ))
+        self.assertFalse(await self.storage.confirm_cover_payment(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+            reviewer_user_id=2039781854, now=141,
+        ))
+        self.assertTrue(await self.storage.is_cover_payment_confirmed(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+        ))
+        decision = await self.storage.decide_submission(
+            submission_id=submitted.id, revision_id=submitted.revision.id,
+            reviewer_user_id=2039781854, action=ReviewAction.APPROVE,
+            comment=None, now=150,
+        )
+        self.assertEqual(decision.submission.status, SubmissionStatus.APPROVED)
+        assert self.storage.pool is not None
+        receipts = await self.storage.pool.fetchval(
+            "SELECT COUNT(*) FROM writers_submission_cover_payments WHERE submission_id=$1",
+            submitted.id,
+        )
+        self.assertEqual(receipts, 1)
+
     async def test_stale_inflight_outbox_lease_becomes_claimable_again(self):
         created = await self.storage.create_submission(
             author_user_id=77,

@@ -98,7 +98,7 @@ def _external_url(value: object) -> str | None:
 _DETAILS_ALLOWED = frozenset({
     "form_version", "fandom", "size_category", "rating", "completion",
     "size_words", "pages", "parts", "extra_links", "visual_mode",
-    "palette_colors", "characters", "notes",
+    "palette_colors", "characters", "notes", "cover_template",
 })
 
 
@@ -122,6 +122,7 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
         ("size_category", {"мини", "миди", "макси"}),
         ("completion", {"завершен", "в процессе"}),
         ("visual_mode", {"palette", "image"}),
+        ("cover_template", {"classic", "ribbon", "contrast", "minimal"}),
     ):
         raw = value.get(name, "")
         if raw and (not isinstance(raw, str) or raw not in allowed):
@@ -160,6 +161,8 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
     if details["completion"] != "завершен":
         for name in ("size_words", "pages", "parts"):
             details[name] = None
+    if not details["cover_template"]:
+        details["cover_template"] = "classic"
     if details["visual_mode"] != "palette":
         details["palette_colors"] = []
 

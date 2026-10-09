@@ -23,6 +23,7 @@ from .models import (
     ConflictError,
     NotFoundError,
     ReviewAction,
+    ValidationError,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -148,7 +149,7 @@ def _is_prompt_reply(message: Message, item: PendingModerationComment) -> bool:
     )
 
 
-def build_moderation_keyboard(token: str) -> InlineKeyboardMarkup:
+def build_moderation_keyboard(token: str, *, paid_cover: bool = False) -> InlineKeyboardMarkup:
     if not _TOKEN_PATTERN.fullmatch(token):
         raise ValueError("Invalid moderation token")
     return InlineKeyboardMarkup(
@@ -173,6 +174,12 @@ def build_moderation_keyboard(token: str) -> InlineKeyboardMarkup:
                     callback_data=f"{_CALLBACK_PREFIX}:r:{token}",
                 ),
             ],
+            *([[
+                InlineKeyboardButton(
+                    text="💎 Подтвердить оплату своей обложки",
+                    callback_data=f"{_CALLBACK_PREFIX}:p:{token}",
+                ),
+            ]] if paid_cover else []),
         ]
     )
 
@@ -184,7 +191,7 @@ def _parse_callback(data: str | None) -> tuple[str, str] | None:
     if len(parts) != 3 or parts[0] != _CALLBACK_PREFIX:
         return None
     action, token = parts[1], parts[2]
-    if action not in {"c", "a", "x", "r"}:
+    if action not in {"c", "a", "x", "r", "p"}:
         return None
     if not _TOKEN_PATTERN.fullmatch(token):
         return None
@@ -324,7 +331,18 @@ def register_writers_submission_handlers(
             return
 
         try:
-            if action_code == "c":
+            if action_code == "p":
+                applied = await service.confirm_cover_payment(
+                    reviewer_user_id=actor_id,
+                    submission_id=target.submission_id,
+                    revision_id=target.revision_id,
+                    now=now,
+                )
+                answer_text = (
+                    "Оплата своей обложки подтверждена"
+                    if applied else "Оплата уже подтверждена"
+                )
+            elif action_code == "c":
                 result = await service.claim(
                     reviewer_user_id=actor_id,
                     submission_id=target.submission_id,
@@ -357,6 +375,13 @@ def register_writers_submission_handlers(
         except AuthorizationError:
             await callback.answer("Недостаточно прав для модерации.", show_alert=True)
             return
+        except ValidationError as exc:
+            await callback.answer(
+                "Для платной обложки сначала подтверди оплату у владельца ИКФ."
+                if "Paid custom cover" in str(exc) else str(exc)[:180],
+                show_alert=True,
+            )
+            return
         except (ConflictError, NotFoundError):
             await callback.answer("Состояние работы уже изменилось.", show_alert=True)
             return
@@ -373,7 +398,16 @@ def register_writers_submission_handlers(
                 await callback.message.edit_reply_markup(reply_markup=None)
             else:
                 await callback.message.edit_reply_markup(
-                    reply_markup=build_moderation_keyboard(token)
+                    reply_markup=build_moderation_keyboard(
+                        token,
+                        paid_cover=(
+                            getattr(
+                                getattr(result, "submission", None),
+                                "revision", None,
+                            ) is not None
+                            and getattr(result.submission.revision, "details", {}).get("visual_mode") == "image"
+                        ) if action_code == "c" else action_code == "p",
+                    )
                 )
         except Exception:
             # PostgreSQL/service state is authoritative. Telegram editing is UX only.

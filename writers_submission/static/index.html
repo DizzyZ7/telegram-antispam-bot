@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Writers Submission</title>
-  <link rel="stylesheet" href="/writers/app.css?v=photo-v3">
+  <link rel="stylesheet" href="/writers/app.css?v=ikf-cover-v1">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/writers/app.js?v=photo-v3" defer></script>
+  <script src="/writers/app.js?v=ikf-cover-v1" defer></script>
 </head>
 <body>
   <main class="shell" aria-live="polite">
@@ -132,26 +132,37 @@
           </label>
 
           <fieldset class="choice-field">
-            <legend>9. Визуал: палитра или картинка</legend>
+            <legend>9. Оформление обложки ИКФ</legend>
             <div class="choice-row" data-choice-group="visualMode">
-              <label class="choice"><input type="checkbox" value="palette"> 4 цвета RGB</label>
-              <label class="choice"><input type="checkbox" value="image"> Картинка</label>
+              <label class="choice"><input type="checkbox" value="palette"> 4 цвета RGB · бесплатно</label>
+              <label class="choice"><input type="checkbox" value="image"> Своя обложка · платно</label>
             </div>
           </fieldset>
 
           <div id="paletteFields" class="conditional hidden">
-            <p class="muted">Выбери четыре цвета — можно менять их через палитру или вводить значения R, G, B.</p>
+            <p class="muted">Выбери четыре цвета. Название всегда располагается справа снизу, как на фирменных обложках ИКФ.</p>
+            <label class="field">
+              <span>Стиль обложки</span>
+              <select id="coverTemplateInput">
+                <option value="classic">Классика</option>
+                <option value="ribbon">Лента</option>
+                <option value="contrast">Контраст</option>
+                <option value="minimal">Минимализм</option>
+              </select>
+            </label>
+            <canvas id="ikfCoverPreview" width="1200" height="450" role="img" aria-label="Предпросмотр готовой обложки ИКФ с названием справа снизу"></canvas>
             <div id="palettePreview" class="palette-preview" aria-label="Предпросмотр четырех выбранных цветов"></div>
             <div id="paletteEditors" class="palette-editors"></div>
           </div>
 
           <div id="imageFields" class="conditional hidden">
             <label class="field">
-              <span>Изображение для заявки · JPG, PNG, WebP, HEIC</span>
+              <span>Своя обложка · платно · JPG, PNG, WebP, HEIC</span>
               <input id="imageInput" type="file" accept="image/*,.png,.jpg,.jpeg,.webp,.heic,.heif">
             </label>
             <img id="imagePreview" class="image-preview hidden" alt="Предпросмотр выбранной картинки">
-            <p id="imageUploadStatus" class="muted">Изображение будет приложено к заявке. Удалить его можно ниже в списке файлов.</p>
+            <p class="muted">Стоимость и способ оплаты согласуются с администрацией ИКФ. В анкете оплата не списывается. Обложка будет использована только после подтверждения оплаты владельцем.</p>
+            <p id="imageUploadStatus" class="muted">Изображение прикрепится к заявке, но не станет обложкой без подтверждения оплаты.</p>
           </div>
 
           <details class="optional-text">

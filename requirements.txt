@@ -3,4 +3,5 @@ aiohttp>=3.10
 aiosqlite>=0.20
 asyncpg>=0.30
 python-dotenv>=1.0
+Pillow>=11.0,<13
 pymorphy3>=2.0

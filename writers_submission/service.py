@@ -209,6 +209,22 @@ class WritersSubmissionService:
         )
 
 
+    async def confirm_cover_payment(
+        self, *, reviewer_user_id: int, submission_id: UUID,
+        revision_id: UUID, now: int,
+    ) -> bool:
+        self._require_reviewer(reviewer_user_id)
+        # Only the configured owner can attest external payment. Other
+        # moderators cannot grant paid cover access, including group mode.
+        if int(reviewer_user_id) != int(self.config.owner_user_id):
+            raise AuthorizationError("Only IKF owner may confirm custom-cover payment")
+        return await self.storage.confirm_cover_payment(
+            reviewer_user_id=int(reviewer_user_id),
+            submission_id=submission_id,
+            revision_id=revision_id,
+            now=int(now),
+        )
+
     async def resolve_moderation_token(self, token: str):
         return await self.storage.resolve_moderation_token(str(token))
 

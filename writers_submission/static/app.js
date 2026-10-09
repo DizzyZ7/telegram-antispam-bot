@@ -47,6 +47,7 @@
     extraLinks: $("extraLinksInput"),
     characters: $("charactersInput"),
     notes: $("notesInput"),
+    coverTemplate: $("coverTemplateInput"),
     sizeWords: $("sizeWordsInput"),
     pages: $("pagesInput"),
     parts: $("partsInput"),
@@ -231,6 +232,7 @@
         characters: form.characters.value,
         notes: form.notes.value,
         visual_mode: selectedChoice("visualMode"),
+        cover_template: form.coverTemplate.value || "classic",
         palette_colors: selectedChoice("visualMode") === "palette" ? state.paletteColors.slice() : [],
       },
     };
@@ -244,6 +246,7 @@
     $("finishedFields").classList.toggle("hidden", !finished);
     $("paletteFields").classList.toggle("hidden", visual !== "palette");
     $("imageFields").classList.toggle("hidden", visual !== "image");
+    if (visual === "palette") { renderIkfCover(); }
     form.fandom.required = ff;
     [form.sizeWords, form.pages, form.parts].forEach((field) => { field.required = finished; });
   }
@@ -264,7 +267,8 @@
     setChoice("workType", ["ФФ", "Оридж"].includes(revision.work_type) ? revision.work_type : "");
     setChoice("sizeCategory", details.size_category || "");
     setChoice("completion", details.completion || "");
-    setChoice("visualMode", details.visual_mode || "");
+    setChoice("visualMode", details.visual_mode || "palette");
+    form.coverTemplate.value = details.cover_template || "classic";
     form.direction.value = revision.genre || "";
     form.fandom.value = details.fandom || "";
     form.rating.value = details.rating || "";
@@ -291,11 +295,12 @@
     const images = state.attachments.filter((file) => ["png", "jpeg"].includes(file.file_class));
     $("imageUploadStatus").textContent = images.length
       ? `Картинка загружена: ${images.map((file) => file.filename).join(", ")}`
-      : "Загрузи PNG или JPEG. Изображение сохранится во вложениях и дойдет до модераторов.";
+      : "Загрузи свою обложку. Это платная опция: использование подтвердит владелец после оплаты.";
   }
 
   function markChanged() {
     refreshCounters();
+    renderIkfCover();
     setSaveState("Есть изменения");
     if (state.current) { autosave(); }
   }
@@ -356,6 +361,94 @@
       });
       editor.prepend(caption, picker);
       editors.append(editor);
+    });
+    renderIkfCover();
+  }
+
+  function renderIkfCover() {
+    const canvas = $("ikfCoverPreview");
+    if (!canvas || !canvas.getContext) { return; }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) { return; }
+    const [first, second, third, fourth] = state.paletteColors;
+    const { width, height } = canvas;
+    const offsets = {
+      classic: [390, 0, 0],
+      ribbon: [325, 55, -25],
+      contrast: [465, -50, 45],
+      minimal: [365, 10, 15],
+    };
+    const [offset, ribbon, slope] = offsets[form.coverTemplate.value] || offsets.classic;
+    const polygon = (points, color) => {
+      ctx.beginPath();
+      ctx.moveTo(...points[0]);
+      points.slice(1).forEach((point) => ctx.lineTo(...point));
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+    };
+    ctx.fillStyle = first;
+    ctx.fillRect(0, 0, width, height);
+    polygon([[0, 40], [offset + 30, 335 + slope], [0, height]], second);
+    polygon([[0, height], [0, 320 + slope], [offset + 20, 294 + slope],
+      [width, 130 + ribbon], [width, height]], third);
+    polygon([[0, height], [0, height - 35 - Math.trunc(ribbon / 4)],
+      [offset + 10, 335 + slope], [offset + 75, 347 + slope],
+      [width, 237 + Math.trunc(ribbon / 2)], [width, height]], fourth);
+    const foreground = (hex) => {
+      const color = [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255);
+      const light = color.map((part) => part <= 0.04045
+        ? part / 12.92 : ((part + 0.055) / 1.055) ** 2.4);
+      const luma = light[0] * 0.2126 + light[1] * 0.7152 + light[2] * 0.0722;
+      return luma > 0.24 ? "#161923" : "#F5F3ED";
+    };
+    ctx.strokeStyle = foreground(first);
+    ctx.lineWidth = 3;
+    for (let index = 0; index < 3; index += 1) {
+      const delta = index * 7;
+      ctx.beginPath();
+      ctx.moveTo(offset + 5 + delta, 333 + slope + delta);
+      ctx.lineTo(width, 88 + ribbon + delta);
+      ctx.stroke();
+    }
+    ctx.fillStyle = foreground(fourth);
+    ctx.textAlign = "right";
+    ctx.textBaseline = "alphabetic";
+    const rawTitle = form.title.value.trim().replace(/\s+/g, " ") || "Название произведения";
+    const title = "«" + rawTitle.slice(0, 200) + "»";
+    let lines = [];
+    let size = 64;
+    for (; size >= 26; size -= 2) {
+      ctx.font = `italic ${size}px Georgia, "Times New Roman", serif`;
+      lines = [];
+      let line = "";
+      title.split(" ").forEach((word) => {
+        const candidate = (line + " " + word).trim();
+        if (ctx.measureText(candidate).width <= 770) {
+          line = candidate;
+        } else {
+          if (line) { lines.push(line); }
+          line = word;
+        }
+      });
+      if (line) { lines.push(line); }
+      if (lines.length <= 2 && lines.every((value) => ctx.measureText(value).width <= 770)) {
+        break;
+      }
+    }
+    if (size < 26) {
+      size = 24;
+      ctx.font = `italic ${size}px Georgia, "Times New Roman", serif`;
+      let cut = title;
+      while (cut.length > 1 && ctx.measureText(cut).width > 770) {
+        cut = cut.slice(0, -2) + "…";
+      }
+      lines = [cut];
+    }
+    let y = height - 20 - ((lines.length - 1) * (size + 9));
+    lines.forEach((line) => {
+      ctx.fillText(line, width - 36, y);
+      y += size + 9;
     });
   }
 
