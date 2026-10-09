@@ -554,3 +554,51 @@ and `https://t.me/chat_IKF/507103`.
 **Do not use `WRITERS_SUBMISSION_MOD_CHAT_ID` as file storage.** In Owner
 mode moderation/approved posts go to the private owner ID and the MOD_CHAT_ID
 is obsolete; it must not be reused for staging private author images.
+
+## 19. Author files are queued locally until complete submission (October 2026)
+
+**Workflow:** Selecting an image or document in the Mini App does **not**
+call Telegram, staging chat, or the file upload API. It keeps the chosen file
+locally in the current Telegram WebView. The author can cancel/replace it
+without generating a Telegram message or server attachment. Regular text
+and four-color draft values still autosave to PostgreSQL.
+
+The Mini App UI must explicitly warn that queued files are **not saved
+between Mini App sessions**. If authors leave before submission, reselect
+their files upon reopening. It displays a separate persistent list of
+already-uploaded files from older revisions/drafts and allows deleting
+them from editable drafts.
+
+Only the **Отправить на проверку** action sends files, in this order:
+
+1. Validate the *complete* form locally. If invalid, do not transmit.
+2. Save the latest draft text to PostgreSQL. If save fails, do not transmit.
+3. Upload locally queued paid cover FIRST, then other documents/photos.
+   Each upload shows real transfer percentage plus server confirmation.
+   After HTTP 201, remove that specific file from the local pending queue
+   to prevent accidental duplicates when a later refresh fails.
+4. Save the exact paid-cover **file UUID** in the draft details.
+   PostgreSQL verifies the referenced image belongs to this specific
+   submission+revision when sealing. It never selects another author's
+   media or an unrelated regular photo as the cover.
+5. Only after every file is durably stored, revalidate and finally seal/
+   submit the application. On partial failures, leave the submission in
+   DRAFT, preserve successfully uploaded file references, and report the
+   number of finished files. Users can retry without blindly re-uploading
+   completed files.
+
+**Owner moderation packet:** the first Telegram DM is the submission card
+with full title, author, form data, and unique submission UUID. Any files
+and the rough four-color palette mockup are posted as **replies to that same
+card**, with the same UUID in every caption. This makes them one navigable
+packet despite Telegram's inability to combine mixed documents, a photo,
+a long form, and interactive moderation buttons into a single message.
+The paid cover is labeled using its explicit file UUID; attachments remain
+separate and labeled. The owner alone receives the moderation card and
+associated media in owner mode. Nothing goes into the community group.
+
+Existing stored attachments and historical draft revisions remain readable;
+no new ENV values or destructive database migration. The private storage
+chat configured by `WRITERS_SUBMISSION_FILE_CHAT_ID` is still necessary
+and must NOT be the Writers chat (see section 18). Increment the static
+assets version and rebuild the Python Dockerfile on Bothost.
