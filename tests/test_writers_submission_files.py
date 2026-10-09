@@ -57,9 +57,17 @@ class WritersFileServiceTests(unittest.IsolatedAsyncioTestCase):
         self.bot = SimpleNamespace(
             send_document=AsyncMock(return_value=telegram_message()),
             delete_message=AsyncMock(),
+            get_chat=AsyncMock(return_value=SimpleNamespace(
+                id=-100222,
+                type="supergroup",
+                username=None,
+                active_usernames=None,
+            )),
         )
         self.config = SimpleNamespace(
             file_chat_id=-100222,
+            writers_chat_id=-1002619489118,
+            moderation_chat_id=2039781854,
             max_files=3,
             max_file_bytes=1024 * 1024,
         )
@@ -68,6 +76,101 @@ class WritersFileServiceTests(unittest.IsolatedAsyncioTestCase):
             self.storage,
             self.config,
         )
+
+    async def test_writers_group_is_never_used_for_staging(self):
+        self.config.file_chat_id = -1002619489118
+        path = temp_file()
+        with self.assertRaisesRegex(ValidationError, "небезопасно"):
+            await self.service.attach_from_temp(
+                author_user_id=77, submission_id=self.submission_id,
+                temp_path=path, original_filename="private-story.txt",
+                declared_mime="text/plain", now=100,
+            )
+        self.bot.get_chat.assert_not_awaited()
+        self.bot.send_document.assert_not_awaited()
+        self.assertFalse(path.exists())
+
+    async def test_moderation_group_is_never_used_for_staging(self):
+        self.config.moderation_chat_id = -100222
+        path = temp_file()
+        with self.assertRaises(ValidationError):
+            await self.service.attach_from_temp(
+                author_user_id=77, submission_id=self.submission_id,
+                temp_path=path, original_filename="private-story.txt",
+                declared_mime="text/plain", now=100,
+            )
+        self.bot.send_document.assert_not_awaited()
+        self.assertFalse(path.exists())
+
+    async def test_public_username_disables_file_storage(self):
+        for username, active_usernames in (
+            ("chat_IKF", None),
+            (None, ["chat_IKF"]),
+        ):
+            with self.subTest(username=username, active_usernames=active_usernames):
+                self.bot.get_chat.return_value = SimpleNamespace(
+                    id=-100222, type="supergroup",
+                    username=username, active_usernames=active_usernames,
+                )
+                path = temp_file()
+                with self.assertRaisesRegex(ValidationError, "закрытый"):
+                    await self.service.attach_from_temp(
+                        author_user_id=77, submission_id=self.submission_id,
+                        temp_path=path, original_filename="private-story.txt",
+                        declared_mime="text/plain", now=100,
+                    )
+                self.bot.send_document.assert_not_awaited()
+                self.assertFalse(path.exists())
+
+    async def test_wrong_chat_type_or_id_fail_closed(self):
+        for chat_id, chat_type in ((-100222, "channel"), (-100999, "supergroup"),
+                                  (-100222, "private")):
+            with self.subTest(chat_id=chat_id, chat_type=chat_type):
+                self.bot.get_chat.return_value = SimpleNamespace(
+                    id=chat_id, type=chat_type, username=None,
+                )
+                path = temp_file()
+                with self.assertRaises(ValidationError):
+                    await self.service.attach_from_temp(
+                        author_user_id=77, submission_id=self.submission_id,
+                        temp_path=path, original_filename="private-story.txt",
+                        declared_mime="text/plain", now=100,
+                    )
+                self.bot.send_document.assert_not_awaited()
+
+    async def test_telegram_chat_lookup_failure_never_posts_file(self):
+        self.bot.get_chat.side_effect = RuntimeError("network failure")
+        path = temp_file()
+        with self.assertRaisesRegex(ValidationError, "недоступно"):
+            await self.service.attach_from_temp(
+                author_user_id=77, submission_id=self.submission_id,
+                temp_path=path, original_filename="private-story.txt",
+                declared_mime="text/plain", now=100,
+            )
+        self.bot.send_document.assert_not_awaited()
+        self.storage.add_ready_file.assert_not_awaited()
+        self.assertFalse(path.exists())
+
+    async def test_staging_rechecks_destination_for_every_file(self):
+        path = temp_file()
+        await self.service.attach_from_temp(
+            author_user_id=77, submission_id=self.submission_id,
+            temp_path=path, original_filename="story.txt",
+            declared_mime="text/plain", now=100,
+        )
+        self.bot.get_chat.assert_awaited_once_with(-100222)
+        self.bot.get_chat.return_value = SimpleNamespace(
+            id=-100222, type="supergroup", username="chat_IKF",
+        )
+        self.bot.send_document.reset_mock()
+        path = temp_file()
+        with self.assertRaises(ValidationError):
+            await self.service.attach_from_temp(
+                author_user_id=77, submission_id=self.submission_id,
+                temp_path=path, original_filename="story.txt",
+                declared_mime="text/plain", now=101,
+            )
+        self.bot.send_document.assert_not_awaited()
 
     async def test_validation_happens_before_telegram_upload(self):
         path = temp_file(suffix=".exe")
