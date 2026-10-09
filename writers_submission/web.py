@@ -370,7 +370,7 @@ def create_writers_web_app(
     async def mini_app(request: web.Request) -> web.Response:
         static_path = Path(__file__).resolve().parent / "static" / "index.html"
         if static_path.is_file():
-            return web.FileResponse(static_path)
+            return web.FileResponse(static_path, headers={"Cache-Control": "no-store"})
         return web.Response(
             text=(
                 "<!doctype html><html><head><meta charset='utf-8'>"
@@ -388,7 +388,7 @@ def create_writers_web_app(
         path = Path(__file__).resolve().parent / "static" / name
         if not path.is_file():
             raise web.HTTPNotFound()
-        return web.FileResponse(path)
+        return web.FileResponse(path, headers={"Cache-Control": "no-store"})
 
     async def create_session(request: web.Request) -> web.Response:
         require_origin(request)

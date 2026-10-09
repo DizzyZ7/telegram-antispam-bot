@@ -10,6 +10,7 @@
     timeline: [],
     autosaveTimer: null,
     autosavePending: false,
+    savePromise: null,
     uploadPending: false,
     reloadRequired: false,
     bootstrapped: false,
@@ -99,7 +100,8 @@
     const locked = state.reloadRequired || state.autosavePending || state.uploadPending;
     $("submitButton").disabled = locked;
     $("saveButton").disabled = state.reloadRequired || state.autosavePending;
-    $("fileInput").disabled = state.reloadRequired || state.uploadPending;
+    $("fileInput").disabled = locked;
+    $("imageInput").disabled = locked;
   }
 
   async function api(path, options = {}) {
@@ -615,53 +617,68 @@
   }
 
   async function autosave({ immediate = false } = {}) {
-    if (state.reloadRequired || state.autosavePending) {
-      return;
+    if (state.reloadRequired) {
+      return false;
     }
 
     clearTimeout(state.autosaveTimer);
     if (!immediate) {
       state.autosaveTimer = window.setTimeout(
-        () => autosave({ immediate: true }),
+        () => { void autosave({ immediate: true }); },
         700
       );
-      return;
+      return true;
     }
 
+    // Selecting a photo can race with an autosave triggered by text input.
+    // Wait for the existing mutation, rather than dropping the upload or
+    // issuing a second concurrent draft create/PATCH.
+    if (state.savePromise) {
+      return state.savePromise;
+    }
     state.autosavePending = true;
     updateActionAvailability();
     setSaveState("Сохраняю…");
     setEditorError("");
-
+    const saving = (async () => {
+      try {
+        if (!state.current) {
+          await createDraft();
+        } else {
+          const payload = await api(
+            `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
+            {
+              method: "PATCH",
+              json: {
+                ...currentFields(),
+                expected_version: state.current.version,
+              },
+            }
+          );
+          state.current = payload.submission;
+        }
+        setSaveState("Сохранено");
+        return true;
+      } catch (error) {
+        if (error.code === "conflict") {
+          setSaveState("Нужна перезагрузка");
+        } else {
+          setSaveState("Не сохранено");
+          setEditorError(error.message || "Не удалось сохранить черновик.");
+        }
+        return false;
+      } finally {
+        state.autosavePending = false;
+        updateActionAvailability();
+      }
+    })();
+    state.savePromise = saving;
     try {
-      if (!state.current) {
-        await createDraft();
-      } else {
-        const payload = await api(
-          `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
-          {
-            method: "PATCH",
-            json: {
-              ...currentFields(),
-              expected_version: state.current.version,
-            },
-          }
-        );
-        state.current = payload.submission;
-      }
-      setSaveState("Сохранено");
-      return true;
-    } catch (error) {
-      if (error.code === "conflict") {
-        setSaveState("Нужна перезагрузка");
-      } else {
-        setSaveState("Не сохранено");
-        setEditorError(error.message || "Не удалось сохранить черновик.");
-      }
-      return false;
+      return await saving;
     } finally {
-      state.autosavePending = false;
-      updateActionAvailability();
+      if (state.savePromise === saving) {
+        state.savePromise = null;
+      }
     }
   }
 
@@ -710,50 +727,145 @@
     }
   }
 
-  async function uploadFiles(fileList) {
-    if (!state.current) {
-      await autosave({ immediate: true });
+  const MAX_PHOTO_BYTES = 20 * 1024 * 1024;
+  const SUPPORTED_PHOTO_EXT = /\.(png|jpe?g|heic|heif|webp)$/i;
+
+  function isPhotoFile(file) {
+    return /^image\//i.test(file.type || "") ||
+      SUPPORTED_PHOTO_EXT.test(file.name || "");
+  }
+
+  async function convertMobilePhoto(file) {
+    const filename = String(file.name || "image");
+    const extension = filename.split(".").pop().toLowerCase();
+    if (extension === "png" || extension === "jpg" || extension === "jpeg") {
+      const mime = extension === "png" ? "image/png" : "image/jpeg";
+      // Some Telegram/iOS pickers return an empty or octet-stream MIME.
+      // Preserve bytes but set the correct metadata. The backend still
+      // verifies the actual signature, extension and content.
+      return new File([file], filename, { type: mime });
     }
-    if (!state.current || state.reloadRequired) {
-      return;
+    if (!["heic", "heif", "webp"].includes(extension) &&
+        !/image\/(heic|heif|webp)/i.test(file.type || "")) {
+      throw new Error("Для изображения поддерживаются JPG, PNG, WebP и HEIC.");
+    }
+    if (file.size > MAX_PHOTO_BYTES) {
+      throw new Error("Фото больше 20 МБ. Уменьши его перед отправкой.");
     }
 
-    const files = Array.from(fileList || []).slice(
-      0,
-      Math.max(0, 3 - state.attachments.length)
-    );
-    if (!files.length) {
-      return;
+    // HEIC/WebP are converted in the Telegram WebView to a publishable JPEG.
+    // The server stores a genuine JPEG; no permissive binary MIME fallback.
+    const objectUrl = URL.createObjectURL(file);
+    let image;
+    try {
+      image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error(
+          "Не удалось открыть фото HEIC/WebP. На iPhone выбери «Наиболее совместимый» " +
+          "формат камеры или сохрани изображение как JPG."
+        ));
+        img.src = objectUrl;
+      });
+      if (!image.naturalWidth || !image.naturalHeight) {
+        throw new Error("Изображение не содержит допустимых размеров.");
+      }
+      const scale = Math.min(1, 2560 / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const context = canvas.getContext("2d");
+      if (!context) { throw new Error("Устройство не поддерживает обработку изображений."); }
+      context.fillStyle = "#FFFFFF";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.88));
+      if (!blob || blob.type !== "image/jpeg") {
+        throw new Error("Не удалось преобразовать фотографию в JPEG.");
+      }
+      const jpegName = filename.replace(/\.[^.]+$/, "") + ".jpg";
+      return new File([blob], jpegName, { type: "image/jpeg" });
+    } finally {
+      URL.revokeObjectURL(objectUrl);
     }
+  }
+
+  async function prepareUploadFile(file) {
+    if (!file || !file.name) {
+      throw new Error("Не удалось прочитать выбранный файл.");
+    }
+    const extension = file.name.split(".").pop().toLowerCase();
+    if (isPhotoFile(file)) {
+      const photo = await convertMobilePhoto(file);
+      if (photo.size > MAX_PHOTO_BYTES) {
+        throw new Error("Изображение слишком большое. Максимум 20 МБ.");
+      }
+      return photo;
+    }
+    if (!["pdf", "docx", "txt"].includes(extension)) {
+      throw new Error("Доступны PDF, DOCX, TXT и фотографии JPG, PNG, WebP, HEIC.");
+    }
+    if (file.size > MAX_PHOTO_BYTES) {
+      throw new Error("Файл больше 20 МБ.");
+    }
+    return file;
+  }
+
+  async function uploadFiles(fileList) {
+    if (state.reloadRequired || state.uploadPending) {
+      return null;
+    }
+    const originals = Array.from(fileList || []);
+    if (!originals.length) { return null; }
+    const slots = Math.max(0, 3 - state.attachments.length);
+    if (originals.length > slots) {
+      setEditorError(slots
+        ? `Можно добавить еще только ${slots} файл(а). Максимум 3 вложения.`
+        : "Достигнут лимит: максимум 3 вложения. Удали старый файл перед загрузкой.");
+      return null;
+    }
+
+    setEditorError("");
+    let files;
+    try {
+      files = await Promise.all(originals.map(prepareUploadFile));
+    } catch (error) {
+      setEditorError(error.message || "Не удалось подготовить фотографию.");
+      return null;
+    }
+
+    // Always flush pending text changes before mutating the file count/version.
+    const saved = await autosave({ immediate: true });
+    if (!saved || !state.current || state.reloadRequired) { return null; }
 
     state.uploadPending = true;
     updateActionAvailability();
-    setEditorError("");
-
+    setSaveState("Загружаю файлы…");
+    let firstUploaded = null;
     try {
       for (const file of files) {
         const formData = new FormData();
         formData.append("file", file, file.name);
         const uploaded = await api(
           `/api/writers/submissions/${encodeURIComponent(state.current.id)}/files`,
-          {
-            method: "POST",
-            body: formData,
-          }
+          { method: "POST", body: formData }
         );
+        if (!firstUploaded) { firstUploaded = file; }
         state.attachments.push(uploaded);
-        // Attaching a file increments durable submission version.
         const refreshed = await api(
           `/api/writers/submissions/${encodeURIComponent(state.current.id)}`
         );
         state.current = refreshed.submission;
       }
+      setSaveState("Файлы сохранены");
+      return firstUploaded;
+    } catch (error) {
+      setEditorError(error.message || "Не удалось загрузить файл. Попробуй еще раз.");
+      setSaveState("Ошибка загрузки файла");
+      return null;
+    } finally {
       renderAttachments();
       updateImageStatus();
-      setSaveState("Файлы сохранены");
-    } catch (error) {
-      setEditorError(error.message || "Не удалось загрузить файл.");
-    } finally {
       state.uploadPending = false;
       $("fileInput").value = "";
       updateActionAvailability();
@@ -862,16 +974,14 @@
     $("imageInput").addEventListener("change", async (event) => {
       const file = (event.target.files || [])[0];
       if (!file) { return; }
-      if (!["image/png", "image/jpeg"].includes(file.type)) {
-        setEditorError("Выбери PNG или JPEG изображение.");
-        return;
-      }
-      clearImagePreview();
-      state.imagePreviewUrl = URL.createObjectURL(file);
-      $("imagePreview").src = state.imagePreviewUrl;
-      $("imagePreview").classList.remove("hidden");
-      await uploadFiles([file]);
+      const uploaded = await uploadFiles([file]);
       $("imageInput").value = "";
+      if (uploaded) {
+        clearImagePreview();
+        state.imagePreviewUrl = URL.createObjectURL(uploaded);
+        $("imagePreview").src = state.imagePreviewUrl;
+        $("imagePreview").classList.remove("hidden");
+      }
     });
     $("withdrawButton").addEventListener("click", withdrawCurrent);
     $("revisionButton").addEventListener("click", createRevision);

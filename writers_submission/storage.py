@@ -326,10 +326,34 @@ class PostgresWritersSubmissionStorage:
                 storage_message_id BIGINT,
                 created_at BIGINT NOT NULL,
                 CONSTRAINT writers_submission_file_class_check
-                    CHECK (detected_file_class IN ('pdf', 'docx', 'txt')),
+                    CHECK (detected_file_class IN ('pdf', 'docx', 'txt', 'png', 'jpeg')),
                 CONSTRAINT writers_submission_file_size_check
                     CHECK (byte_size > 0)
             )
+            """
+        )
+        # Existing PostgreSQL instances retain the v1 CHECK constraint even
+        # when CREATE TABLE IF NOT EXISTS runs again. Upgrade it transactionally
+        # and without removing any existing attachments or submitted revisions.
+        await connection.execute(
+            """
+            DO $upgrade$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conrelid = 'writers_submission_files'::regclass
+                  AND conname = 'writers_submission_file_class_check'
+                  AND pg_get_constraintdef(oid) LIKE '%png%'
+                  AND pg_get_constraintdef(oid) LIKE '%jpeg%'
+              ) THEN
+                ALTER TABLE writers_submission_files
+                  DROP CONSTRAINT IF EXISTS writers_submission_file_class_check;
+                ALTER TABLE writers_submission_files
+                  ADD CONSTRAINT writers_submission_file_class_check
+                  CHECK (detected_file_class IN ('pdf', 'docx', 'txt', 'png', 'jpeg'));
+              END IF;
+            END $upgrade$;
             """
         )
         await connection.execute(
