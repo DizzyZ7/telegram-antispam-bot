@@ -15,11 +15,13 @@ from writers_moderation import (
     promote_writers_moderation_handler,
     register_writers_chat_handlers,
     report_writers_delete_permission,
+    WRITERS_PROFANITY_EXEMPT_TOPIC_IDS,
+    contains_prohibited_language,
 )
 
 WRITERS_CHAT_ID = -1002619489118
-# These were previously skipped by a main.py monkeypatch.
-PREVIOUSLY_UNMODERATED_TOPIC_IDS = (14637, 42817, 292358)
+# Intentionally exempted by ICФ owner.
+EXEMPT_TOPIC_IDS = (14637, 42817, 292358)
 
 
 def make_app():
@@ -43,7 +45,7 @@ def make_message(topic_id, text="Это блять недопустимо", *, c
 
 
 class WritersProfanityRegressionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_all_formerly_exempt_topics_detect_and_delete_profanity(self):
+    async def test_profanity_deleted_in_regular_topics_including_general(self):
         app = make_app()
         register_writers_chat_handlers(app)
         handler = app.dp.message.handlers[0].callback
@@ -52,25 +54,50 @@ class WritersProfanityRegressionTests(unittest.IsolatedAsyncioTestCase):
         scope_filter = WritersChatFilter(scope, app.ALLOWED_CHATS)
         language_filter = ProhibitedLanguageFilter()
 
-        for topic_id in (None, 22, *PREVIOUSLY_UNMODERATED_TOPIC_IDS):
+        for topic_id in (None, 1, 22):
             with self.subTest(topic_id=topic_id):
-                message = make_message(topic_id)
+                message = make_message(topic_id, text="НИХУЯ СЕБЕ")
                 self.assertTrue(await scope_filter(message))
                 self.assertTrue(await language_filter(message))
                 await handler(message)
                 message.delete.assert_awaited_once()
+
+    async def test_exactly_three_topics_remain_exempt_from_profanity_deletion(self):
+        self.assertEqual(
+            WRITERS_PROFANITY_EXEMPT_TOPIC_IDS,
+            frozenset(EXEMPT_TOPIC_IDS),
+        )
+        app = make_app()
+        register_writers_chat_handlers(app)
+        scope = WritersChatScope()
+        scope.chat_id = WRITERS_CHAT_ID
+        scope_filter = WritersChatFilter(scope, app.ALLOWED_CHATS)
+        language_filter = ProhibitedLanguageFilter()
+
+        for topic_id in EXEMPT_TOPIC_IDS:
+            with self.subTest(topic_id=topic_id):
+                message = make_message(topic_id, text="НИХУЯ СЕБЕ")
+                self.assertTrue(await scope_filter(message))
+                self.assertFalse(await language_filter(message))
+                message.delete.assert_not_awaited()
+
+    async def test_nihuya_mat_is_blocked_even_when_uppercase(self):
+        for text in ("НИХУЯ СЕБЕ", "Да нихуя себе!", "нихуево"):
+            with self.subTest(text=text):
+                self.assertTrue(contains_prohibited_language(text))
+                self.assertTrue(await ProhibitedLanguageFilter()(make_message(1, text=text)))
 
     async def test_non_writers_chat_still_out_of_scope_and_safe_text_not_deleted(self):
         scope = WritersChatScope()
         scope.chat_id = WRITERS_CHAT_ID
         scope_filter = WritersChatFilter(scope, [WRITERS_CHAT_ID])
         language_filter = ProhibitedLanguageFilter()
-        self.assertFalse(await scope_filter(make_message(14637, chat_id=-100123456)))
-        self.assertFalse(await language_filter(make_message(14637, text="Пишем новую главу")))
-        self.assertTrue(await language_filter(make_message(14637, text="/блять")))
+        self.assertFalse(await scope_filter(make_message(22, chat_id=-100123456)))
+        self.assertFalse(await language_filter(make_message(22, text="Пишем новую главу")))
+        self.assertTrue(await language_filter(make_message(22, text="/блять")))
 
     async def test_anonymous_admin_profanity_is_moderated_not_skipped_as_bot(self):
-        message = make_message(14637)
+        message = make_message(22)
         message.from_user.is_bot = True
         message.sender_chat = SimpleNamespace(id=WRITERS_CHAT_ID)
         self.assertTrue(await ProhibitedLanguageFilter()(message))
@@ -122,7 +149,7 @@ class WritersModerationStartupContractTests(unittest.TestCase):
         main = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
         self.assertNotIn("install_ignored_topic_filter()", main)
         self.assertIn("promote_writers_moderation_handler(app.dp)", main)
-        self.assertIn("WRITERS_TOPIC_MODERATION_READY scope=all", main)
+        self.assertIn("WRITERS_TOPIC_EXCLUSIONS_READY ids=", main)
 
 
 if __name__ == "__main__":
