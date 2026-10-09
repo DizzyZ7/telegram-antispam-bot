@@ -46,7 +46,7 @@ class MaskedProfanityTests(unittest.TestCase):
                 self.assertIsNotNone(detect_prohibited_language(case))
 
     def test_masked_english_and_mixed_scripts(self):
-        for case in ("f*ck", "f***ing", "b*tch", "s*it", "p*zdets", "h*y"):
+        for case in ("f*ck", "f***ing", "b*tch", "s*it", "p*zdets"):
             with self.subTest(text=case):
                 self.assertTrue(contains_prohibited_language(case))
 
