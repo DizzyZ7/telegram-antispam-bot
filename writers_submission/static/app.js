@@ -7,6 +7,7 @@
     filter: "all",
     current: null,
     attachments: [],
+    pendingFiles: [],
     timeline: [],
     autosaveTimer: null,
     autosavePending: false,
@@ -109,7 +110,8 @@
     $("imageInput").disabled = locked;
     if (tg) {
       const unsaved = state.autosavePending ||
-        state.editSequence > state.savedSequence;
+        state.editSequence > state.savedSequence ||
+        state.pendingFiles.length > 0;
       if (unsaved && typeof tg.enableClosingConfirmation === "function") {
         tg.enableClosingConfirmation();
       } else if (!unsaved && typeof tg.disableClosingConfirmation === "function") {
@@ -303,10 +305,15 @@
   }
 
   function updateImageStatus() {
-    const images = state.attachments.filter((file) => ["png", "jpeg"].includes(file.file_class));
-    $("imageUploadStatus").textContent = images.length
-      ? `Картинка загружена: ${images.map((file) => file.filename).join(", ")}`
-      : "Загрузи свою обложку. Это платная опция: использование подтвердит владелец после оплаты.";
+    const pending = state.pendingFiles.filter((entry) => entry.source === "image");
+    const uploaded = state.attachments.filter((file) =>
+      ["png", "jpeg"].includes(file.file_class)
+    );
+    $("imageUploadStatus").textContent = pending.length
+      ? `Выбрана своя фотография: ${pending.map((entry) => entry.file.name).join(", ")}. Файл еще не отправлен. Передадим только после отправки анкеты.`
+      : uploaded.length
+        ? `Изображение уже прикреплено к этой заявке: ${uploaded.map((file) => file.filename).join(", ")}`
+        : "Выбери фото. До отправки анкеты оно останется только на устройстве. Своя обложка — платная опция.";
   }
 
   function markChanged() {
@@ -482,8 +489,9 @@
       throw new Error("Дополнительных ссылок может быть не больше пяти.");
     }
     if (values.details.visual_mode === "image" &&
+        !state.pendingFiles.some((entry) => entry.source === "image") &&
         !state.attachments.some((file) => ["png", "jpeg"].includes(file.file_class))) {
-      throw new Error("Добавь картинку PNG или JPEG.");
+      throw new Error("Выбери свою фотографию для платной обложки.");
     }
     return values;
   }
@@ -537,32 +545,67 @@
     });
   }
 
+  function removePendingFile(localId) {
+    const found = state.pendingFiles.find((entry) => entry.id === localId);
+    if (!found || state.uploadPending || state.uploadPreparing) { return; }
+    state.pendingFiles = state.pendingFiles.filter((entry) => entry.id !== localId);
+    if (found.source === "image") {
+      clearImagePreview();
+      $("imageInput").value = "";
+    }
+    renderAttachments();
+    updateImageStatus();
+    updateActionAvailability();
+  }
+
+  function clearPendingFiles() {
+    state.pendingFiles = [];
+    clearImagePreview();
+    $("fileInput").value = "";
+    $("imageInput").value = "";
+    renderAttachments();
+    updateImageStatus();
+    updateActionAvailability();
+  }
+
   function renderAttachments() {
     const list = $("attachmentList");
     list.replaceChildren();
-
-    if (!state.attachments.length) {
-      list.append(safeTextElement("p", "Файлы пока не добавлены.", "muted"));
+    const all = [
+      ...state.attachments.map((file) => ({
+        file, id: file.id, pending: false,
+        name: file.filename || file.safe_filename || "Файл",
+        size: file.size || file.byte_size || 0,
+      })),
+      ...state.pendingFiles.map((entry) => ({
+        file: entry, id: entry.id, pending: true, source: entry.source,
+        name: entry.file.name, size: entry.file.size,
+      })),
+    ];
+    if (!all.length) {
+      list.append(safeTextElement("p", "Файлы не выбраны. Можно приложить их позже, перед отправкой анкеты.", "muted"));
       return;
     }
-
-    state.attachments.forEach((file) => {
+    all.forEach((entry) => {
       const row = document.createElement("div");
       row.className = "attachment";
-
+      const classification = entry.pending && entry.source === "image"
+        ? "Своя обложка (платно)"
+        : "Вложение";
       const label = safeTextElement(
         "span",
-        `${file.filename || file.safe_filename || "Файл"} · ${Math.max(1, Math.round(Number(file.size || file.byte_size || 0) / 1024))} КБ`,
-        "attachment-name"
+        `${classification}: ${entry.name} · ${Math.max(1, Math.round(Number(entry.size) / 1024))} КБ · ${entry.pending ? "только на устройстве, не отправлен" : "на сервере"}`,
+        "attachment-name",
       );
       row.append(label);
-
-      if (state.current && state.current.status === "DRAFT" && file.id) {
+      if (entry.pending || (state.current && state.current.status === "DRAFT" && entry.id)) {
         const remove = document.createElement("button");
         remove.type = "button";
         remove.className = "button button-ghost";
-        remove.textContent = "Удалить";
-        remove.addEventListener("click", () => deleteAttachment(file.id));
+        remove.textContent = "Убрать";
+        remove.addEventListener("click", () =>
+          entry.pending ? removePendingFile(entry.id) : deleteAttachment(entry.id)
+        );
         row.append(remove);
       }
       list.append(row);
@@ -673,6 +716,11 @@
       const payload = await api(
         `/api/writers/submissions/${encodeURIComponent(submissionId)}`
       );
+      if (state.pendingFiles.length) {
+        setBanner("Локальные файлы не сохраняются в черновике. После повторного открытия их нужно выбрать заново.", "warning");
+      }
+      state.pendingFiles = [];
+      clearImagePreview();
       state.current = payload.submission;
       state.attachments = Array.isArray(payload.files) ? payload.files : [];
       await loadHistory(submissionId);
@@ -705,10 +753,14 @@
         setEditorError("Черновик не сохранился. Повтори сохранение, прежде чем создавать новую работу.");
         return;
       }
+      if (state.pendingFiles.length && !window.confirm(
+        "Выбранные файлы еще не отправлены и будут убраны из формы. Создать новую работу?"
+      )) { return; }
     }
     clearTimeout(state.autosaveTimer);
     state.current = null;
     state.attachments = [];
+    clearPendingFiles();
     state.timeline = [];
     state.editSequence = 0;
     state.savedSequence = 0;
@@ -1195,6 +1247,7 @@
       );
       state.current = payload.submission;
       state.attachments = [];
+      clearPendingFiles();
       fillForm(state.current);
       state.editSequence = 0;
       state.savedSequence = 0;
@@ -1212,6 +1265,9 @@
   function bindEvents() {
     $("newWorkButton").addEventListener("click", () => { void newDraft(); });
     $("editorBackButton").addEventListener("click", async () => {
+      if (state.pendingFiles.length && !window.confirm(
+        "Выбранные файлы еще не отправлены. Текст черновика сохранится, но файлы придется выбрать заново. Выйти?"
+      )) { return; }
       const saved = await autosave({ immediate: true });
       if (!saved || state.reloadRequired) {
         setEditorError("Черновик не сохранен. Исправь ошибку и повтори сохранение, прежде чем выходить.");
@@ -1231,19 +1287,14 @@
     $("saveButton").addEventListener("click", () => autosave({ immediate: true }));
     $("submitButton").addEventListener("click", submitCurrent);
     $("fileInput").addEventListener("change", (event) => {
-      void uploadFiles(event.target.files, "file");
+      void queueFilesLocally(event.target.files, "file");
+      $("fileInput").value = "";
     });
     $("imageInput").addEventListener("change", async (event) => {
       const file = (event.target.files || [])[0];
       if (!file) { return; }
-      const uploaded = await uploadFiles([file], "image");
+      await queueFilesLocally([file], "image");
       $("imageInput").value = "";
-      if (uploaded) {
-        clearImagePreview();
-        state.imagePreviewUrl = URL.createObjectURL(uploaded);
-        $("imagePreview").src = state.imagePreviewUrl;
-        $("imagePreview").classList.remove("hidden");
-      }
     });
     $("withdrawButton").addEventListener("click", withdrawCurrent);
     $("revisionButton").addEventListener("click", createRevision);
