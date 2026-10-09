@@ -42,7 +42,7 @@ class FicbookFormUiTests(unittest.TestCase):
         html = (ROOT / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn("image/*,.png,.jpg,.jpeg,.webp,.heic,.heif", html)
-        self.assertIn("app.js?v=draft-safe-v2", html)
+        self.assertIn("app.js?v=two-cover-modes-v1", html)
         self.assertIn("prepareUploadFile", script)
         self.assertIn("await autosave({ immediate: true })", script)
         self.assertIn('setSaveState("Загружаю файлы…")', script)
