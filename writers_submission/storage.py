@@ -2107,6 +2107,18 @@ class PostgresWritersSubmissionStorage:
             comment=None,
         )
 
+    async def is_cover_payment_confirmed(
+        self, *, submission_id: UUID, revision_id: UUID,
+    ) -> bool:
+        confirmed = await self._require_pool().fetchval(
+            """
+            SELECT 1 FROM writers_submission_cover_payments
+            WHERE submission_id=$1 AND revision_id=$2
+            """,
+            submission_id, revision_id,
+        )
+        return bool(confirmed)
+
     async def confirm_cover_payment(
         self, *, submission_id: UUID, revision_id: UUID,
         reviewer_user_id: int, now: int,
