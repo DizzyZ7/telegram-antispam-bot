@@ -26,7 +26,7 @@ from .models import (
     SubmissionSummary,
     ValidationError,
 )
-from .uploads import NormalizedSubmissionFields, ValidatedUpload, normalize_submission_details
+from .uploads import NormalizedSubmissionFields, ValidatedUpload, _external_url, normalize_submission_details
 
 
 def _uuid(value: object | None) -> UUID | None:
@@ -1743,6 +1743,10 @@ class PostgresWritersSubmissionStorage:
                     raise ValidationError("fandom is required for fanfiction")
                 if details and not str(revision["external_url"] or "").strip():
                     raise ValidationError("Ficbook URL is required")
+                if details:
+                    # Partial drafts may contain incomplete HTTPS URLs.
+                    # Revalidate at seal time, including external URLs.
+                    _external_url(revision["external_url"])
                 if details.get("visual_mode") == "image" and not int(file_stats["image_count"] or 0):
                     raise ValidationError("illustration image is required")
                 if not str(revision["body_text"]).strip() and file_count == 0 and not str(revision["external_url"] or "").strip():
