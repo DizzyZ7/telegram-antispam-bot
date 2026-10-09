@@ -1749,6 +1749,19 @@ class PostgresWritersSubmissionStorage:
                     _external_url(revision["external_url"])
                 if details.get("visual_mode") == "image" and not int(file_stats["image_count"] or 0):
                     raise ValidationError("illustration image is required")
+                if details.get("visual_mode") == "image" and details.get("cover_file_id"):
+                    found_cover = await connection.fetchval(
+                        """
+                        SELECT 1 FROM writers_submission_files
+                        WHERE id=$1 AND submission_id=$2 AND revision_id=$3
+                          AND detected_file_class IN ('png','jpeg')
+                        """,
+                        UUID(details["cover_file_id"]), submission_id, revision_id,
+                    )
+                    if not found_cover:
+                        raise ValidationError(
+                            "The selected paid cover does not belong to this submission revision"
+                        )
                 if not str(revision["body_text"]).strip() and file_count == 0 and not str(revision["external_url"] or "").strip():
                     raise ValidationError(
                         "Submission requires an HTTPS link, body text or a ready file"
