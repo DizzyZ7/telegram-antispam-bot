@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import struct
 import unittest
+from io import BytesIO
+from PIL import Image
 
-from writers_submission.promo import render_owner_promo, render_palette_png
+from writers_submission.promo import render_owner_promo, render_palette_png, render_custom_cover_png, COVER_TEMPLATES
 from writers_submission.models import ModerationDeliveryContext
 
 
@@ -58,11 +60,51 @@ class OwnerPreviewFormattingTests(unittest.TestCase):
         self.assertIn("#NC17", post)
         self.assertIn("89 страниц, 15 частей", post)
 
+    def test_all_templates_keep_title_in_lower_right_and_differ(self):
+        samples = []
+        for template in COVER_TEMPLATES:
+            with self.subTest(template=template):
+                cover = render_palette_png(
+                    ["#8797A9", "#0F1A2B", "#3B4A61", "#526C82"],
+                    title="Ничто не может нас спасти",
+                    template=template,
+                )
+                with Image.open(BytesIO(cover)) as img:
+                    self.assertEqual(img.size, (1200, 450))
+                    self.assertEqual(img.mode, "RGB")
+                    self.assertEqual(img.getpixel((120, 30)), (135, 151, 169))
+                    # Bottom-right contains title ink rather than a bare band.
+                    background = (82, 108, 130)
+                    crop = img.crop((470, 315, 1160, 439))
+                    self.assertTrue(any(pixel not in (
+                        background, (245, 243, 237), (22, 25, 35)
+                    ) for pixel in crop.getdata()) or
+                        any(pixel == (245, 243, 237) for pixel in crop.getdata()))
+                samples.append(cover)
+        self.assertEqual(len(set(samples)), 4)
+
+    def test_paid_photo_cover_keeps_title_in_lower_right(self):
+        original = Image.new("RGB", (500, 500), (240, 80, 120))
+        with BytesIO() as tmp:
+            original.save(tmp, format="JPEG")
+            png = render_custom_cover_png(tmp.getvalue(), "Черная петля")
+        with Image.open(BytesIO(png)) as rendered:
+            self.assertEqual(rendered.size, (1200, 450))
+            self.assertEqual(rendered.format, "PNG")
+            self.assertTrue(any(
+                pixel == (245, 243, 237)
+                for pixel in rendered.crop((500, 310, 1170, 440)).getdata()
+            ))
+
+    def test_photo_cover_rejects_corrupt_image(self):
+        with self.assertRaises(ValueError):
+            render_custom_cover_png(b"not an image", "Название")
+
     def test_palette_is_valid_png_with_expected_dimensions(self):
         data = render_palette_png(["#112233", "#445566", "#778899", "#AABBCC"])
         self.assertTrue(data.startswith(bytes.fromhex("89504e470d0a1a0a")))
         self.assertEqual(data[12:16], b"IHDR")
-        self.assertEqual(struct.unpack(">II", data[16:24]), (800, 320))
+        self.assertEqual(struct.unpack(">II", data[16:24]), (1200, 450))
         self.assertIn(b"IDAT", data)
         with self.assertRaisesRegex(ValueError, "four RGB"):
             render_palette_png(["#000000"])
