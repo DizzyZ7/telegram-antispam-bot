@@ -17,6 +17,7 @@
     createKey: null,
     uploadPending: false,
     uploadPreparing: false,
+    submitting: false,
     reloadRequired: false,
     bootstrapped: false,
     paletteColors: ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"],
@@ -103,7 +104,7 @@
 
   function updateActionAvailability() {
     const locked = state.reloadRequired || state.autosavePending ||
-      state.uploadPending || state.uploadPreparing;
+      state.uploadPending || state.uploadPreparing || state.submitting;
     $("submitButton").disabled = locked;
     $("saveButton").disabled = locked;
     $("fileInput").disabled = locked;
@@ -864,9 +865,8 @@
   }
 
   async function submitCurrent() {
-    if (state.reloadRequired || state.autosavePending || state.uploadPending) {
-      return;
-    }
+    if (state.reloadRequired || state.autosavePending ||
+        state.uploadPending || state.uploadPreparing || state.submitting) return;
     setEditorError("");
     try {
       validateReadyForm();
@@ -874,37 +874,50 @@
       setEditorError(error.message);
       return;
     }
-    const saved = await autosave({ immediate: true });
-    if (!saved || !state.current || state.reloadRequired) {
-      return;
-    }
-
-    setBusy(true);
+    state.submitting = true;
+    updateActionAvailability();
     try {
-      const payload = await api(
-        `/api/writers/submissions/${encodeURIComponent(state.current.id)}/submit`,
-        {
-          method: "POST",
-          headers: {
-            "Idempotency-Key": makeIdempotencyKey("submit"),
-          },
-          json: {
-            expected_version: state.current.version,
-          },
-        }
-      );
-      state.current = payload.submission;
-      await loadHistory(state.current.id);
-      await loadWorkspace();
-      renderDetail();
-      show("detail");
-      if (tg && tg.HapticFeedback) {
-        tg.HapticFeedback.notificationOccurred("success");
+      // No documents leave the user's device until the complete form passes
+      // validation AND its text has been saved in the draft.
+      const saved = await autosave({ immediate: true });
+      if (!saved || !state.current || state.reloadRequired) return;
+      if (!await uploadQueuedFiles()) return;
+      // File staging increments the PostgreSQL submission version. Flush
+      // edits made while files were transferred using the refreshed version.
+      if (!await autosave({ immediate: true }) || state.reloadRequired) return;
+      try {
+        validateReadyForm();
+      } catch (error) {
+        setEditorError(error.message);
+        return;
       }
-    } catch (error) {
-      setEditorError(error.message || "Не удалось отправить работу.");
+      setBusy(true);
+      try {
+        const payload = await api(
+          "/api/writers/submissions/" + encodeURIComponent(state.current.id) + "/submit",
+          {
+            method: "POST",
+            headers: { "Idempotency-Key": makeIdempotencyKey("submit") },
+            json: { expected_version: state.current.version },
+          }
+        );
+        state.current = payload.submission;
+        clearPendingFiles();
+        await loadHistory(state.current.id);
+        await loadWorkspace();
+        renderDetail();
+        show("detail");
+        if (tg && tg.HapticFeedback) {
+          tg.HapticFeedback.notificationOccurred("success");
+        }
+      } catch (error) {
+        setEditorError(error.message || "Не удалось отправить работу. Вложения останутся прикрепленными к черновику.");
+      } finally {
+        setBusy(false);
+      }
     } finally {
-      setBusy(false);
+      state.submitting = false;
+      updateActionAvailability();
     }
   }
 
