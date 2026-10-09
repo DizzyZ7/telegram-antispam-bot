@@ -10,6 +10,7 @@
     timeline: [],
     autosaveTimer: null,
     autosavePending: false,
+    savePromise: null,
     uploadPending: false,
     reloadRequired: false,
     bootstrapped: false,
@@ -99,7 +100,8 @@
     const locked = state.reloadRequired || state.autosavePending || state.uploadPending;
     $("submitButton").disabled = locked;
     $("saveButton").disabled = state.reloadRequired || state.autosavePending;
-    $("fileInput").disabled = state.reloadRequired || state.uploadPending;
+    $("fileInput").disabled = locked;
+    $("imageInput").disabled = locked;
   }
 
   async function api(path, options = {}) {
@@ -615,53 +617,68 @@
   }
 
   async function autosave({ immediate = false } = {}) {
-    if (state.reloadRequired || state.autosavePending) {
-      return;
+    if (state.reloadRequired) {
+      return false;
     }
 
     clearTimeout(state.autosaveTimer);
     if (!immediate) {
       state.autosaveTimer = window.setTimeout(
-        () => autosave({ immediate: true }),
+        () => { void autosave({ immediate: true }); },
         700
       );
-      return;
+      return true;
     }
 
+    // Selecting a photo can race with an autosave triggered by text input.
+    // Wait for the existing mutation, rather than dropping the upload or
+    // issuing a second concurrent draft create/PATCH.
+    if (state.savePromise) {
+      return state.savePromise;
+    }
     state.autosavePending = true;
     updateActionAvailability();
     setSaveState("Сохраняю…");
     setEditorError("");
-
+    const saving = (async () => {
+      try {
+        if (!state.current) {
+          await createDraft();
+        } else {
+          const payload = await api(
+            `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
+            {
+              method: "PATCH",
+              json: {
+                ...currentFields(),
+                expected_version: state.current.version,
+              },
+            }
+          );
+          state.current = payload.submission;
+        }
+        setSaveState("Сохранено");
+        return true;
+      } catch (error) {
+        if (error.code === "conflict") {
+          setSaveState("Нужна перезагрузка");
+        } else {
+          setSaveState("Не сохранено");
+          setEditorError(error.message || "Не удалось сохранить черновик.");
+        }
+        return false;
+      } finally {
+        state.autosavePending = false;
+        updateActionAvailability();
+      }
+    })();
+    state.savePromise = saving;
     try {
-      if (!state.current) {
-        await createDraft();
-      } else {
-        const payload = await api(
-          `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
-          {
-            method: "PATCH",
-            json: {
-              ...currentFields(),
-              expected_version: state.current.version,
-            },
-          }
-        );
-        state.current = payload.submission;
-      }
-      setSaveState("Сохранено");
-      return true;
-    } catch (error) {
-      if (error.code === "conflict") {
-        setSaveState("Нужна перезагрузка");
-      } else {
-        setSaveState("Не сохранено");
-        setEditorError(error.message || "Не удалось сохранить черновик.");
-      }
-      return false;
+      return await saving;
     } finally {
-      state.autosavePending = false;
-      updateActionAvailability();
+      if (state.savePromise === saving) {
+        state.savePromise = null;
+      }
     }
   }
 
