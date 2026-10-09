@@ -91,7 +91,7 @@ MASKED_OBSCENE_WORDS = (
 MASKED_LATIN_WORDS = (
     "blyat", "blyad", "ebat", "zaebal", "pizda",
     "pizdec", "pizdets", "huy", "huinya", "nahuy",
-    "ohuеть", "suka", "mudak", "dolboeb", "pidor",
+    "nihuya", "ohuet", "suka", "mudak", "dolboeb", "pidor",
     "pidoras", "govno", "gavno", "fuck", "fucking",
     "shit", "bitch", "cunt", "asshole",
 )
