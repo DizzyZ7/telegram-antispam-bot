@@ -108,7 +108,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         document_kwargs = self.bot.send_document.await_args.kwargs
         self.assertEqual(document_kwargs["chat_id"], -100111)
         self.assertEqual(document_kwargs["document"], "telegram-file-1")
-        self.assertEqual(document_kwargs["reply_to_message_id"], 10)
+        self.assertEqual(document_kwargs["reply_parameters"].message_id, 10)
         self.assertIn(str(item.submission_id), document_kwargs["caption"])
 
         self.bot.send_message.assert_awaited_once()
@@ -145,7 +145,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Новая работа на модерацию", card["text"])
         self.assertIn(str(item.submission_id), card["text"])
         self.assertEqual(
-            self.bot.send_document.await_args.kwargs["reply_to_message_id"], 10
+            self.bot.send_document.await_args.kwargs["reply_parameters"].message_id, 10
         )
         self.assertTrue(card["reply_markup"].inline_keyboard)
         self.storage.mark_outbox_delivered.assert_awaited_once_with(
@@ -167,10 +167,10 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_photo.assert_awaited_once()
         kwargs = self.bot.send_photo.await_args.kwargs
         self.assertEqual(kwargs["chat_id"], self.config.moderation_chat_id)
-        self.assertEqual(kwargs["reply_to_message_id"], 10)
+        self.assertEqual(kwargs["reply_parameters"].message_id, 10)
         self.assertIn(str(item.submission_id), kwargs["caption"])
         doc = self.bot.send_document.await_args.kwargs
-        self.assertEqual(doc["reply_to_message_id"], 10)
+        self.assertEqual(doc["reply_parameters"].message_id, 10)
         self.assertIn(str(item.submission_id), doc["caption"])
         self.storage.mark_outbox_delivered.assert_awaited_once()
         ids = self.storage.mark_outbox_delivered.await_args.kwargs["delivery_message_ids"]
