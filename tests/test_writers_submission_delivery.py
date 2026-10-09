@@ -108,6 +108,8 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         document_kwargs = self.bot.send_document.await_args.kwargs
         self.assertEqual(document_kwargs["chat_id"], -100111)
         self.assertEqual(document_kwargs["document"], "telegram-file-1")
+        self.assertEqual(document_kwargs["reply_to_message_id"], 10)
+        self.assertIn(str(item.submission_id), document_kwargs["caption"])
 
         self.bot.send_message.assert_awaited_once()
         text = self.bot.send_message.await_args.kwargs["text"]
@@ -141,11 +143,70 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         card = self.bot.send_message.await_args.kwargs
         self.assertEqual(card["chat_id"], 2039781854)
         self.assertIn("Новая работа на модерацию", card["text"])
+        self.assertIn(str(item.submission_id), card["text"])
+        self.assertEqual(
+            self.bot.send_document.await_args.kwargs["reply_to_message_id"], 10
+        )
         self.assertTrue(card["reply_markup"].inline_keyboard)
         self.storage.mark_outbox_delivered.assert_awaited_once_with(
             outbox_id=item.id, worker_id="worker-test", now=145,
             delivery_chat_id=2039781854, delivery_message_ids=(11, 10),
         )
+
+    async def test_palette_mockup_and_files_are_replies_to_same_packet(self):
+        item = moderation_item()
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.title = "Исключительно эта работа"
+        context.details = {
+            "form_version": 2, "visual_mode": "palette",
+            "palette_colors": ["#AABBCC", "#112233", "#445566", "#778899"],
+        }
+        await self.worker.run_once(now=148)
+        self.bot.send_message.assert_awaited_once()
+        self.bot.send_photo.assert_awaited_once()
+        kwargs = self.bot.send_photo.await_args.kwargs
+        self.assertEqual(kwargs["chat_id"], self.config.moderation_chat_id)
+        self.assertEqual(kwargs["reply_to_message_id"], 10)
+        self.assertIn(str(item.submission_id), kwargs["caption"])
+        doc = self.bot.send_document.await_args.kwargs
+        self.assertEqual(doc["reply_to_message_id"], 10)
+        self.assertIn(str(item.submission_id), doc["caption"])
+        self.storage.mark_outbox_delivered.assert_awaited_once()
+        ids = self.storage.mark_outbox_delivered.await_args.kwargs["delivery_message_ids"]
+        self.assertEqual(ids, (10, 12, 11))
+
+    async def test_paid_cover_uuid_labels_correct_attachment_not_first_photo(self):
+        item = moderation_item()
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        wrong_id = uuid4()
+        right_id = uuid4()
+        context.files = (
+            SimpleNamespace(
+                id=wrong_id,
+                safe_filename="other-picture.jpg",
+                telegram_file_id="other-id",
+                detected_file_class="jpeg",
+            ),
+            SimpleNamespace(
+                id=right_id,
+                safe_filename="paid-cover.jpg",
+                telegram_file_id="correct-id",
+                detected_file_class="jpeg",
+            ),
+        )
+        context.details = {
+            "form_version": 2, "visual_mode": "image",
+            "cover_file_id": str(right_id),
+        }
+        await self.worker.run_once(now=149)
+        self.assertEqual(self.bot.send_document.await_count, 2)
+        calls = self.bot.send_document.await_args_list
+        self.assertNotIn("Своя обложка", calls[0].kwargs["caption"])
+        self.assertIn("Своя обложка", calls[1].kwargs["caption"])
+        self.assertIn(str(item.submission_id), calls[0].kwargs["caption"])
+        self.assertIn(str(item.submission_id), calls[1].kwargs["caption"])
 
     async def test_moderation_card_contains_compact_opaque_controls(self):
         item = moderation_item()
