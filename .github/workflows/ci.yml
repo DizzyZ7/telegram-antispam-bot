@@ -18,6 +18,7 @@ jobs:
       - run: node --test tests/test_writers_mobile_photo_client.cjs
       - run: node --test tests/test_writers_draft_client.cjs
       - run: node --test tests/test_writers_upload_progress_client.cjs
+      - run: node --test tests/test_writers_deferred_upload_client.cjs
       - run: python -m compileall -q .
       - run: python -m unittest discover -s tests -p "test_*.py"
 
@@ -25,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: mirror.gcr.io/library/postgres:17
         env:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test
@@ -53,4 +54,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate Python Docker image
-        run: docker build --file Dockerfile --tag telegram-antispam-bot:ci .
+        run: |
+          sed 's|FROM python:3.12-slim|FROM mirror.gcr.io/library/python:3.12-slim|' Dockerfile > Dockerfile.ci
+          docker build --file Dockerfile.ci --tag telegram-antispam-bot:ci .

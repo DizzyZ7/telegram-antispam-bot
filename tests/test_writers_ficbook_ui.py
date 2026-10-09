@@ -42,12 +42,12 @@ class FicbookFormUiTests(unittest.TestCase):
         html = (ROOT / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn("image/*,.png,.jpg,.jpeg,.webp,.heic,.heif", html)
-        self.assertIn("app.js?v=upload-progress-v1", html)
+        self.assertIn("app.js?v=defer-upload-v1", html)
         self.assertIn("prepareUploadFile", script)
         self.assertIn("await autosave({ immediate: true })", script)
-        self.assertIn('setSaveState("Загружаю файлы…")', script)
+        self.assertIn("async function uploadQueuedFiles()", script)
         self.assertIn('state.savePromise', script)
-        self.assertIn('if (uploaded) {', script)
+        self.assertIn('await queueFilesLocally([file], "image")', script)
 
     def test_only_free_palette_or_paid_photo_without_cover_styles(self):
         html = (ROOT / "index.html").read_text(encoding="utf-8")

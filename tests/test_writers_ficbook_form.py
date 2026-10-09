@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from uuid import uuid4
 
 from writers_submission.models import ValidationError
 from writers_submission.uploads import (
@@ -100,6 +101,27 @@ class FicbookFormValidationTests(unittest.TestCase):
         for case in cases:
             with self.subTest(case=case), self.assertRaises(ValidationError):
                 normalize_submission_details(case, complete=True)
+
+    def test_paid_cover_file_id_is_normalized_and_invalid_ids_rejected(self):
+        cover_id = uuid4()
+        normalized = normalize_submission_details(
+            details(
+                visual_mode="image",
+                palette_colors=[],
+                cover_file_id=str(cover_id),
+            ),
+            complete=True,
+        )
+        self.assertEqual(normalized["cover_file_id"], str(cover_id))
+        normal_palette = normalize_submission_details(
+            details(cover_file_id=str(cover_id)), complete=True
+        )
+        self.assertIsNone(normal_palette["cover_file_id"])
+        with self.assertRaisesRegex(ValidationError, "cover_file_id"):
+            normalize_submission_details(
+                details(visual_mode="image", palette_colors=[],
+                        cover_file_id="../../bad"), complete=True
+            )
 
     def test_only_two_cover_modes_and_legacy_layouts_are_ignored(self):
         for old_style in ("classic", "ribbon", "contrast", "minimal"):

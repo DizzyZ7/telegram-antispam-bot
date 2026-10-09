@@ -3,6 +3,7 @@ from __future__ import annotations
 import codecs
 import hashlib
 import re
+from uuid import UUID
 import unicodedata
 import zipfile
 from dataclasses import dataclass, field
@@ -110,7 +111,7 @@ def _external_url(value: object) -> str | None:
 _DETAILS_ALLOWED = frozenset({
     "form_version", "fandom", "size_category", "rating", "completion",
     "size_words", "pages", "parts", "extra_links", "visual_mode",
-    "palette_colors", "characters", "notes", "cover_template",
+    "palette_colors", "characters", "notes", "cover_template", "cover_file_id",
 })
 
 
@@ -183,12 +184,24 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
             raise ValidationError("palette_colors must use #RRGGBB format")
         colors.append(color.upper())
     details["palette_colors"] = colors
+    raw_cover_file_id = value.get("cover_file_id")
+    if raw_cover_file_id in (None, ""):
+        details["cover_file_id"] = None
+    elif not isinstance(raw_cover_file_id, str):
+        raise ValidationError("cover_file_id is invalid")
+    else:
+        try:
+            details["cover_file_id"] = str(UUID(raw_cover_file_id))
+        except (ValueError, AttributeError) as exc:
+            raise ValidationError("cover_file_id is invalid") from exc
 
     if details["completion"] != "завершен":
         for name in ("size_words", "pages", "parts"):
             details[name] = None
     if details["visual_mode"] != "palette":
         details["palette_colors"] = []
+    if details["visual_mode"] != "image":
+        details["cover_file_id"] = None
 
     if complete:
         for name in ("size_category", "rating", "completion", "visual_mode"):

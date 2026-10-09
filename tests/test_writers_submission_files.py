@@ -49,6 +49,7 @@ class WritersFileServiceTests(unittest.IsolatedAsyncioTestCase):
                 return_value=SimpleNamespace(
                     revision_id=self.revision_id,
                     file_count=0,
+                    fields_ready_for_upload=True,
                 )
             ),
             add_ready_file=AsyncMock(return_value=self.persisted),
@@ -171,6 +172,22 @@ class WritersFileServiceTests(unittest.IsolatedAsyncioTestCase):
                 declared_mime="text/plain", now=101,
             )
         self.bot.send_document.assert_not_awaited()
+
+    async def test_incomplete_draft_rejected_without_telegram_side_effect(self):
+        self.storage.get_draft_file_context.return_value = SimpleNamespace(
+            revision_id=self.revision_id, file_count=0,
+            fields_ready_for_upload=False,
+        )
+        path = temp_file()
+        with self.assertRaisesRegex(ValidationError, "Заполни обязательные"):
+            await self.service.attach_from_temp(
+                author_user_id=77, submission_id=self.submission_id,
+                temp_path=path, original_filename="private-file.txt",
+                declared_mime="text/plain", now=100,
+            )
+        self.bot.get_chat.assert_not_awaited()
+        self.bot.send_document.assert_not_awaited()
+        self.assertFalse(path.exists())
 
     async def test_validation_happens_before_telegram_upload(self):
         path = temp_file(suffix=".exe")

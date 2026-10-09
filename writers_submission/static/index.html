@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Writers Submission</title>
-  <link rel="stylesheet" href="/writers/app.css?v=upload-progress-v1">
+  <link rel="stylesheet" href="/writers/app.css?v=defer-upload-v1">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/writers/app.js?v=upload-progress-v1" defer></script>
+  <script src="/writers/app.js?v=defer-upload-v1" defer></script>
 </head>
 <body>
   <main class="shell" aria-live="polite">
@@ -154,7 +154,7 @@
             </label>
             <img id="imagePreview" class="image-preview hidden" alt="Предпросмотр выбранной картинки">
             <p class="muted">Стоимость и способ оплаты согласуются с администрацией ИКФ. В анкете оплата не списывается. Обложка будет использована только после подтверждения оплаты владельцем.</p>
-            <p id="imageUploadStatus" class="muted">Изображение прикрепится к заявке, но не станет обложкой без подтверждения оплаты.</p>
+            <p id="imageUploadStatus" class="muted">Фото останется на устройстве до отправки заполненной анкеты. Платная обложка требует подтверждения владельцем.</p>
             <section id="imageUploadProgress" class="upload-progress hidden" role="status" aria-live="polite" aria-atomic="true">
               <div class="upload-progress-meta">
                 <span id="imageUploadLabel">Подготовка файла…</span>
@@ -178,7 +178,7 @@
           <div class="section-title">
             <div>
               <h2>Файлы</h2>
-              <p class="muted">PDF, DOCX, TXT и фотографии JPG, PNG, WebP, HEIC · до 20 МБ · максимум 3</p>
+              <p class="muted">PDF, DOCX, TXT и фото JPG, PNG, WebP, HEIC · до 20 МБ · до 3 файлов. Выбранное не отправляется до готовой анкеты. Файлы не сохраняются между открытиями Mini App — их нужно выбрать снова.</p>
             </div>
             <label class="button button-secondary file-button">
               Добавить
@@ -186,6 +186,7 @@
             </label>
           </div>
           <div id="attachmentList" class="attachment-list"></div>
+          <p class="muted">Отменить выбранный файл можно кнопкой «Убрать». Текст черновика сохраняется отдельно.</p>
           <section id="fileUploadProgress" class="upload-progress hidden" role="status" aria-live="polite" aria-atomic="true">
               <div class="upload-progress-meta">
                 <span id="fileUploadLabel">Подготовка файла…</span>

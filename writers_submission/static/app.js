@@ -7,6 +7,8 @@
     filter: "all",
     current: null,
     attachments: [],
+    pendingFiles: [],
+    coverFileId: null,
     timeline: [],
     autosaveTimer: null,
     autosavePending: false,
@@ -16,6 +18,7 @@
     createKey: null,
     uploadPending: false,
     uploadPreparing: false,
+    submitting: false,
     reloadRequired: false,
     bootstrapped: false,
     paletteColors: ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"],
@@ -102,14 +105,15 @@
 
   function updateActionAvailability() {
     const locked = state.reloadRequired || state.autosavePending ||
-      state.uploadPending || state.uploadPreparing;
+      state.uploadPending || state.uploadPreparing || state.submitting;
     $("submitButton").disabled = locked;
     $("saveButton").disabled = locked;
     $("fileInput").disabled = locked;
     $("imageInput").disabled = locked;
     if (tg) {
       const unsaved = state.autosavePending ||
-        state.editSequence > state.savedSequence;
+        state.editSequence > state.savedSequence ||
+        state.pendingFiles.length > 0;
       if (unsaved && typeof tg.enableClosingConfirmation === "function") {
         tg.enableClosingConfirmation();
       } else if (!unsaved && typeof tg.disableClosingConfirmation === "function") {
@@ -245,6 +249,7 @@
         characters: form.characters.value,
         notes: form.notes.value,
         visual_mode: selectedChoice("visualMode"),
+        cover_file_id: selectedChoice("visualMode") === "image" ? state.coverFileId : null,
         palette_colors: selectedChoice("visualMode") === "palette" ? state.paletteColors.slice() : [],
       },
     };
@@ -258,6 +263,12 @@
     $("finishedFields").classList.toggle("hidden", !finished);
     $("paletteFields").classList.toggle("hidden", visual !== "palette");
     $("imageFields").classList.toggle("hidden", visual !== "image");
+    if (visual !== "image" && state.pendingFiles.some((entry) => entry.source === "image")) {
+      state.pendingFiles = state.pendingFiles.filter((entry) => entry.source !== "image");
+      clearImagePreview();
+      renderAttachments();
+      updateImageStatus();
+    }
     if (visual === "palette") { renderIkfCover(); }
     form.fandom.required = ff;
     [form.sizeWords, form.pages, form.parts].forEach((field) => { field.required = finished; });
@@ -289,6 +300,7 @@
     form.extraLinks.value = Array.isArray(details.extra_links) ? details.extra_links.join("\n") : "";
     form.characters.value = details.characters || "";
     form.notes.value = details.notes || "";
+    state.coverFileId = details.cover_file_id || null;
     state.paletteColors = Array.isArray(details.palette_colors) && details.palette_colors.length === 4
       ? details.palette_colors.slice()
       : ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"];
@@ -303,10 +315,15 @@
   }
 
   function updateImageStatus() {
-    const images = state.attachments.filter((file) => ["png", "jpeg"].includes(file.file_class));
-    $("imageUploadStatus").textContent = images.length
-      ? `Картинка загружена: ${images.map((file) => file.filename).join(", ")}`
-      : "Загрузи свою обложку. Это платная опция: использование подтвердит владелец после оплаты.";
+    const pending = state.pendingFiles.filter((entry) => entry.source === "image");
+    const uploaded = state.attachments.filter((file) =>
+      ["png", "jpeg"].includes(file.file_class)
+    );
+    $("imageUploadStatus").textContent = pending.length
+      ? `Выбрана своя фотография: ${pending.map((entry) => entry.file.name).join(", ")}. Файл еще не отправлен. Передадим только после отправки анкеты.`
+      : uploaded.length
+        ? `Изображение уже прикреплено к этой заявке: ${uploaded.map((file) => file.filename).join(", ")}`
+        : "Выбери фото. До отправки анкеты оно останется только на устройстве. Своя обложка — платная опция.";
   }
 
   function markChanged() {
@@ -482,8 +499,9 @@
       throw new Error("Дополнительных ссылок может быть не больше пяти.");
     }
     if (values.details.visual_mode === "image" &&
+        !state.pendingFiles.some((entry) => entry.source === "image") &&
         !state.attachments.some((file) => ["png", "jpeg"].includes(file.file_class))) {
-      throw new Error("Добавь картинку PNG или JPEG.");
+      throw new Error("Выбери свою фотографию для платной обложки.");
     }
     return values;
   }
@@ -537,32 +555,68 @@
     });
   }
 
+  function removePendingFile(localId) {
+    const found = state.pendingFiles.find((entry) => entry.id === localId);
+    if (!found || state.uploadPending || state.uploadPreparing) { return; }
+    state.pendingFiles = state.pendingFiles.filter((entry) => entry.id !== localId);
+    if (found.source === "image") {
+      clearImagePreview();
+      $("imageInput").value = "";
+    }
+    renderAttachments();
+    updateImageStatus();
+    updateActionAvailability();
+  }
+
+  function clearPendingFiles() {
+    state.pendingFiles = [];
+    state.coverFileId = null;
+    clearImagePreview();
+    $("fileInput").value = "";
+    $("imageInput").value = "";
+    renderAttachments();
+    updateImageStatus();
+    updateActionAvailability();
+  }
+
   function renderAttachments() {
     const list = $("attachmentList");
     list.replaceChildren();
-
-    if (!state.attachments.length) {
-      list.append(safeTextElement("p", "Файлы пока не добавлены.", "muted"));
+    const all = [
+      ...state.attachments.map((file) => ({
+        file, id: file.id, pending: false,
+        name: file.filename || file.safe_filename || "Файл",
+        size: file.size || file.byte_size || 0,
+      })),
+      ...state.pendingFiles.map((entry) => ({
+        file: entry, id: entry.id, pending: true, source: entry.source,
+        name: entry.file.name, size: entry.file.size,
+      })),
+    ];
+    if (!all.length) {
+      list.append(safeTextElement("p", "Файлы не выбраны. Можно приложить их позже, перед отправкой анкеты.", "muted"));
       return;
     }
-
-    state.attachments.forEach((file) => {
+    all.forEach((entry) => {
       const row = document.createElement("div");
       row.className = "attachment";
-
+      const classification = entry.pending && entry.source === "image"
+        ? "Своя обложка (платно)"
+        : "Вложение";
       const label = safeTextElement(
         "span",
-        `${file.filename || file.safe_filename || "Файл"} · ${Math.max(1, Math.round(Number(file.size || file.byte_size || 0) / 1024))} КБ`,
-        "attachment-name"
+        `${classification}: ${entry.name} · ${Math.max(1, Math.round(Number(entry.size) / 1024))} КБ · ${entry.pending ? "только на устройстве, не отправлен" : "на сервере"}`,
+        "attachment-name",
       );
       row.append(label);
-
-      if (state.current && state.current.status === "DRAFT" && file.id) {
+      if (entry.pending || (state.current && state.current.status === "DRAFT" && entry.id)) {
         const remove = document.createElement("button");
         remove.type = "button";
         remove.className = "button button-ghost";
-        remove.textContent = "Удалить";
-        remove.addEventListener("click", () => deleteAttachment(file.id));
+        remove.textContent = "Убрать";
+        remove.addEventListener("click", () =>
+          entry.pending ? removePendingFile(entry.id) : deleteAttachment(entry.id)
+        );
         row.append(remove);
       }
       list.append(row);
@@ -673,6 +727,11 @@
       const payload = await api(
         `/api/writers/submissions/${encodeURIComponent(submissionId)}`
       );
+      if (state.pendingFiles.length) {
+        setBanner("Локальные файлы не сохраняются в черновике. После повторного открытия их нужно выбрать заново.", "warning");
+      }
+      state.pendingFiles = [];
+      clearImagePreview();
       state.current = payload.submission;
       state.attachments = Array.isArray(payload.files) ? payload.files : [];
       await loadHistory(submissionId);
@@ -705,10 +764,14 @@
         setEditorError("Черновик не сохранился. Повтори сохранение, прежде чем создавать новую работу.");
         return;
       }
+      if (state.pendingFiles.length && !window.confirm(
+        "Выбранные файлы еще не отправлены и будут убраны из формы. Создать новую работу?"
+      )) { return; }
     }
     clearTimeout(state.autosaveTimer);
     state.current = null;
     state.attachments = [];
+    clearPendingFiles();
     state.timeline = [];
     state.editSequence = 0;
     state.savedSequence = 0;
@@ -812,9 +875,8 @@
   }
 
   async function submitCurrent() {
-    if (state.reloadRequired || state.autosavePending || state.uploadPending) {
-      return;
-    }
+    if (state.reloadRequired || state.autosavePending ||
+        state.uploadPending || state.uploadPreparing || state.submitting) return;
     setEditorError("");
     try {
       validateReadyForm();
@@ -822,37 +884,50 @@
       setEditorError(error.message);
       return;
     }
-    const saved = await autosave({ immediate: true });
-    if (!saved || !state.current || state.reloadRequired) {
-      return;
-    }
-
-    setBusy(true);
+    state.submitting = true;
+    updateActionAvailability();
     try {
-      const payload = await api(
-        `/api/writers/submissions/${encodeURIComponent(state.current.id)}/submit`,
-        {
-          method: "POST",
-          headers: {
-            "Idempotency-Key": makeIdempotencyKey("submit"),
-          },
-          json: {
-            expected_version: state.current.version,
-          },
-        }
-      );
-      state.current = payload.submission;
-      await loadHistory(state.current.id);
-      await loadWorkspace();
-      renderDetail();
-      show("detail");
-      if (tg && tg.HapticFeedback) {
-        tg.HapticFeedback.notificationOccurred("success");
+      // No documents leave the user's device until the complete form passes
+      // validation AND its text has been saved in the draft.
+      const saved = await autosave({ immediate: true });
+      if (!saved || !state.current || state.reloadRequired) return;
+      if (!await uploadQueuedFiles()) return;
+      // File staging increments the PostgreSQL submission version. Flush
+      // edits made while files were transferred using the refreshed version.
+      if (!await autosave({ immediate: true }) || state.reloadRequired) return;
+      try {
+        validateReadyForm();
+      } catch (error) {
+        setEditorError(error.message);
+        return;
       }
-    } catch (error) {
-      setEditorError(error.message || "Не удалось отправить работу.");
+      setBusy(true);
+      try {
+        const payload = await api(
+          "/api/writers/submissions/" + encodeURIComponent(state.current.id) + "/submit",
+          {
+            method: "POST",
+            headers: { "Idempotency-Key": makeIdempotencyKey("submit") },
+            json: { expected_version: state.current.version },
+          }
+        );
+        state.current = payload.submission;
+        clearPendingFiles();
+        await loadHistory(state.current.id);
+        await loadWorkspace();
+        renderDetail();
+        show("detail");
+        if (tg && tg.HapticFeedback) {
+          tg.HapticFeedback.notificationOccurred("success");
+        }
+      } catch (error) {
+        setEditorError(error.message || "Не удалось отправить работу. Вложения останутся прикрепленными к черновику.");
+      } finally {
+        setBusy(false);
+      }
     } finally {
-      setBusy(false);
+      state.submitting = false;
+      updateActionAvailability();
     }
   }
 
@@ -957,7 +1032,7 @@
       // draft or waiting for Telegram storage/DB confirmation.
       bar.removeAttribute("value");
       $(`${prefix}UploadPercent`).textContent =
-        phase === "error" ? "Ошибка" : "Подождите";
+        phase === "error" ? "Ошибка" : phase === "waiting" ? "Не отправлено" : "Подождите";
     }
   }
 
@@ -1021,99 +1096,111 @@
     });
   }
 
-  async function uploadFiles(fileList, source = "file") {
-    if (state.reloadRequired || state.uploadPending || state.uploadPreparing) {
-      return null;
-    }
+
+  async function queueFilesLocally(fileList, source = "file") {
+    if (state.reloadRequired || state.uploadPending || state.uploadPreparing) return false;
     const originals = Array.from(fileList || []);
-    if (!originals.length) { return null; }
-    const slots = Math.max(0, 3 - state.attachments.length);
-    if (originals.length > slots) {
-      const reason = slots
-        ? `Можно добавить еще только ${slots} файл(а). Максимум 3 вложения.`
-        : "Достигнут лимит: максимум 3 вложения. Удали старый файл перед загрузкой.";
-      setEditorError(reason);
-      updateUploadProgress(source, reason, null, "error");
-      return null;
+    if (!originals.length) return false;
+    const existing = state.pendingFiles.filter((entry) => source !== "image" || entry.source !== "image");
+    if (originals.length + existing.length + state.attachments.length > 3) {
+      setEditorError("Максимум три файла на одну работу. Убери лишнее вложение.");
+      return false;
     }
     state.uploadPreparing = true;
     updateActionAvailability();
-    setEditorError("");
-    let firstUploaded = null;
-    let savedCount = 0;
     try {
-      updateUploadProgress(source, "Подготавливаю выбранные файлы…");
-      const files = await Promise.all(originals.map(prepareUploadFile));
-      updateUploadProgress(source, "Сохраняю черновик перед загрузкой…");
-      const saved = await autosave({ immediate: true });
-      if (!saved || !state.current || state.reloadRequired) {
-        throw new Error("Не удалось сохранить черновик. Файл не отправлен.");
+      const prepared = [];
+      for (const original of originals) {
+        const file = await prepareUploadFile(original);
+        prepared.push({ id: makeIdempotencyKey("local-file"), file, source });
       }
-
-      state.uploadPending = true;
+      state.pendingFiles = existing.concat(prepared);
+      if (source === "image") {
+        clearImagePreview();
+        state.imagePreviewUrl = URL.createObjectURL(prepared[0].file);
+        $("imagePreview").src = state.imagePreviewUrl;
+        $("imagePreview").classList.remove("hidden");
+      }
+      renderAttachments();
+      updateImageStatus();
+      setEditorError("");
+      updateUploadProgress(source, "Выбрано, не отправлено. Передадим вместе с заполненной анкетой.", null, "waiting");
+      return true;
+    } catch (error) {
+      setEditorError(error.message || "Не удалось подготовить файл.");
+      updateUploadProgress(source, error.message || "Ошибка выбора файла", null, "error");
+      return false;
+    } finally {
+      state.uploadPreparing = false;
       updateActionAvailability();
-      setSaveState("Загружаю файлы…");
-      for (const [index, file] of files.entries()) {
-        const position = `${index + 1} из ${files.length}`;
-        updateUploadProgress(source, `Передаю файл ${position}: ${file.name}`, 0);
+    }
+  }
+
+  async function uploadQueuedFiles() {
+    if (state.reloadRequired || state.uploadPending || state.uploadPreparing) return false;
+    if (!state.pendingFiles.length) return true;
+    if (!state.current) {
+      setEditorError("Сначала сохрани черновик.");
+      return false;
+    }
+    state.uploadPending = true;
+    updateActionAvailability();
+    const count = state.pendingFiles.length;
+    let done = 0;
+    try {
+      const ordered = [
+        ...state.pendingFiles.filter((entry) => entry.source === "image"),
+        ...state.pendingFiles.filter((entry) => entry.source !== "image"),
+      ];
+      for (const entry of ordered) {
+        const file = entry.file, source = entry.source;
+        const position = (done + 1) + " из " + count;
+        updateUploadProgress(source, "Передаю " + position + ": " + file.name, 0);
         const formData = new FormData();
         formData.append("file", file, file.name);
         const uploaded = await sendFileWithProgress(
-          `/api/writers/submissions/${encodeURIComponent(state.current.id)}/files`,
+          "/api/writers/submissions/" + encodeURIComponent(state.current.id) + "/files",
           formData,
-          (percent) => updateUploadProgress(
-            source, `Передаю файл ${position}: ${file.name}`,
-            percent,
-          ),
-          () => updateUploadProgress(
-            source, `Файл ${position} передан. Сохраняем на сервере…`,
-            100, "processing",
-          ),
+          (percent) => updateUploadProgress(source, "Передаю " + position + ": " + file.name, percent),
+          () => updateUploadProgress(source, "Передано " + position + ". Сохраняем на сервере…", 100, "processing"),
         );
-        if (!firstUploaded) { firstUploaded = file; }
+        // HTTP 201 confirms storage. Remove locally before GET to avoid
+        // re-sending a successfully stored file after interrupted refresh.
+        state.pendingFiles = state.pendingFiles.filter((item) => item.id !== entry.id);
         state.attachments.push(uploaded);
-        savedCount += 1;
-        updateUploadProgress(
-          source, `Проверяю сохранение файла ${position}…`, null, "processing",
-        );
+        if (source === "image") {
+          state.coverFileId = uploaded.id;
+          state.editSequence += 1;
+        }
+        done += 1;
+        renderAttachments();
+        updateImageStatus();
+        updateUploadProgress(source, "Проверяю сохранение " + position + "…", null, "processing");
         try {
           const refreshed = await api(
-            `/api/writers/submissions/${encodeURIComponent(state.current.id)}`
+            "/api/writers/submissions/" + encodeURIComponent(state.current.id)
           );
           state.current = refreshed.submission;
         } catch (_error) {
-          // POST 201 means persisted already. Never tell the author to retry
-          // uploading blindly, as that would create duplicates.
           setReloadRequired(true);
-          throw new Error(
-            "Файл сохранен, но не удалось обновить анкету. Открой ее повторно, " +
-            "чтобы убедиться, что вложение есть в списке."
-          );
+          throw new Error("Файл уже сохранен, но версия анкеты не обновилась. Открой работу заново и проверь список.");
         }
-        renderAttachments();
-        updateImageStatus();
-        updateUploadProgress(
-          source, `✓ Файл добавлен (${position}): ${file.name}`, 100, "done",
-        );
+        updateUploadProgress(source, "✓ Файл сохранен " + position + ": " + file.name, 100, "done");
       }
-      setSaveState("Файлы сохранены");
-      return firstUploaded;
+      setSaveState("Все вложения сохранены");
+      return true;
     } catch (error) {
-      const reason = error.message || "Не удалось загрузить файл.";
-      const message = savedCount
-        ? `Сохранено файлов: ${savedCount} из ${originals.length}. ${reason}`
-        : reason;
-      setEditorError(message);
-      setSaveState(savedCount ? "Не все файлы загружены" : "Ошибка загрузки файла");
-      updateUploadProgress(source, message, null, "error");
-      return null;
+      setEditorError(
+        "Сохранено файлов: " + done + " из " + count + ". " +
+        (error.message || "Ошибка передачи.") +
+        " Заявка не отправлена. Проверь вложения и повтори попытку."
+      );
+      return false;
     } finally {
+      state.uploadPending = false;
+      updateActionAvailability();
       renderAttachments();
       updateImageStatus();
-      state.uploadPending = false;
-      state.uploadPreparing = false;
-      $("fileInput").value = "";
-      updateActionAvailability();
       if (state.editSequence > state.savedSequence && !state.reloadRequired) {
         void autosave();
       }
@@ -1133,6 +1220,10 @@
         { method: "DELETE" }
       );
       state.attachments = state.attachments.filter((file) => file.id !== fileId);
+      if (state.coverFileId === fileId) {
+        state.coverFileId = null;
+        state.editSequence += 1;
+      }
       const refreshed = await api(
         `/api/writers/submissions/${encodeURIComponent(state.current.id)}`
       );
@@ -1195,6 +1286,7 @@
       );
       state.current = payload.submission;
       state.attachments = [];
+      clearPendingFiles();
       fillForm(state.current);
       state.editSequence = 0;
       state.savedSequence = 0;
@@ -1212,6 +1304,9 @@
   function bindEvents() {
     $("newWorkButton").addEventListener("click", () => { void newDraft(); });
     $("editorBackButton").addEventListener("click", async () => {
+      if (state.pendingFiles.length && !window.confirm(
+        "Выбранные файлы еще не отправлены. Текст черновика сохранится, но файлы придется выбрать заново. Выйти?"
+      )) { return; }
       const saved = await autosave({ immediate: true });
       if (!saved || state.reloadRequired) {
         setEditorError("Черновик не сохранен. Исправь ошибку и повтори сохранение, прежде чем выходить.");
@@ -1231,19 +1326,14 @@
     $("saveButton").addEventListener("click", () => autosave({ immediate: true }));
     $("submitButton").addEventListener("click", submitCurrent);
     $("fileInput").addEventListener("change", (event) => {
-      void uploadFiles(event.target.files, "file");
+      void queueFilesLocally(event.target.files, "file");
+      $("fileInput").value = "";
     });
     $("imageInput").addEventListener("change", async (event) => {
       const file = (event.target.files || [])[0];
       if (!file) { return; }
-      const uploaded = await uploadFiles([file], "image");
+      await queueFilesLocally([file], "image");
       $("imageInput").value = "";
-      if (uploaded) {
-        clearImagePreview();
-        state.imagePreviewUrl = URL.createObjectURL(uploaded);
-        $("imagePreview").src = state.imagePreviewUrl;
-        $("imagePreview").classList.remove("hidden");
-      }
     });
     $("withdrawButton").addEventListener("click", withdrawCurrent);
     $("revisionButton").addEventListener("click", createRevision);

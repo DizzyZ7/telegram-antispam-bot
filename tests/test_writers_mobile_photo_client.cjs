@@ -11,7 +11,7 @@ const script = fs.readFileSync(
   "utf8"
 );
 const start = script.indexOf("  const MAX_PHOTO_BYTES =");
-const end = script.indexOf("  async function uploadFiles(", start);
+const end = script.indexOf("  async function queueFilesLocally(", start);
 assert.ok(start >= 0 && end > start, "photo helper source must be present");
 
 const urls = [];

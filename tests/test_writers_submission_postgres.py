@@ -214,6 +214,42 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(sent.status, SubmissionStatus.SUBMITTED)
 
+    async def test_incomplete_draft_cannot_stage_files_until_form_complete(self):
+        partial = validate_submission_fields(
+            title="Наполовину", work_type="", genre="", description="",
+            body_text="", external_url="https:",
+            has_ready_file=False, require_work_content=False,
+            details={"form_version": 2, "visual_mode": "image"},
+        )
+        draft = await self.storage.create_submission(
+            author_user_id=77, writers_chat_id=-1002619489118,
+            fields=partial, now=100, idempotency_key="deferred-incomplete",
+        )
+        context = await self.storage.get_draft_file_context(
+            submission_id=draft.id, author_user_id=77,
+        )
+        self.assertFalse(context.fields_ready_for_upload)
+        finished = validate_submission_fields(
+            title="Работа", work_type="Оридж", genre="Джен",
+            description="Все заполнено", body_text="",
+            external_url="https://ficbook.net/readfic/555",
+            has_ready_file=False, require_work_content=False,
+            details={
+                "form_version": 2, "size_category": "мини",
+                "rating": "G", "completion": "в процессе",
+                "visual_mode": "image", "palette_colors": [],
+            },
+        )
+        saved = await self.storage.update_draft(
+            submission_id=draft.id, author_user_id=77,
+            expected_version=draft.version, fields=finished, now=110,
+        )
+        self.assertEqual(saved.status, SubmissionStatus.DRAFT)
+        context = await self.storage.get_draft_file_context(
+            submission_id=draft.id, author_user_id=77,
+        )
+        self.assertTrue(context.fields_ready_for_upload)
+
     async def test_create_list_get_and_update_owned_draft(self):
         created = await self.storage.create_submission(
             author_user_id=77,

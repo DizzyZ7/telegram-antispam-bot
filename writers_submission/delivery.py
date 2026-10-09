@@ -7,7 +7,7 @@ import time
 from contextlib import suppress
 from io import BytesIO
 
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, ReplyParameters
 from typing import Any
 
 from .handlers import build_moderation_keyboard
@@ -320,28 +320,86 @@ class WritersDeliveryWorker:
             revision_id=item.revision_id,
         )
         moderation_chat_id = int(self.config.moderation_chat_id)
-        message_ids: list[int] = []
-        for attachment in context.files:
-            sent = await self.bot.send_document(
-                chat_id=moderation_chat_id,
-                document=attachment.telegram_file_id,
-                caption=_escape(attachment.safe_filename),
-                parse_mode="HTML",
-            )
-            message_id = getattr(sent, "message_id", None)
-            if message_id is not None:
-                message_ids.append(int(message_id))
+        # A single moderation card is the anchor of ONE submission packet.
+        # Every file and the palette mockup are direct replies to that card;
+        # no unattributed attachments are sent into an owner's message stream.
+        packet_id = str(item.submission_id)
         card = await self.bot.send_message(
             chat_id=moderation_chat_id,
-            text=_moderation_text(context),
+            text=(
+                "<b>📦 Комплект заявки</b> <code>" + packet_id + "</code>\n"
+                + _moderation_text(context)
+                + "\n\nВсе вложения и цветовой макет — ответами на эту карточку."
+            ),
             parse_mode="HTML",
             reply_markup=build_moderation_keyboard(
-                token, paid_cover=(getattr(context, "details", None) or {}).get("visual_mode") == "image"
+                token,
+                paid_cover=(
+                    (getattr(context, "details", None) or {}).get("visual_mode") == "image"
+                ),
             ),
         )
         card_message_id = getattr(card, "message_id", None)
-        if card_message_id is not None:
-            message_ids.append(int(card_message_id))
+        if card_message_id is None:
+            raise RuntimeError("Telegram moderation card has no message_id")
+        message_ids: list[int] = [int(card_message_id)]
+        reply_kwargs = {
+            "chat_id": moderation_chat_id,
+            "reply_parameters": ReplyParameters(message_id=int(card_message_id)),
+        }
+        details = getattr(context, "details", None) or {}
+        if details.get("visual_mode") == "palette":
+            try:
+                palette = render_palette_png(
+                    details.get("palette_colors", []), title=context.title
+                )
+                mockup = await self.bot.send_photo(
+                    **reply_kwargs,
+                    photo=BufferedInputFile(palette, filename="ikf-palette-mockup.png"),
+                    caption=(
+                        "🎨 Черновой макет сочетания 4 цветов\n"
+                        "Комплект: " + packet_id
+                    ),
+                )
+                if getattr(mockup, "message_id", None) is not None:
+                    message_ids.append(int(mockup.message_id))
+            except Exception:
+                LOGGER.exception(
+                    "WRITERS_MODERATION_PALETTE_MOCKUP_FAILED submission_id=%s",
+                    item.submission_id,
+                )
+                # A broken preview must not hide the actual submitted form.
+        for index, attachment in enumerate(context.files, 1):
+            label = "📁 Вложение"
+            cover_id = str(details.get("cover_file_id") or "")
+            is_paid_cover = (
+                details.get("visual_mode") == "image"
+                and (
+                    str(getattr(attachment, "id", "")) == cover_id
+                    if cover_id else (
+                        getattr(attachment, "detected_file_class", None) in {"png", "jpeg"}
+                        and not any(
+                            getattr(previous, "detected_file_class", None) in {"png", "jpeg"}
+                            for previous in context.files[:index - 1]
+                        )
+                    )
+                )
+            )
+            if is_paid_cover:
+                label = "🖼️ Своя обложка (платная опция, проверить оплату)"
+            caption = (
+                label + " · " + str(index) + " из " + str(len(context.files))
+                + "\nЗаявка: " + packet_id
+                + "\n" + _escape(attachment.safe_filename)
+            )
+            sent = await self.bot.send_document(
+                **reply_kwargs,
+                document=attachment.telegram_file_id,
+                caption=caption,
+                parse_mode="HTML",
+            )
+            if getattr(sent, "message_id", None) is not None:
+                message_ids.append(int(sent.message_id))
         return moderation_chat_id, tuple(message_ids)
 
     async def _deliver_author_notification(
@@ -409,8 +467,16 @@ class WritersDeliveryWorker:
                 if not paid:
                     post = "💎 Своя обложка ожидает подтверждения оплаты.\n\n" + post
                 else:
+                    cover_id = str(details.get("cover_file_id") or "")
                     image = next(
-                        (f for f in context.files if f.detected_file_class in {"png", "jpeg"}),
+                        (
+                            f for f in context.files
+                            if f.detected_file_class in {"png", "jpeg"}
+                            and (
+                                str(getattr(f, "id", "")) == cover_id
+                                if cover_id else True
+                            )
+                        ),
                         None,
                     )
                     if image is None:
