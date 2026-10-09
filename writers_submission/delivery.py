@@ -236,7 +236,22 @@ class WritersDeliveryWorker:
                     now=int(now),
                 )
             except Exception as exc:
-                if _is_permanent_telegram_error(exc):
+                # The outbox is the source of truth; author acceptance/approval
+                # notifications do NOT imply delivery of the owner's promo.
+                # Previously every delivery failure was silently swallowed.
+                permanent = _is_permanent_telegram_error(exc)
+                LOGGER.error(
+                    "WRITERS_DELIVERY_FAILED event=%s submission_id=%s "
+                    "revision_id=%s attempt=%s permanent=%s error_type=%s",
+                    getattr(item.event_type, "value", str(item.event_type)),
+                    item.submission_id,
+                    item.revision_id,
+                    item.attempt_count,
+                    permanent,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                if permanent:
                     await self.storage.mark_outbox_permanent_failure(
                         outbox_id=item.id,
                         worker_id=self.worker_id,
@@ -265,6 +280,13 @@ class WritersDeliveryWorker:
                 delivery_chat_id=delivery_chat_id,
                 delivery_message_ids=delivery_message_ids,
             )
+            if item.event_type is OutboxEventType.OWNER_PREVIEW:
+                LOGGER.info(
+                    "WRITERS_OWNER_PREVIEW_DELIVERED submission_id=%s "
+                    "revision_id=%s destination_chat_id=%s message_ids=%s",
+                    item.submission_id, item.revision_id,
+                    delivery_chat_id, delivery_message_ids,
+                )
         return len(items)
 
     async def _deliver(
