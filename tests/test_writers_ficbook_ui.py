@@ -38,6 +38,17 @@ class FicbookFormUiTests(unittest.TestCase):
             "workType", "sizeCategory", "completion", "visualMode",
         })
 
+    def test_photo_upload_picker_supports_mobile_photos_and_cache_busting(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertIn("image/*,.png,.jpg,.jpeg,.webp,.heic,.heif", html)
+        self.assertIn("app.js?v=photo-v3", html)
+        self.assertIn("prepareUploadFile", script)
+        self.assertIn("await autosave({ immediate: true })", script)
+        self.assertIn('setSaveState("Загружаю файлы…")', script)
+        self.assertIn('state.savePromise', script)
+        self.assertIn('if (uploaded) {', script)
+
     def test_javascript_has_reversible_choices_and_persisted_palette(self):
         js = (ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn('if (other !== input) { other.checked = false; }', js)
