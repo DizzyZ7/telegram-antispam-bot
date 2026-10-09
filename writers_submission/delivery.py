@@ -7,7 +7,7 @@ import time
 from contextlib import suppress
 from io import BytesIO
 
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, ReplyParameters
 from typing import Any
 
 from .handlers import build_moderation_keyboard
@@ -345,7 +345,7 @@ class WritersDeliveryWorker:
         message_ids: list[int] = [int(card_message_id)]
         reply_kwargs = {
             "chat_id": moderation_chat_id,
-            "reply_to_message_id": int(card_message_id),
+            "reply_parameters": ReplyParameters(message_id=int(card_message_id)),
         }
         details = getattr(context, "details", None) or {}
         if details.get("visual_mode") == "palette":
