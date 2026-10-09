@@ -728,10 +728,10 @@
   }
 
   const MAX_PHOTO_BYTES = 20 * 1024 * 1024;
-  const SUPPORTED_PHOTO_EXT = /\\.(png|jpe?g|heic|heif|webp)$/i;
+  const SUPPORTED_PHOTO_EXT = /\.(png|jpe?g|heic|heif|webp)$/i;
 
   function isPhotoFile(file) {
-    return /^image\\//i.test(file.type || "") ||
+    return /^image\//i.test(file.type || "") ||
       SUPPORTED_PHOTO_EXT.test(file.name || "");
   }
 
@@ -746,7 +746,7 @@
       return new File([file], filename, { type: mime });
     }
     if (!["heic", "heif", "webp"].includes(extension) &&
-        !/image\\/(heic|heif|webp)/i.test(file.type || "")) {
+        !/image\/(heic|heif|webp)/i.test(file.type || "")) {
       throw new Error("Для изображения поддерживаются JPG, PNG, WebP и HEIC.");
     }
     if (file.size > MAX_PHOTO_BYTES) {
@@ -783,7 +783,7 @@
       if (!blob || blob.type !== "image/jpeg") {
         throw new Error("Не удалось преобразовать фотографию в JPEG.");
       }
-      const jpegName = filename.replace(/\\.[^.]+$/, "") + ".jpg";
+      const jpegName = filename.replace(/\.[^.]+$/, "") + ".jpg";
       return new File([blob], jpegName, { type: "image/jpeg" });
     } finally {
       URL.revokeObjectURL(objectUrl);
