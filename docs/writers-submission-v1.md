@@ -360,16 +360,21 @@ Images are subject to the existing limit of 3 files of up to 20 MB each.
 
 ## 15. ICФ branded covers and paid custom image option
 
-The free standard cover is a real **1200 × 450 PNG banner** in the ICФ visual
-language: four author-selected RGB colors, diagonals, three thin parallel
-lines, and a Cyrillic serif title fixed **bottom right**. Authors can choose
-one of four layouts (Classic, Ribbon, Contrast, Minimal), but **cannot move
-the title**. The Telegram Mini App renders a live canvas preview when title,
-template or colors change. The choice is stored in immutable v2 revision
-`details_json.cover_template`, with `classic` default for old records.
+The form has **exactly two cover modes**: (1) an ordinary **free**
+four-color RGB palette, (2) an author's **paid** custom photo. There is no
+cover-style/template selector. The free mode displays one approximate
+1200 × 450 color-combination mockup with title on the lower right; this
+is **not final cover artwork**. A human IKF artist can later alter the
+composition, font and finishing independently. The colors remain stored
+with the draft and submitted revision.
+
+Older revisions may still contain `details_json.cover_template`, created
+before this simplification. They remain readable. The backend accepts but
+discards that legacy setting when editing the draft, and owner delivery uses
+a single fixed rough reference regardless of the historical style.
 
 When an application is approved, the owner `2039781854` receives the
-finished branded cover and prepared promo text in their private chat. Neither
+rough four-color palette reference and prepared promo text in their private chat. Neither
 the Writers community nor the channel gets an automatic post.
 
 **An author's own artwork as a cover is a paid option.** Authors can still
