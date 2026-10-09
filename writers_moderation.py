@@ -347,9 +347,18 @@ class WritersChatFilter(BaseFilter):
 class ProhibitedLanguageFilter(BaseFilter):
     async def __call__(self, message: Message) -> bool:
         content = message.text or message.caption or ""
+        user = getattr(message, "from_user", None)
+        sender_chat = getattr(message, "sender_chat", None)
+        # Telegram represents anonymous group administrators as a bot-like
+        # sender. They are still subject to the chat's language rules.
+        human_or_anonymous = (
+            user is not None and (
+                not bool(getattr(user, "is_bot", False))
+                or sender_chat is not None
+            )
+        )
         return bool(
-            message.from_user
-            and not message.from_user.is_bot
+            human_or_anonymous
             and content
             and contains_prohibited_language(content)
         )
