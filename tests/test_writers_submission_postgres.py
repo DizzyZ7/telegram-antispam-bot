@@ -13,7 +13,7 @@ from writers_submission.models import (
     ValidationError,
 )
 from writers_submission.storage import PostgresWritersSubmissionStorage
-from writers_submission.uploads import NormalizedSubmissionFields, ValidatedUpload
+from writers_submission.uploads import NormalizedSubmissionFields, ValidatedUpload, validate_submission_fields
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 
@@ -164,6 +164,55 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
                 expected_version=draft.version,
                 idempotency_key="ficbook-image-submit", now=101,
             )
+
+    async def test_unfinished_link_draft_survives_restart_but_cannot_be_submitted(self):
+        base = dict(
+            title="Начатая работа", work_type="Оридж", genre="Джен",
+            description="Описание", body_text="",
+            has_ready_file=False, require_work_content=False,
+        )
+        initial = validate_submission_fields(
+            **base, external_url="https:",
+            details={"form_version": 2, "extra_links": ["t.me/author"]},
+        )
+        created = await self.storage.create_submission(
+            author_user_id=77, writers_chat_id=-1002619489118,
+            fields=initial, now=100,
+            idempotency_key="unfinished-url-draft",
+        )
+        await self.storage.close()
+        reopened = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
+        await reopened.initialize()
+        self.storage = reopened
+        restored = await reopened.get_for_author(created.id, 77)
+        self.assertEqual(restored.revision.external_url, "https:")
+        self.assertEqual(restored.revision.details["extra_links"], ["t.me/author"])
+
+        with self.assertRaises(ValidationError):
+            await reopened.seal_and_submit(
+                submission_id=created.id, author_user_id=77,
+                expected_version=restored.version,
+                idempotency_key="bad-link-submit", now=110,
+            )
+        fixed = validate_submission_fields(
+            **base,
+            external_url="https://ficbook.net/readfic/example",
+            details={"form_version": 2,
+                     "size_category": "мини", "rating": "G",
+                     "completion": "в процессе", "visual_mode": "palette",
+                     "palette_colors": ["#123456", "#234567", "#345678", "#456789"],
+                     "extra_links": ["https://t.me/author"]},
+        )
+        updated = await reopened.update_draft(
+            submission_id=created.id, author_user_id=77,
+            expected_version=restored.version, fields=fixed, now=120,
+        )
+        sent = await reopened.seal_and_submit(
+            submission_id=created.id, author_user_id=77,
+            expected_version=updated.version,
+            idempotency_key="corrected-url-submit", now=130,
+        )
+        self.assertEqual(sent.status, SubmissionStatus.SUBMITTED)
 
     async def test_create_list_get_and_update_owned_draft(self):
         created = await self.storage.create_submission(
