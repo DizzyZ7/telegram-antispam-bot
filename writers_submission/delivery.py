@@ -314,7 +314,7 @@ class WritersDeliveryWorker:
             text=_moderation_text(context),
             parse_mode="HTML",
             reply_markup=build_moderation_keyboard(
-                token, paid_cover=(context.details or {}).get("visual_mode") == "image"
+                token, paid_cover=(getattr(context, "details", None) or {}).get("visual_mode") == "image"
             ),
         )
         card_message_id = getattr(card, "message_id", None)
