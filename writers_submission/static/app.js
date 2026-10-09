@@ -991,6 +991,9 @@
       state.uploadPending = false;
       $("fileInput").value = "";
       updateActionAvailability();
+      if (state.editSequence > state.savedSequence && !state.reloadRequired) {
+        void autosave();
+      }
     }
   }
 
@@ -998,6 +1001,7 @@
     if (!state.current || state.reloadRequired) {
       return;
     }
+    if (!await autosave({ immediate: true })) { return; }
     state.uploadPending = true;
     updateActionAvailability();
     try {
@@ -1017,6 +1021,9 @@
     } finally {
       state.uploadPending = false;
       updateActionAvailability();
+      if (state.editSequence > state.savedSequence && !state.reloadRequired) {
+        void autosave();
+      }
     }
   }
 
