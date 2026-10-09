@@ -12,7 +12,7 @@ from typing import Any
 
 from .handlers import build_moderation_keyboard
 from .models import OutboxEventType, ReviewAction
-from .promo import render_owner_promo, render_palette_png
+from .promo import render_owner_promo, render_palette_png, render_custom_cover_png
 
 LOGGER = logging.getLogger(__name__)
 
@@ -381,18 +381,29 @@ class WritersDeliveryWorker:
                 filename="ikf-cover.png",
             )
         elif visual_mode == "image":
-            image = next(
-                (f for f in context.files if f.detected_file_class in {"png", "jpeg"}),
-                None,
+            paid = await self.storage.is_cover_payment_confirmed(
+                submission_id=item.submission_id, revision_id=item.revision_id,
             )
-            if image is None:
-                raise ValueError("Approved work has no illustration attachment")
-            image_bytes = BytesIO()
-            await self.bot.download(image.telegram_file_id, destination=image_bytes)
-            data = image_bytes.getvalue()
-            if not data:
-                raise RuntimeError("Telegram returned empty approved illustration")
-            photo = BufferedInputFile(data, filename=image.safe_filename)
+            if not paid:
+                # Backward compatibility for jobs approved before this release:
+                # never automatically publish a private artwork as a paid cover.
+                post = "💎 Своя обложка ожидает подтверждения оплаты.\n\n" + post
+            else:
+                image = next(
+                    (f for f in context.files if f.detected_file_class in {"png", "jpeg"}),
+                    None,
+                )
+                if image is None:
+                    raise ValueError("Approved work has no illustration attachment")
+                image_bytes = BytesIO()
+                await self.bot.download(image.telegram_file_id, destination=image_bytes)
+                data = image_bytes.getvalue()
+                if not data:
+                    raise RuntimeError("Telegram returned empty approved illustration")
+                photo = BufferedInputFile(
+                    render_custom_cover_png(data, context.title),
+                    filename="ikf-custom-cover.png",
+                )
 
         message_ids: list[int] = []
         if photo is not None:
