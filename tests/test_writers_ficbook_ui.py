@@ -49,6 +49,18 @@ class FicbookFormUiTests(unittest.TestCase):
         self.assertIn('state.savePromise', script)
         self.assertIn('if (uploaded) {', script)
 
+    def test_only_free_palette_or_paid_photo_without_cover_styles(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertIn("Обычная · бесплатно (4 цвета)", html)
+        self.assertIn("Своя фотография · платно", html)
+        self.assertIn("черновой макет", html)
+        self.assertNotIn("coverTemplateInput", html + script)
+        self.assertNotIn("cover_template:", script)
+        for name in ("Классика", "Лента", "Контраст", "Минимализм"):
+            self.assertNotIn(f"<option value=", html)
+        self.assertIn('setChoice("visualMode"', script)
+
     def test_javascript_has_reversible_choices_and_persisted_palette(self):
         js = (ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn('if (other !== input) { other.checked = false; }', js)
