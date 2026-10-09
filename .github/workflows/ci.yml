@@ -16,6 +16,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: node --check writers_submission/static/app.js
       - run: node --test tests/test_writers_mobile_photo_client.cjs
+      - run: node --test tests/test_writers_draft_client.cjs
       - run: python -m compileall -q .
       - run: python -m unittest discover -s tests -p "test_*.py"
 

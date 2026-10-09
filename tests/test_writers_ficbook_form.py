@@ -53,6 +53,29 @@ class FicbookFormValidationTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             validate_submission_fields(**base)
 
+    def test_partial_ficbook_url_and_incomplete_extra_links_save_as_draft(self):
+        for url in ("h", "https:", "https://ficbook.net/re", "not-an-url-yet"):
+            with self.subTest(url=url):
+                result = validate_submission_fields(
+                    title="", work_type="", genre="", description="",
+                    body_text="", external_url=url, has_ready_file=False,
+                    details=details(extra_links=["https:", "t.me/author"]),
+                    require_work_content=False,
+                )
+                self.assertEqual(result.external_url, url)
+                self.assertEqual(result.details["extra_links"], ["https:", "t.me/author"])
+        with self.assertRaisesRegex(ValidationError, "HTTPS"):
+            validate_submission_fields(
+                title="Название", work_type="Оридж", genre="Джен",
+                description="Описание", body_text="", external_url="https:",
+                has_ready_file=False, details=details(),
+                require_work_content=True,
+            )
+        with self.assertRaises(ValidationError):
+            normalize_submission_details(
+                details(extra_links=["https:"]), complete=True
+            )
+
     def test_palette_and_completion_are_normalized(self):
         result = normalize_submission_details(
             details(completion="в процессе", palette_colors=["#aabbcc", "#ff0000", "#00ff00", "#0000ff"]),

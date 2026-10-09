@@ -73,6 +73,18 @@ def _body_text(value: object) -> str:
     return normalized
 
 
+def _draft_external_url(value: object) -> str | None:
+    """Store unfinished URL text in a draft, never treat it as trusted link."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValidationError("external_url must be text")
+    normalized = value.strip()
+    if len(normalized) > EXTERNAL_URL_MAX:
+        raise ValidationError("external_url exceeds maximum length")
+    return normalized or None
+
+
 def _external_url(value: object) -> str | None:
     if value is None:
         return None
@@ -143,7 +155,17 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
         raise ValidationError("extra_links must contain at most five HTTPS URLs")
     links = []
     for raw in raw_links:
-        url = _external_url(raw)
+        if complete:
+            url = _external_url(raw)
+        else:
+            # Autosave must work while someone is halfway through typing
+            # "https://ficbook.net/..." or an optional external link.
+            # Validate strictly when the author actually submits.
+            if not isinstance(raw, str):
+                raise ValidationError("extra_links must contain text")
+            url = raw.strip()
+            if len(url) > EXTERNAL_URL_MAX:
+                raise ValidationError("extra_links URL exceeds maximum length")
         if url and url not in links:
             links.append(url)
     details["extra_links"] = links
@@ -206,7 +228,10 @@ def validate_submission_fields(
         genre=text_field(genre, "genre", GENRE_MAX),
         description=text_field(description, "description", DESCRIPTION_MAX),
         body_text=_body_text(body_text),
-        external_url=_external_url(external_url),
+        external_url=(
+            _draft_external_url(external_url)
+            if partial_draft else _external_url(external_url)
+        ),
         details=normalized_details,
     )
     if (

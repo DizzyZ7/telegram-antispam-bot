@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Writers Submission</title>
-  <link rel="stylesheet" href="/writers/app.css?v=ikf-cover-v1">
+  <link rel="stylesheet" href="/writers/app.css?v=draft-safe-v2">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/writers/app.js?v=ikf-cover-v1" defer></script>
+  <script src="/writers/app.js?v=draft-safe-v2" defer></script>
 </head>
 <body>
   <main class="shell" aria-live="polite">
@@ -47,6 +47,7 @@
       <form id="editorForm" novalidate>
         <div class="card form-card">
           <p class="eyebrow">Анкета произведения</p>
+          <p class="muted">Черновик автоматически сохраняется на сервере. Проверяй надпись «Сохранено на сервере» перед закрытием.</p>
           <label class="field">
             <span>1. Название</span>
             <input id="titleInput" name="title" maxlength="160" required autocomplete="off" placeholder="Название работы">
@@ -150,7 +151,8 @@
                 <option value="minimal">Минимализм</option>
               </select>
             </label>
-            <canvas id="ikfCoverPreview" width="1200" height="450" role="img" aria-label="Предпросмотр готовой обложки ИКФ с названием справа снизу"></canvas>
+            <p class="muted">Это приблизительный макет палитры для автора и художника. Шрифт, композицию и итоговое оформление можно доработать вручную.</p>
+            <canvas id="ikfCoverPreview" width="1200" height="450" role="img" aria-label="Приблизительный макет оформления ИКФ с названием справа снизу"></canvas>
             <div id="palettePreview" class="palette-preview" aria-label="Предпросмотр четырех выбранных цветов"></div>
             <div id="paletteEditors" class="palette-editors"></div>
           </div>
