@@ -28,7 +28,7 @@ function harness() {
   const context = {
     state, trace,
     encodeURIComponent,
-    FormData,
+    FormData: class FakeFormData { append() {} },
     makeIdempotencyKey: () => "local-a",
     prepareUploadFile: async f => f,
     renderAttachments: () => trace.push("render"),
