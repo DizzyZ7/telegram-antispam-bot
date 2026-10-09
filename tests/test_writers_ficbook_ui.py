@@ -45,7 +45,7 @@ class FicbookFormUiTests(unittest.TestCase):
         self.assertIn("app.js?v=defer-upload-v1", html)
         self.assertIn("prepareUploadFile", script)
         self.assertIn("await autosave({ immediate: true })", script)
-        self.assertIn('setSaveState("Загружаю файлы…")', script)
+        self.assertIn("async function uploadQueuedFiles()", script)
         self.assertIn('state.savePromise', script)
         self.assertIn('if (uploaded) {', script)
 
