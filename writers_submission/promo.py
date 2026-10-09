@@ -206,3 +206,57 @@ def render_palette_png(
     output = BytesIO()
     image.save(output, format="PNG", optimize=True)
     return output.getvalue()
+
+
+def render_custom_cover_png(photo_bytes: bytes, title: str) -> bytes:
+    """Publish a verified paid photo as a wide IKF banner.
+
+    The user's art is center-cropped; we add only an unobtrusive dark title
+    ribbon. The title stays at the same lower-right anchor as free templates.
+    """
+    from io import BytesIO
+    from pathlib import Path
+    from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+
+    try:
+        with Image.open(BytesIO(photo_bytes)) as original:
+            if original.format not in {"PNG", "JPEG"}:
+                raise ValueError("Custom cover must be PNG or JPEG")
+            if original.width * original.height > 48_000_000:
+                raise ValueError("Custom cover resolution is too large")
+            image = ImageOps.fit(original.convert("RGB"), COVER_SIZE)
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("Custom cover is not a supported image") from exc
+
+    overlay = Image.new("RGBA", COVER_SIZE, (0, 0, 0, 0))
+    paint = ImageDraw.Draw(overlay)
+    paint.polygon(
+        [(200, 450), (420, 323), (1200, 278), (1200, 450)],
+        fill=(15, 21, 34, 195),
+    )
+    for index in range(3):
+        off = index * 7
+        paint.line([(418 + off, 329 + off), (1200, 215 + off)],
+                   fill=(241, 237, 231, 185), width=3)
+    image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    font_path = next(
+        (str(p) for p in (
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Italic.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf"),
+        ) if p.is_file()),
+        None,
+    )
+    if font_path is None:
+        raise RuntimeError("ICФ Cyrillic serif font is missing from the Docker image")
+    lines, font = _title_lines(draw, title, font_path, max_width=770)
+    line_height = font.size + 9
+    y = 450 - 20 - len(lines) * line_height
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        draw.text((1200 - 36 - (bbox[2] - bbox[0]), y - bbox[1]),
+                  line, font=font, fill="#F5F3ED")
+        y += line_height
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
