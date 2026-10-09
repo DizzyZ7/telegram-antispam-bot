@@ -150,7 +150,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(card["reply_markup"].inline_keyboard)
         self.storage.mark_outbox_delivered.assert_awaited_once_with(
             outbox_id=item.id, worker_id="worker-test", now=145,
-            delivery_chat_id=2039781854, delivery_message_ids=(11, 10),
+            delivery_chat_id=2039781854, delivery_message_ids=(10, 11),
         )
 
     async def test_palette_mockup_and_files_are_replies_to_same_packet(self):
