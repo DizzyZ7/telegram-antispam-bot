@@ -316,3 +316,44 @@ arrive exclusively in owner's DM, click claim/approve, check the same DM
 receives the formatted publication preview, then exercise "Нужны правки"
 by replying to the exact prompt. Confirm no cards appear in the public
 writers community or the previously configured review group.
+
+## 14. Fixing photo attachments in production (October 2026)
+
+**Root cause:** Writers form v2 already allowed users to select PNG/JPEG,
+but the PostgreSQL `writers_submission_files` table still had the original
+v1 `writers_submission_file_class_check` permitting only `pdf`, `docx`,
+`txt`. The upload was accepted by browser/server validation and staged in
+Telegram, then rejected by PostgreSQL. Staged copies were cleaned up but
+authors saw a failed upload. Re-running `CREATE TABLE IF NOT EXISTS` did not
+migrate the old check.
+
+**Fix:** On startup, in a transaction, the storage layer updates the file
+class constraint to include `png` and `jpeg`. Existing submissions,
+revisions, text documents and file IDs remain intact. Repeated startup
+does not recreate the constraint. An integration test simulates the legacy
+constraint, reopens the storage and verifies migration, photo persistence
+and original file retention.
+
+**Mobile handling:** The Telegram Mini App's photo picker and general
+attachment picker both accept JPG, PNG, WebP and HEIC/HEIF. Browsers that can
+decode the latter formats convert them to a real JPEG via canvas before
+upload; JPEG with missing picker MIME is normalized without transcoding.
+If the current WebView cannot decode HEIC, the author sees a specific
+message advising use of JPG / iPhone Camera > Formats > Most Compatible.
+The server continues verifying extension, declared MIME and binary signature:
+it never accepts arbitrary bytes as a photograph.
+
+**UX:** Upload waits for any in-flight draft autosave to complete and flushes
+the current draft before adding files (because adding a file increments
+the submission version). Status and failures are shown in the editor;
+the photo preview only appears *after* a successful upload. Telegram
+WebView assets use updated URLs and `Cache-Control: no-store` so an older
+cached script is not reused after deployment.
+
+**Operator:** Back up PostgreSQL before deployment. No new Bothost ENV
+variables are required. Upload current `main`, perform a full Bothost
+Python/Dockerfile rebuild, restart. Check that `WRITERS_SUBMISSION_READY`
+appears. Test photo selection via (a) `Картинка` and (b) `Файлы → Добавить`,
+on both Android and iOS, verify the file appears in attachments after a page
+reload, then submit and verify it reaches the owner DM / review card.
+Images are subject to the existing limit of 3 files of up to 20 MB each.
