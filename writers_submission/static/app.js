@@ -11,6 +11,9 @@
     autosaveTimer: null,
     autosavePending: false,
     savePromise: null,
+    editSequence: 0,
+    savedSequence: 0,
+    createKey: null,
     uploadPending: false,
     reloadRequired: false,
     bootstrapped: false,
@@ -301,8 +304,9 @@
   function markChanged() {
     refreshCounters();
     renderIkfCover();
-    setSaveState("Есть изменения");
-    if (state.current) { autosave(); }
+    state.editSequence += 1;
+    setSaveState("Есть несохраненные изменения");
+    void autosave();
   }
 
   function renderPalette() {
@@ -668,6 +672,9 @@
 
       if (state.current.status === "DRAFT") {
         fillForm(state.current);
+        state.editSequence = 0;
+        state.savedSequence = 0;
+        state.createKey = null;
         setReloadRequired(false);
         renderAttachments();
         show("editor");
@@ -682,39 +689,50 @@
     }
   }
 
-  function newDraft() {
+  async function newDraft() {
+    // Header action remains visible when the editor is open. Never discard
+    // the previous unsaved form by starting a new one while saving/failing.
+    if (!views.editor.classList.contains("hidden")) {
+      const saved = await autosave({ immediate: true });
+      if (!saved) {
+        setEditorError("Черновик не сохранился. Повтори сохранение, прежде чем создавать новую работу.");
+        return;
+      }
+    }
     clearTimeout(state.autosaveTimer);
     state.current = null;
     state.attachments = [];
     state.timeline = [];
+    state.editSequence = 0;
+    state.savedSequence = 0;
+    state.createKey = makeIdempotencyKey("create");
     setReloadRequired(false);
     fillForm({ revision: {} });
     renderAttachments();
     setEditorError("");
-    setSaveState("Новый черновик");
+    setSaveState("Новый черновик — сохранится при вводе текста");
     show("editor");
     form.title.focus();
   }
 
-  async function createDraft() {
+  async function createDraft(fields) {
+    // If POST succeeded but the network response was lost, reusing the same
+    // key on retry prevents a duplicate draft in PostgreSQL.
+    state.createKey ||= makeIdempotencyKey("create");
     const payload = await api("/api/writers/submissions", {
       method: "POST",
-      headers: {
-        "Idempotency-Key": makeIdempotencyKey("create"),
-      },
-      json: currentFields(),
+      headers: { "Idempotency-Key": state.createKey },
+      json: fields,
     });
     state.current = payload.submission;
-    setSaveState("Сохранено");
+    state.createKey = null;
     return state.current;
   }
 
   async function autosave({ immediate = false } = {}) {
-    if (state.reloadRequired) {
-      return false;
-    }
-
+    if (state.reloadRequired) { return false; }
     clearTimeout(state.autosaveTimer);
+    state.autosaveTimer = null;
     if (!immediate) {
       state.autosaveTimer = window.setTimeout(
         () => { void autosave({ immediate: true }); },
@@ -722,42 +740,55 @@
       );
       return true;
     }
-
-    // Selecting a photo can race with an autosave triggered by text input.
-    // Wait for the existing mutation, rather than dropping the upload or
-    // issuing a second concurrent draft create/PATCH.
-    if (state.savePromise) {
-      return state.savePromise;
+    if (state.uploadPending) {
+      setSaveState("Изменения ждут завершения загрузки");
+      return false;
     }
+    if (state.savePromise) { return state.savePromise; }
+    if (state.current && state.editSequence <= state.savedSequence) {
+      return true;
+    }
+
     state.autosavePending = true;
     updateActionAvailability();
     setSaveState("Сохраняю…");
     setEditorError("");
     const saving = (async () => {
       try {
-        if (!state.current) {
-          await createDraft();
-        } else {
-          const payload = await api(
-            `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
-            {
-              method: "PATCH",
-              json: {
-                ...currentFields(),
-                expected_version: state.current.version,
-              },
-            }
-          );
-          state.current = payload.submission;
+        // Changes typed while an earlier request is in-flight must be sent
+        // in the NEXT request, never silently counted as already saved.
+        while (!state.current || state.editSequence > state.savedSequence) {
+          const fields = currentFields();
+          const capturedSequence = state.editSequence;
+          if (!state.current) {
+            await createDraft(fields);
+          } else {
+            const payload = await api(
+              `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
+              {
+                method: "PATCH",
+                json: { ...fields, expected_version: state.current.version },
+              }
+            );
+            state.current = payload.submission;
+          }
+          state.savedSequence = capturedSequence;
+          if (state.editSequence > capturedSequence) {
+            setSaveState("Сохраняю новые изменения…");
+          }
         }
-        setSaveState("Сохранено");
+        setSaveState("Сохранено на сервере");
         return true;
       } catch (error) {
+        setSaveState("Не сохранено");
         if (error.code === "conflict") {
-          setSaveState("Нужна перезагрузка");
+          setEditorError("Черновик обновился в другой вкладке. Скопируй важный текст перед перезагрузкой.");
         } else {
-          setSaveState("Не сохранено");
-          setEditorError(error.message || "Не удалось сохранить черновик.");
+          setEditorError(
+            "Не удалось сохранить черновик: " +
+            (error.message || "Проверь подключение к интернету.") +
+            ". Не закрывай форму и повтори сохранение."
+          );
         }
         return false;
       } finally {
@@ -769,9 +800,7 @@
     try {
       return await saving;
     } finally {
-      if (state.savePromise === saving) {
-        state.savePromise = null;
-      }
+      if (state.savePromise === saving) { state.savePromise = null; }
     }
   }
 
@@ -1037,6 +1066,9 @@
       state.current = payload.submission;
       state.attachments = [];
       fillForm(state.current);
+      state.editSequence = 0;
+      state.savedSequence = 0;
+      state.createKey = null;
       renderAttachments();
       setReloadRequired(false);
       show("editor");
@@ -1048,14 +1080,19 @@
   }
 
   function bindEvents() {
-    $("newWorkButton").addEventListener("click", newDraft);
+    $("newWorkButton").addEventListener("click", () => { void newDraft(); });
     $("editorBackButton").addEventListener("click", async () => {
-      clearTimeout(state.autosaveTimer);
-      if (state.current && !state.reloadRequired) {
-        await autosave({ immediate: true });
+      const saved = await autosave({ immediate: true });
+      if (!saved || state.reloadRequired) {
+        setEditorError("Черновик не сохранен. Исправь ошибку и повтори сохранение, прежде чем выходить.");
+        return;
       }
-      await loadWorkspace();
-      show("workspace");
+      try {
+        await loadWorkspace();
+        show("workspace");
+      } catch (error) {
+        setEditorError(error.message || "Не удалось обновить список черновиков.");
+      }
     });
     $("detailBackButton").addEventListener("click", async () => {
       await loadWorkspace();
