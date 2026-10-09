@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 
 from aiogram import Dispatcher
 
+import writers_moderation as moderation
+
 from writers_moderation import (
     ProhibitedLanguageFilter,
     WRITERS_PROFANITY_EXEMPT_TOPIC_IDS,
@@ -67,7 +69,14 @@ class MaskedProfanityTests(unittest.TestCase):
         )
         for case in cases:
             with self.subTest(text=case):
-                self.assertFalse(contains_prohibited_language(case))
+                self.assertFalse(
+                    contains_prohibited_language(case),
+                    msg=(
+                        f"category={detect_prohibited_language(case)!r} "
+                        f"mask={moderation._detect_masked_profanity(case)!r} "
+                        f"spaced={moderation.SPACED_TOKEN_PATTERN.findall(case)!r}"
+                    ),
+                )
 
     def test_existing_plain_profanity_still_detected(self):
         for case in ("НИХУЯ СЕБЕ", "блять", "пиздец", "fuuuck"):
