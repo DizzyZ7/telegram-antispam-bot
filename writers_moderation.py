@@ -302,35 +302,51 @@ def _detect_candidates(matches: list[str] | Any) -> str | None:
 
 
 
+def _normalize_masked_fragment(value: str, *, latin: bool) -> str:
+    """Preserve real letter counts: repeat-collapsing skews exact masks."""
+    value = unicodedata.normalize("NFKC", value).casefold()
+    if latin:
+        return re.sub(r"[^a-z0-9]", "", value)
+    value = value.replace("ё", "е").translate(LOOKALIKE_MAP)
+    return re.sub(r"[^a-zа-я0-9]", "", value)
+
+
 def _masked_word_skeleton(value: str, *, latin: bool) -> str:
-    normalizer = _normalize_latin_token if latin else _normalize_mixed_token
-    return "*".join(
-        normalizer(fragment) for fragment in MASKED_STAR_RUN_PATTERN.split(value)
-    )
+    """Keep EACH mask character: two asterisks mean precisely two letters."""
+    fragments = MASKED_STAR_RUN_PATTERN.split(value)
+    runs = MASKED_STAR_RUN_PATTERN.findall(value)
+    pieces: list[str] = []
+    for fragment, run in zip(fragments, runs):
+        pieces.append(_normalize_masked_fragment(fragment, latin=latin))
+        pieces.append("*" * len(run))
+    pieces.append(_normalize_masked_fragment(fragments[-1], latin=latin))
+    return "".join(pieces)
 
 
 @lru_cache(maxsize=512)
 def _masked_skeleton_regex(skeleton: str, *, latin: bool) -> re.Pattern[str]:
-    # Each mask run stands for 1–5 missing letters; treat any count of
-    # adjacent '*' as one placeholder, matching common Telegram censorship.
+    # One star = exactly ONE letter, including Unicode star variants.
+    # Previously entire star runs each expanded to 1-5 letters, causing
+    # ambiguous false positives (e.g. бля**дь matching shorter words).
     alphabet = "[a-z0-9]" if latin else "[а-яa-z0-9]"
-    return re.compile(re.escape(skeleton).replace(r"\*", f"{alphabet}{{1,5}}"))
+    return re.compile(re.escape(skeleton).replace(r"\*", alphabet))
 
 
 def _detect_leading_masked_profanity(text: str) -> str | None:
     """High-confidence whole-word leading redactions, e.g. '*лять'.
 
-    A single mask RUN may conceal one or two initial letters only. Ambiguous
+    Every leading star conceals EXACTLY one initial letter. Ambiguous
     2-3-letter suffixes ('*ука', '*уй') intentionally remain untouched.
     This separate path does not loosen the regular masked detector.
     """
     for found in LEADING_MASKED_WORD_PATTERN.finditer(text):
-        suffix = _normalize_mixed_token(found.group("suffix"))
-        if len(suffix) < 4:
+        suffix = _normalize_masked_fragment(found.group("suffix"), latin=False)
+        mask_size = len(found.group()) - len(found.group("suffix"))
+        if len(suffix) < 4 or mask_size > 2:
             continue
         if any(
             word.endswith(suffix)
-            and 1 <= len(word) - len(suffix) <= 2
+            and len(word) - len(suffix) == mask_size
             for word in LEADING_MASKED_OBSCENE_FORMS
         ):
             return "obscene_masked_leading"
@@ -343,8 +359,8 @@ def _detect_masked_profanity(text: str) -> str | None:
         return category
     for found in MASKED_WORD_PATTERN.finditer(text):
         token = found.group()
-        # Bound CPU work and reject weak/ambiguous two-letter masks. The two
-        # familiar unambiguous silhouettes х*й and п***ц are intentional.
+        # Bound CPU work and reject weak/ambiguous two-letter masks. The
+        # familiar unambiguous silhouettes х*й and п****ц are intentional.
         if len(token) > 48 or len(MASKED_STAR_RUN_PATTERN.findall(token)) > 4:
             continue
         pieces = MASKED_STAR_RUN_PATTERN.split(token)
@@ -365,12 +381,18 @@ def _detect_masked_profanity(text: str) -> str | None:
             skeleton = _masked_word_skeleton(token, latin=latin)
             # A Cyrillic fragment collapses to "" under the Latin-only
             # normalizer. Without this check, e.g. "с*ема" becomes "*"
-            # and falsely matches any short English obscenity.
-            if any(not piece for piece in skeleton.split("*")):
+            # and falsely matches any short English obscenity. Split by
+            # actual star RUNS, not by individual star characters.
+            if any(
+                not _normalize_masked_fragment(piece, latin=latin)
+                for piece in pieces
+            ):
                 continue
             pattern = _masked_skeleton_regex(skeleton, latin=latin)
-            normalizer = _normalize_latin_token if latin else _normalize_mixed_token
-            if any(pattern.fullmatch(normalizer(word)) for word in dictionary):
+            if any(
+                pattern.fullmatch(_normalize_masked_fragment(word, latin=latin))
+                for word in dictionary
+            ):
                 return "obscene_masked"
     return None
 
