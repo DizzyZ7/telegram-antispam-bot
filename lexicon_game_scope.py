@@ -1,18 +1,21 @@
-"""Isolated chat scope for the Lexicon mini-game.
+"""Isolated chat scope for Lexicon, with delete-only language protection.
 
-Chats listed here are visible only to the Lexicon service. They are deliberately
-not added to legacy_main.ALLOWED_CHATS, so moderation, summaries, statistics,
-captcha and unrelated bot commands stay disabled there.
+Chats listed here are deliberately not added to legacy_main.ALLOWED_CHATS;
+only Lexicon and a silent profanity-deletion middleware can handle them.
+Summaries, warnings, stats, captcha and unrelated bot commands stay disabled.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
+from aiogram import BaseMiddleware
 from aiogram.filters import BaseFilter
 from aiogram.types import Message
+
+from writers_moderation import contains_prohibited_language
 
 LOGGER = logging.getLogger(__name__)
 LEXICON_ONLY_CHAT_IDS: frozenset[int] = frozenset({-1002659916114})
@@ -33,6 +36,99 @@ def enforce_lexicon_only_isolation(base_app: Any, chat_ids: Iterable[int]) -> fr
             if int(chat_id) not in normalized_ids
         ]
     return normalized_ids
+
+
+class SilentLexiconProfanityMiddleware(BaseMiddleware):
+    """Delete only: no reply, warning, captcha, chatter or legacy allowlist.
+
+    Runs as an OUTER message middleware before Lexicon guessing. This makes
+    obscene text/captions invisible to both the game and all message handlers,
+    even when an administrator hasn't granted Delete messages yet.
+    """
+
+    def __init__(self, chat_ids: Iterable[int]) -> None:
+        self.chat_ids = frozenset(int(chat_id) for chat_id in chat_ids)
+
+    async def __call__(
+        self,
+        handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: dict[str, Any],
+    ) -> Any:
+        if int(event.chat.id) not in self.chat_ids:
+            return await handler(event, data)
+
+        text = event.text or event.caption or ""
+        user = getattr(event, "from_user", None)
+        anonymous_admin = getattr(event, "sender_chat", None) is not None
+        human = user is not None and (
+            not bool(getattr(user, "is_bot", False)) or anonymous_admin
+        )
+        if not human or not text or not contains_prohibited_language(text):
+            return await handler(event, data)
+
+        try:
+            await event.delete()
+        except Exception as exc:
+            LOGGER.warning(
+                "LEXICON_PROFANITY_DELETE_FAILED chat_id=%s message_id=%s "
+                "reason=%s",
+                event.chat.id, getattr(event, "message_id", None),
+                type(exc).__name__,
+            )
+        else:
+            LOGGER.info(
+                "LEXICON_PROFANITY_DELETED chat_id=%s message_id=%s",
+                event.chat.id, getattr(event, "message_id", None),
+            )
+        # Never send warnings, and never advance a Lexicon game with the
+        # prohibited message even if Telegram refused deletion.
+        return None
+
+
+def register_lexicon_silent_profanity_filter(
+    app: Any, chat_ids: Iterable[int],
+) -> None:
+    """Register before the game's outer middleware, without widening access."""
+    normalized = frozenset(int(chat_id) for chat_id in chat_ids)
+    if not normalized:
+        return
+    app.dp.message.outer_middleware(SilentLexiconProfanityMiddleware(normalized))
+    print(
+        "LEXICON_PROFANITY_DELETE_ONLY_READY "
+        f"chat_ids={','.join(str(value) for value in sorted(normalized))} "
+        "warnings=off other_features=blocked",
+        flush=True,
+    )
+
+
+async def report_lexicon_delete_permission(bot: Any, chat_ids: Iterable[int]) -> None:
+    """Best-effort diagnostics; cannot silently assume Delete permission."""
+    for chat_id in sorted(frozenset(int(chat_id) for chat_id in chat_ids)):
+        try:
+            member = await bot.get_chat_member(chat_id=chat_id, user_id=int(bot.id))
+        except Exception as exc:
+            LOGGER.warning(
+                "LEXICON_PROFANITY_PERMISSION_CHECK_FAILED chat_id=%s reason=%s",
+                chat_id, type(exc).__name__,
+            )
+            continue
+        raw_status = getattr(member, "status", "")
+        status = str(getattr(raw_status, "value", raw_status)).lower()
+        permitted = status in {"creator", "owner"} or (
+            status == "administrator"
+            and bool(getattr(member, "can_delete_messages", False))
+        )
+        if permitted:
+            LOGGER.info(
+                "LEXICON_PROFANITY_DELETE_PERMISSION_READY chat_id=%s", chat_id
+            )
+        else:
+            LOGGER.error(
+                "LEXICON_PROFANITY_DELETE_PERMISSION_MISSING chat_id=%s "
+                "bot_status=%s grant administrator Delete messages permission",
+                chat_id, status,
+            )
 
 
 class LexiconGameAppScope:
@@ -104,6 +200,9 @@ __all__ = [
     "LEXICON_ONLY_CHAT_IDS",
     "LexiconGameAppScope",
     "LexiconOnlyChatFilter",
+    "SilentLexiconProfanityMiddleware",
+    "register_lexicon_silent_profanity_filter",
+    "report_lexicon_delete_permission",
     "enforce_lexicon_only_isolation",
     "register_lexicon_only_guard",
 ]
