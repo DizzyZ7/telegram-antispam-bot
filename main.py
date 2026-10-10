@@ -327,7 +327,7 @@ async def main() -> None:
             "LEXICON_ONLY_SCOPE_READY "
             f"chat_ids={','.join(str(chat_id) for chat_id in sorted(LEXICON_ONLY_CHAT_IDS))} "
             "topics=not_required other_features=off global_access=blocked "
-            "profanity=delete_only",
+            "profanity=delete_with_fairy_notice",
             flush=True,
         )
         print(
