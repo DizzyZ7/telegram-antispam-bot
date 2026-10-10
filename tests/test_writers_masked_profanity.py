@@ -103,7 +103,7 @@ class MaskedProfanityTests(unittest.TestCase):
             "бл*дь": "блядь",
             "бл*ть": "блять",
             "п****ц": "пиздец",
-            "п***дец": "пиздец",
+            "п**дец": "пиздец",
             "б***ь": "блять",
             "f***ing": "fucking",
             "a**hole": "asshole",
