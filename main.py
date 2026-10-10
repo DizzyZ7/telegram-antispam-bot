@@ -176,6 +176,8 @@ from lexicon_game_scope import (
     LexiconGameAppScope,
     enforce_lexicon_only_isolation,
     register_lexicon_only_guard,
+    register_lexicon_silent_profanity_filter,
+    report_lexicon_delete_permission,
 )
 from lexicon_learning_unpin import LearningLexiconService, register_lexicon_learning_handlers
 from minigames import MiniGameStorage, register_minigame_handlers
@@ -297,9 +299,13 @@ async def main() -> None:
         register_accurate_stats_handlers(app, accurate_stats)
         register_entertainment_handlers(app, entertainment)
 
+        # The silent deletion middleware MUST be outermost to Lexicon's
+        # guessing middleware; profanity is discarded before guesses/commands.
+        # No Lexicon-only chat is added to app.ALLOWED_CHATS.
+        register_lexicon_silent_profanity_filter(app, LEXICON_ONLY_CHAT_IDS)
         # Guard is promoted ahead of legacy handlers first. Lexicon handlers are
-        # registered afterward and promoted above the guard, so only the game can
-        # execute in LEXICON_ONLY_CHAT_IDS.
+        # registered afterward and promoted above the guard, so only the game
+        # and this delete-only moderation can execute in LEXICON_ONLY_CHAT_IDS.
         register_lexicon_only_guard(app, LEXICON_ONLY_CHAT_IDS)
         register_minigame_handlers(app, minigames)
         register_lexicon_learning_handlers(app, minigames)
@@ -315,11 +321,13 @@ async def main() -> None:
         # Profanity deletion must run before any text catch-all in writers chat.
         promote_writers_moderation_handler(app.dp)
         await report_writers_delete_permission(app.bot, scope.chat_id)
+        await report_lexicon_delete_permission(app.bot, LEXICON_ONLY_CHAT_IDS)
 
         print(
             "LEXICON_ONLY_SCOPE_READY "
             f"chat_ids={','.join(str(chat_id) for chat_id in sorted(LEXICON_ONLY_CHAT_IDS))} "
-            "topics=not_required other_features=off global_access=blocked",
+            "topics=not_required other_features=off global_access=blocked "
+            "profanity=delete_only",
             flush=True,
         )
         print(
