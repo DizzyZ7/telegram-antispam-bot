@@ -68,6 +68,25 @@ class LexiconFairyNoticeTests(unittest.IsolatedAsyncioTestCase):
                 msg.reply.assert_not_awaited()
                 self.next_handler.assert_not_awaited()
 
+    async def test_leading_star_mat_gets_deleted_and_fairy_notice(self):
+        msg = message("*лять")
+        await self.middleware(self.next_handler, msg, {})
+        msg.delete.assert_awaited_once_with()
+        msg.answer.assert_awaited_once_with(LEXICON_FAIRY_NOTICE)
+        msg.reply.assert_not_awaited()
+        self.next_handler.assert_not_awaited()
+
+    async def test_innocent_words_ending_in_lyat_remain_in_game(self):
+        for text in ("представлять", "управлять", "*делать", "*учка"):
+            with self.subTest(text=text):
+                msg = message(text)
+                self.next_handler.reset_mock()
+                result = await self.middleware(self.next_handler, msg, {})
+                self.assertEqual(result, "lexicon_game_handled")
+                msg.delete.assert_not_awaited()
+                msg.answer.assert_not_awaited()
+                self.next_handler.assert_awaited_once()
+
     async def test_photo_caption_is_silently_deleted(self):
         msg = message(None, caption="Вот п***ц")
         await self.middleware(self.next_handler, msg, {})

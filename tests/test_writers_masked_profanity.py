@@ -47,6 +47,54 @@ class MaskedProfanityTests(unittest.TestCase):
                 self.assertTrue(contains_prohibited_language(case))
                 self.assertIsNotNone(detect_prohibited_language(case))
 
+    def test_leading_star_masks_russian_obscenities_without_blanket_suffix_matching(self):
+        blocked = (
+            "*лять", "**лять", "＊лять", "✱лядь", "∗лять",
+            "*ЛЯТЬ", "*лядство", "*издец", "**здец",
+            "*изда", "*издеж", "*издеть", "Ой, *лять!",
+            "Да *лять, опять.",
+        )
+        for case in blocked:
+            with self.subTest(text=case):
+                self.assertTrue(
+                    contains_prohibited_language(case),
+                    msg=f"leading_mask={moderation._detect_leading_masked_profanity(case)!r}",
+                )
+                self.assertEqual(
+                    moderation._detect_leading_masked_profanity(case),
+                    "obscene_masked_leading",
+                )
+
+    def test_star_prefix_avoids_innocent_russian_words_and_markdown(self):
+        safe = (
+            "представлять", "управлять", "отправлять",
+            "поставлять", "выявлять", "составлять",
+            "Как представлять героев?", "Не надо управлять людьми.",
+            "раз*лять", "представ*лять", "*ляться", "*лятельный",
+            "*сказка", "*делать", "*читать", "*рука", "*учка",
+            "*овсянка", "Глава *сказка*",
+            "**Обычный курсив**", "2 * 3 = 6", "3*5=15",
+            "Название: *Счастье*",
+        )
+        for case in safe:
+            with self.subTest(text=case):
+                self.assertIsNone(
+                    moderation._detect_leading_masked_profanity(case),
+                    msg=f"erroneous leading-star match for {case!r}",
+                )
+                self.assertFalse(
+                    contains_prohibited_language(case),
+                    msg=f"false positive for {case!r}: {detect_prohibited_language(case)!r}",
+                )
+
+    def test_ambiguous_short_initial_masks_are_not_guessed(self):
+        # "*ука" might mean "сука" or "рука"; "*учка" might mean "сучка"
+        # or "ручка". Never infer a censored swear from these alone.
+        for case in ("*ука", "*уй", "*учка", "*ужка"):
+            with self.subTest(text=case):
+                self.assertIsNone(moderation._detect_leading_masked_profanity(case))
+                self.assertFalse(contains_prohibited_language(case))
+
     def test_masked_english_and_mixed_scripts(self):
         for case in ("f*ck", "f***ing", "b*tch", "s*it", "p*zdets"):
             with self.subTest(text=case):
