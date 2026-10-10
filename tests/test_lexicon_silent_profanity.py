@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from aiogram import Dispatcher
 
 from lexicon_game_scope import (
     LEXICON_ONLY_CHAT_IDS,
+    LEXICON_FAIRY_NOTICE,
+    LEXICON_FAIRY_NOTICE_COOLDOWN_SECONDS,
     SilentLexiconProfanityMiddleware,
     enforce_lexicon_only_isolation,
     register_lexicon_only_guard,
@@ -46,12 +48,12 @@ def message(
     )
 
 
-class LexiconSilentProfanityTests(unittest.IsolatedAsyncioTestCase):
+class LexiconFairyNoticeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.middleware = SilentLexiconProfanityMiddleware(LEXICON_ONLY_CHAT_IDS)
         self.next_handler = AsyncMock(return_value="lexicon_game_handled")
 
-    async def test_lexicon_plain_and_masked_profanity_is_deleted_without_bot_reply(self):
+    async def test_lexicon_plain_and_masked_profanity_is_deleted_with_throttled_fairy_notice(self):
         for word in ("блять", "нихуя себе", "бл*ть", "х*й", "п***ц", "f*ck"):
             with self.subTest(word=word):
                 msg = message(word)
@@ -59,7 +61,10 @@ class LexiconSilentProfanityTests(unittest.IsolatedAsyncioTestCase):
                 result = await self.middleware(self.next_handler, msg, {})
                 self.assertIsNone(result)
                 msg.delete.assert_awaited_once_with()
-                msg.answer.assert_not_awaited()
+                if word == "блять":
+                    msg.answer.assert_awaited_once_with(LEXICON_FAIRY_NOTICE)
+                else:
+                    msg.answer.assert_not_awaited()
                 msg.reply.assert_not_awaited()
                 self.next_handler.assert_not_awaited()
 
@@ -68,7 +73,49 @@ class LexiconSilentProfanityTests(unittest.IsolatedAsyncioTestCase):
         await self.middleware(self.next_handler, msg, {})
         msg.delete.assert_awaited_once_with()
         self.next_handler.assert_not_awaited()
+        msg.answer.assert_awaited_once_with(LEXICON_FAIRY_NOTICE)
+
+    async def test_fairy_notice_is_chat_wide_and_sent_at_most_once_per_90_seconds(self):
+        self.assertEqual(LEXICON_FAIRY_NOTICE_COOLDOWN_SECONDS, 90)
+        with patch("lexicon_game_scope.time.monotonic", side_effect=[100, 140, 191]):
+            first = message("блять")
+            second = message("п***ц")
+            third = message("н*хуя")
+            for event in (first, second, third):
+                await self.middleware(self.next_handler, event, {})
+                event.delete.assert_awaited_once()
+            first.answer.assert_awaited_once_with(LEXICON_FAIRY_NOTICE)
+            second.answer.assert_not_awaited()
+            third.answer.assert_awaited_once_with(LEXICON_FAIRY_NOTICE)
+        self.next_handler.assert_not_awaited()
+
+    async def test_notice_is_a_fairy_joke_without_real_fines(self):
+        self.assertIn("вольных художников", LEXICON_FAIRY_NOTICE)
+        self.assertIn("сказочниц", LEXICON_FAIRY_NOTICE)
+        self.assertIn("припортовой", LEXICON_FAIRY_NOTICE)
+        self.assertIn("50 кроко", LEXICON_FAIRY_NOTICE)
+        self.assertLess(len(LEXICON_FAIRY_NOTICE), 500)
+
+    async def test_notice_only_after_successful_delete(self):
+        msg = message("бл*ть")
+        msg.delete.side_effect = RuntimeError("permission denied")
+        with self.assertLogs("lexicon_game_scope", level="WARNING"):
+            await self.middleware(self.next_handler, msg, {})
         msg.answer.assert_not_awaited()
+        self.assertEqual(self.middleware.last_fairy_notice, {})
+
+    async def test_failed_notice_is_logged_and_next_delete_retries(self):
+        first = message("блять")
+        first.answer.side_effect = RuntimeError("send failed")
+        with patch("lexicon_game_scope.time.monotonic", side_effect=[100, 101]):
+            with self.assertLogs("lexicon_game_scope", level="WARNING") as records:
+                await self.middleware(self.next_handler, first, {})
+            self.assertIn("LEXICON_FAIRY_NOTICE_SEND_FAILED", "\n".join(records.output))
+            self.assertEqual(self.middleware.last_fairy_notice, {})
+            second = message("пиздец")
+            await self.middleware(self.next_handler, second, {})
+        second.answer.assert_awaited_once_with(LEXICON_FAIRY_NOTICE)
+        self.next_handler.assert_not_awaited()
 
     async def test_normal_lexicon_guess_and_markdown_pass_unchanged(self):
         for text in ("слово", "/lexicon", "3*5=15", "**Всем привет**"):
