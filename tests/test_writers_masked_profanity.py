@@ -36,7 +36,7 @@ def make_message(text: str, *, topic_id: int | None = None, caption: bool = Fals
 class MaskedProfanityTests(unittest.TestCase):
     def test_masked_russian_words_and_unicode_stars(self):
         cases = (
-            "бл*ть", "бл**дь", "х*й", "п***ц", "п*здец",
+            "бл*ть", "бл*дь", "х*й", "п****ц", "п*здец",
             "н*хуя", "НИ*УЯ СЕБЕ", "н*х*я", "с*ка", "м*дак",
             "долбо*б", "ё**ть", "за**ал", "х*йня",
             "х＊й", "бл✱ть", "п∗здец", "с﹡ка",
@@ -49,7 +49,7 @@ class MaskedProfanityTests(unittest.TestCase):
 
     def test_leading_star_masks_russian_obscenities_without_blanket_suffix_matching(self):
         blocked = (
-            "*лять", "**лять", "＊лять", "✱лядь", "∗лять",
+            "*лять", "＊лять", "✱лядь", "∗лять",
             "*ЛЯТЬ", "*лядство", "*издец", "**здец",
             "*изда", "*издеж", "*издеть", "Ой, *лять!",
             "Да *лять, опять.",
@@ -71,6 +71,7 @@ class MaskedProfanityTests(unittest.TestCase):
             "поставлять", "выявлять", "составлять",
             "Как представлять героев?", "Не надо управлять людьми.",
             "раз*лять", "представ*лять", "*ляться", "*лятельный",
+            "**лять", "бл**дь", "п***ц",
             "*сказка", "*делать", "*читать", "*рука", "*учка",
             "*овсянка", "Глава *сказка*",
             "**Обычный курсив**", "2 * 3 = 6", "3*5=15",
@@ -94,6 +95,43 @@ class MaskedProfanityTests(unittest.TestCase):
             with self.subTest(text=case):
                 self.assertIsNone(moderation._detect_leading_masked_profanity(case))
                 self.assertFalse(contains_prohibited_language(case))
+
+    def test_asterisk_count_is_exact_not_a_variable_length_wildcard(self):
+        # Each asterisk represents one character; the older {1,5}-per-run
+        # expansion treated unequal-length redactions as identical words.
+        precise_matches = {
+            "бл*дь": "блядь",
+            "бл*ть": "блять",
+            "п****ц": "пиздец",
+            "п***дец": "пиздец",
+            "б***ь": "блять",
+            "f***ing": "fucking",
+            "a**hole": "asshole",
+            "х＊й": "хуй",
+            "**здец": "пиздец",
+            "*лять": "блять",
+        }
+        for masked, original in precise_matches.items():
+            with self.subTest(masked=masked, original=original):
+                self.assertEqual(len(masked), len(original))
+                self.assertTrue(contains_prohibited_language(masked))
+        unequal_masks = ("бл**дь", "п***ц", "**лять", "f**ck", "a*hole")
+        for masked in unequal_masks:
+            with self.subTest(masked=masked):
+                self.assertIsNone(
+                    moderation._detect_masked_profanity(masked),
+                    msg="Star count cannot invent or remove hidden letters",
+                )
+
+    def test_double_visible_letters_are_not_collapsed_during_mask_matching(self):
+        # "asshole" has two actual s characters; using token normalizer's
+        # repeated-letter compression would corrupt the count.
+        self.assertTrue(contains_prohibited_language("a**hole"))
+        self.assertTrue(contains_prohibited_language("as*hole"))
+        self.assertEqual(
+            moderation._masked_word_skeleton("a**hole", latin=True),
+            "a**hole",
+        )
 
     def test_masked_english_and_mixed_scripts(self):
         for case in ("f*ck", "f***ing", "b*tch", "s*it", "p*zdets"):
@@ -165,7 +203,7 @@ class MaskedProfanityMessageHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_censored_caption_is_checked_and_neutral_caption_is_kept(self):
         language_filter = ProhibitedLanguageFilter()
         self.assertTrue(await language_filter(make_message(
-            "Подпись: п***ц", topic_id=1, caption=True
+            "Подпись: п****ц", topic_id=1, caption=True
         )))
         self.assertFalse(await language_filter(make_message(
             "Название: Луна и звезды ***", topic_id=1, caption=True
