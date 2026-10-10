@@ -1,13 +1,14 @@
 """Isolated chat scope for Lexicon, with delete-only language protection.
 
 Chats listed here are deliberately not added to legacy_main.ALLOWED_CHATS;
-only Lexicon and a silent profanity-deletion middleware can handle them.
-Summaries, warnings, stats, captcha and unrelated bot commands stay disabled.
+only Lexicon and a narrowly scoped profanity-deletion middleware can handle them.
+Summaries, legacy moderation, stats, captcha and unrelated commands stay disabled.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -19,6 +20,17 @@ from writers_moderation import contains_prohibited_language
 
 LOGGER = logging.getLogger(__name__)
 LEXICON_ONLY_CHAT_IDS: frozenset[int] = frozenset({-1002659916114})
+
+# Harmless fairy joke only, NOT a monetary/account penalty. One notice per
+# chat cooldown avoids making the bot an active participant in conversation.
+LEXICON_FAIRY_NOTICE_COOLDOWN_SECONDS = 90
+LEXICON_FAIRY_NOTICE = (
+    "🧚 Ой-ой! Это чат фей, вольных художников, сказочниц, поэтов "
+    "и просто классных ребят! 🌺\n\n"
+    "Не будем пугать тонкие творческие натуры хардкором припортовой "
+    "инфраструктуры — мат уже испарился. 🪄\n\n"
+    "А то феи наколдуют штраф — по 50 кроко каждой! 🐊✨"
+)
 
 
 def enforce_lexicon_only_isolation(base_app: Any, chat_ids: Iterable[int]) -> frozenset[int]:
@@ -39,15 +51,14 @@ def enforce_lexicon_only_isolation(base_app: Any, chat_ids: Iterable[int]) -> fr
 
 
 class SilentLexiconProfanityMiddleware(BaseMiddleware):
-    """Delete only: no reply, warning, captcha, chatter or legacy allowlist.
+    """Delete Lexicon profanity; post a throttled fairy notice only on success.
 
-    Runs as an OUTER message middleware before Lexicon guessing. This makes
-    obscene text/captions invisible to both the game and all message handlers,
-    even when an administrator hasn't granted Delete messages yet.
+    Runs before game guessing. No legacy moderation, captcha, or chatting.
     """
 
     def __init__(self, chat_ids: Iterable[int]) -> None:
         self.chat_ids = frozenset(int(chat_id) for chat_id in chat_ids)
+        self.last_fairy_notice: dict[int, float] = {}
 
     async def __call__(
         self,
@@ -81,8 +92,22 @@ class SilentLexiconProfanityMiddleware(BaseMiddleware):
                 "LEXICON_PROFANITY_DELETED chat_id=%s message_id=%s",
                 event.chat.id, getattr(event, "message_id", None),
             )
-        # Never send warnings, and never advance a Lexicon game with the
-        # prohibited message even if Telegram refused deletion.
+            now = time.monotonic()
+            previous = self.last_fairy_notice.get(int(event.chat.id))
+            if (
+                previous is None
+                or now - previous >= LEXICON_FAIRY_NOTICE_COOLDOWN_SECONDS
+            ):
+                try:
+                    await event.answer(LEXICON_FAIRY_NOTICE)
+                except Exception as exc:
+                    LOGGER.warning(
+                        "LEXICON_FAIRY_NOTICE_SEND_FAILED chat_id=%s reason=%s",
+                        event.chat.id, type(exc).__name__,
+                    )
+                else:
+                    self.last_fairy_notice[int(event.chat.id)] = now
+        # Never advance the game with profanity, even when deletion fails.
         return None
 
 
@@ -95,9 +120,10 @@ def register_lexicon_silent_profanity_filter(
         return
     app.dp.message.outer_middleware(SilentLexiconProfanityMiddleware(normalized))
     print(
-        "LEXICON_PROFANITY_DELETE_ONLY_READY "
+        "LEXICON_PROFANITY_FAIRY_NOTICE_READY "
         f"chat_ids={','.join(str(value) for value in sorted(normalized))} "
-        "warnings=off other_features=blocked",
+        f"cooldown_seconds={LEXICON_FAIRY_NOTICE_COOLDOWN_SECONDS} "
+        "legacy_warnings=off other_features=blocked",
         flush=True,
     )
 
@@ -201,6 +227,8 @@ __all__ = [
     "LexiconGameAppScope",
     "LexiconOnlyChatFilter",
     "SilentLexiconProfanityMiddleware",
+    "LEXICON_FAIRY_NOTICE",
+    "LEXICON_FAIRY_NOTICE_COOLDOWN_SECONDS",
     "register_lexicon_silent_profanity_filter",
     "report_lexicon_delete_permission",
     "enforce_lexicon_only_isolation",
