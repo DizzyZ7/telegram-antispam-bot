@@ -54,7 +54,7 @@ class LexiconFairyNoticeTests(unittest.IsolatedAsyncioTestCase):
         self.next_handler = AsyncMock(return_value="lexicon_game_handled")
 
     async def test_lexicon_plain_and_masked_profanity_is_deleted_with_throttled_fairy_notice(self):
-        for word in ("блять", "нихуя себе", "бл*ть", "х*й", "п***ц", "f*ck"):
+        for word in ("блять", "нихуя себе", "бл*ть", "х*й", "п****ц", "f*ck"):
             with self.subTest(word=word):
                 msg = message(word)
                 self.next_handler.reset_mock()
@@ -88,7 +88,7 @@ class LexiconFairyNoticeTests(unittest.IsolatedAsyncioTestCase):
                 self.next_handler.assert_awaited_once()
 
     async def test_photo_caption_is_silently_deleted(self):
-        msg = message(None, caption="Вот п***ц")
+        msg = message(None, caption="Вот п****ц")
         await self.middleware(self.next_handler, msg, {})
         msg.delete.assert_awaited_once_with()
         self.next_handler.assert_not_awaited()
@@ -98,7 +98,7 @@ class LexiconFairyNoticeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(LEXICON_FAIRY_NOTICE_COOLDOWN_SECONDS, 90)
         with patch("lexicon_game_scope.time.monotonic", side_effect=[100, 140, 191]):
             first = message("блять")
-            second = message("п***ц")
+            second = message("п****ц")
             third = message("н*хуя")
             for event in (first, second, third):
                 await self.middleware(self.next_handler, event, {})
