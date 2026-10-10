@@ -52,11 +52,9 @@ class MaskedProfanityTests(unittest.TestCase):
             "*лять", "**лять", "＊лять", "✱лядь", "∗лять",
             "*ЛЯТЬ", "*лядство", "*издец", "**здец",
             "*изда", "*издеж", "*издеть", "Ой, *лять!",
-            "Да *лять, опять.", "Это *ляться",  # not a known standalone word; separate test below
+            "Да *лять, опять.",
         )
-        # The final value deliberately resembles profanity but is NOT an
-        # explicit known whole-word form. Do not broaden to all suffixes.
-        for case in blocked[:-1]:
+        for case in blocked:
             with self.subTest(text=case):
                 self.assertTrue(
                     contains_prohibited_language(case),
