@@ -74,6 +74,24 @@ MASKED_WORD_PATTERN = re.compile(
     rf"(?![{TOKEN_CHAR_CLASS}])"
 )
 MASKED_STAR_RUN_PATTERN = re.compile(rf"[{re.escape(MASKED_STAR_CHARS)}]+")
+
+# A leading star also hides letters: "*лять" is often "блять". The general
+# masked-word matcher below intentionally requires text on BOTH sides and
+# therefore cannot see this form. Restrict the new leading-mask detector to
+# unambiguous Russian swear-word families only; the suffix must be a complete
+# word fragment, never a substring of "представлять" or "управлять".
+# In particular, do NOT include "сучка" here: "*учка" could also be
+# innocent "ручка". Likewise no blanket "*suffix" matching.
+LEADING_MASKED_WORD_PATTERN = re.compile(
+    rf"(?<![{TOKEN_CHAR_CLASS}])"
+    rf"[{re.escape(MASKED_STAR_CHARS)}]+"
+    rf"(?P<suffix>[А-Яа-яЁё]{{4,32}})"
+    rf"(?![{TOKEN_CHAR_CLASS}])"
+)
+LEADING_MASKED_OBSCENE_FORMS: frozenset[str] = frozenset({
+    "блять", "блядь", "блядство",
+    "пиздец", "пизда", "пиздеж", "пиздеть", "пиздатый",
+})
 # Explicit words, not generic stems. A broad '* matches anything' rule would
 # delete innocent partially redacted names and fictional dialogue.
 MASKED_OBSCENE_WORDS = (
@@ -299,7 +317,30 @@ def _masked_skeleton_regex(skeleton: str, *, latin: bool) -> re.Pattern[str]:
     return re.compile(re.escape(skeleton).replace(r"\*", f"{alphabet}{{1,5}}"))
 
 
+def _detect_leading_masked_profanity(text: str) -> str | None:
+    """High-confidence whole-word leading redactions, e.g. '*лять'.
+
+    A single mask RUN may conceal one or two initial letters only. Ambiguous
+    2-3-letter suffixes ('*ука', '*уй') intentionally remain untouched.
+    This separate path does not loosen the regular masked detector.
+    """
+    for found in LEADING_MASKED_WORD_PATTERN.finditer(text):
+        suffix = _normalize_mixed_token(found.group("suffix"))
+        if len(suffix) < 4:
+            continue
+        if any(
+            word.endswith(suffix)
+            and 1 <= len(word) - len(suffix) <= 2
+            for word in LEADING_MASKED_OBSCENE_FORMS
+        ):
+            return "obscene_masked_leading"
+    return None
+
+
 def _detect_masked_profanity(text: str) -> str | None:
+    category = _detect_leading_masked_profanity(text)
+    if category is not None:
+        return category
     for found in MASKED_WORD_PATTERN.finditer(text):
         token = found.group()
         # Bound CPU work and reject weak/ambiguous two-letter masks. The two
