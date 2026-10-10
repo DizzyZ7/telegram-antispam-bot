@@ -104,7 +104,6 @@ class MaskedProfanityTests(unittest.TestCase):
             "бл*ть": "блять",
             "п****ц": "пиздец",
             "п**дец": "пиздец",
-            "б***ь": "блять",
             "f***ing": "fucking",
             "a**hole": "asshole",
             "х＊й": "хуй",
@@ -115,12 +114,12 @@ class MaskedProfanityTests(unittest.TestCase):
             with self.subTest(masked=masked, original=original):
                 self.assertEqual(len(masked), len(original))
                 self.assertTrue(contains_prohibited_language(masked))
-        unequal_masks = ("бл**дь", "п***ц", "**лять", "f**ck", "a*hole")
+        unequal_masks = ("бл**дь", "п***ц", "**лять", "f**ck", "a*hole", "б***ь")
         for masked in unequal_masks:
             with self.subTest(masked=masked):
                 self.assertIsNone(
                     moderation._detect_masked_profanity(masked),
-                    msg="Star count cannot invent or remove hidden letters",
+                    msg="Mismatch or ambiguous censorship must not delete normal words",
                 )
 
     def test_double_visible_letters_are_not_collapsed_during_mask_matching(self):
