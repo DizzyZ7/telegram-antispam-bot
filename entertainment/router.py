@@ -108,6 +108,18 @@ def register_entertainment_handlers(app: Any, service: EntertainmentService) -> 
 
     _promote_last_message_handler(app)
 
+    @dispatcher.message(chat_filter, Command(commands=["fun_topic"]))
+    async def entertainment_personality_topic(message: Message) -> None:
+        await service.configure_personality_topic(message)
+
+    _promote_last_message_handler(app)
+
+    @dispatcher.message(chat_filter, Command(commands=["fun_profile"]))
+    async def entertainment_personality_profile(message: Message) -> None:
+        await service.show_personality_profile(message)
+
+    _promote_last_message_handler(app)
+
     @dispatcher.message(chat_filter, Command(commands=["fun_delete_me"]))
     async def entertainment_delete_me(message: Message) -> None:
         await service.delete_my_memory(message)
