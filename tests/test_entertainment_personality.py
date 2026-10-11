@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import random
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,11 +12,13 @@ from unittest.mock import AsyncMock
 from entertainment.moderation_safety import is_safe_entertainment_text
 from entertainment.personality import (
     PERSONALITY_STYLES,
-    PERSONALITY_STYLE_LABELS,
+    PERSONALITY_TOPICS,
+    PERSONALITY_TOPIC_LABELS,
+    PERSONALITY_USER_COOLDOWN_SECONDS,    PERSONALITY_STYLE_LABELS,
     choose_personality_line,
     detect_literary_topic,
     resolve_personality_style,
-)
+    resolve_personality_topic,)
 from entertainment.scoped_service import EntertainmentService
 from entertainment.storage.windows import SQLiteEntertainmentStorage
 
@@ -56,7 +59,7 @@ class PersonalityCatalogTests(unittest.TestCase):
         for phrase in ("Жду продолжения", "Дописать главу", "Сюжет снова сломался", "Нужна обложка"):
             for style in PERSONALITY_STYLES:
                 recent: list[str] = []
-                for _ in range(3):
+                for _ in range(4):
                     choice = choose_personality_line(
                         style=style, trigger_text=phrase,
                         recent_outputs=recent, rng=LowRandom(),
@@ -74,6 +77,44 @@ class PersonalityCatalogTests(unittest.TestCase):
                     style=style, trigger_text=phrase,
                     recent_outputs=recent, rng=LowRandom(),
                 ))
+
+    def test_interest_selection_guides_only_an_explicit_joke_request(self):
+        self.assertEqual(resolve_personality_topic("обложки"), "covers")
+        self.assertEqual(resolve_personality_topic("КНИГИ"), "reading")
+        self.assertIsNone(resolve_personality_topic("психологический портрет"))
+        self.assertEqual(set(PERSONALITY_TOPIC_LABELS), PERSONALITY_TOPICS)
+        self.assertEqual(PERSONALITY_USER_COOLDOWN_SECONDS, 21600)
+        forced = choose_personality_line(
+            style="ironic", trigger_text="Фосген, пошути!",
+            preferred_topic="covers", recent_outputs=[], rng=LowRandom(),
+        )
+        self.assertIsNotNone(forced)
+        self.assertEqual(forced[1], "covers")
+        unrelated = choose_personality_line(
+            style="ironic", trigger_text="Привет, как дела?",
+            preferred_topic="covers", recent_outputs=[], rng=LowRandom(),
+        )
+        self.assertIsNone(unrelated)
+        explicit = choose_personality_line(
+            style="ironic", trigger_text="У меня проблема с сюжетом",
+            preferred_topic="covers", recent_outputs=[], rng=LowRandom(),
+        )
+        self.assertIsNotNone(explicit)
+        self.assertEqual(explicit[1], "characters")
+
+    def test_very_similar_recent_output_is_skipped(self):
+        first = choose_personality_line(
+            style="gentle", trigger_text="Пишу главу",
+            recent_outputs=[], rng=LowRandom(),
+        )
+        self.assertIsNotNone(first)
+        same_with_punctuation = first[0].replace(".", ",") + "!"
+        second = choose_personality_line(
+            style="gentle", trigger_text="Пишу главу",
+            recent_outputs=[same_with_punctuation], rng=LowRandom(),
+        )
+        self.assertIsNotNone(second)
+        self.assertNotEqual(first[0], second[0])
 
     def test_generic_and_unsolicited_requests_never_generate(self):
         for style in ("", "none", "unselected"):
@@ -114,6 +155,68 @@ class PersonalityStorageTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.set_personality_style(WRITERS_CHAT, 10, None)
         self.assertIsNone(await self.storage.get_personality_style(WRITERS_CHAT, 10))
 
+    async def test_topic_requires_style_and_reply_cooldown_is_atomic(self):
+        self.assertFalse(await self.storage.set_personality_topic(WRITERS_CHAT, 10, "covers"))
+        await self.storage.set_personality_style(WRITERS_CHAT, 10, "ironic")
+        self.assertTrue(await self.storage.set_personality_topic(WRITERS_CHAT, 10, "covers"))
+        self.assertEqual(await self.storage.get_personality_topic(WRITERS_CHAT, 10), "covers")
+        self.assertIsNone(await self.storage.get_personality_topic(WRITERS_CHAT, 11))
+        self.assertTrue(await self.storage.try_reserve_personality_reply(
+            WRITERS_CHAT, 10, now=100000, cooldown_seconds=21600,
+        ))
+        self.assertFalse(await self.storage.try_reserve_personality_reply(
+            WRITERS_CHAT, 10, now=100001, cooldown_seconds=21600,
+        ))
+        self.assertFalse(await self.storage.try_reserve_personality_reply(
+            WRITERS_CHAT, 10, now=121599, cooldown_seconds=21600,
+        ))
+        self.assertTrue(await self.storage.try_reserve_personality_reply(
+            WRITERS_CHAT, 10, now=121600, cooldown_seconds=21600,
+        ))
+        await self.storage.close()
+        await self.storage.initialize()
+        self.assertEqual(await self.storage.get_personality_topic(WRITERS_CHAT, 10), "covers")
+        self.assertFalse(await self.storage.try_reserve_personality_reply(
+            WRITERS_CHAT, 10, now=121601, cooldown_seconds=21600,
+        ))
+        await self.storage.set_personality_topic(WRITERS_CHAT, 10, None)
+        self.assertIsNone(await self.storage.get_personality_topic(WRITERS_CHAT, 10))
+        await self.storage.set_personality_style(WRITERS_CHAT, 10, None)
+        self.assertFalse(await self.storage.try_reserve_personality_reply(
+            WRITERS_CHAT, 10, now=200000, cooldown_seconds=21600,
+        ))
+
+    async def test_unknown_topic_cannot_be_persisted(self):
+        await self.storage.set_personality_style(WRITERS_CHAT, 10, "gentle")
+        with self.assertRaises(ValueError):
+            await self.storage.set_personality_topic(WRITERS_CHAT, 10, "religion")
+        self.assertIsNone(await self.storage.get_personality_topic(WRITERS_CHAT, 10))
+
+    async def test_existing_personality_table_migrates_without_erasing_preferences(self):
+        legacy = Path(self.temp_dir.name) / "legacy.sqlite"
+        conn = sqlite3.connect(legacy)
+        conn.execute(
+            "CREATE TABLE ent_personality_preferences "
+            "(chat_id INTEGER NOT NULL,user_id INTEGER NOT NULL,"
+            "style TEXT NOT NULL,updated_at INTEGER NOT NULL,"
+            "PRIMARY KEY(chat_id,user_id))"
+        )
+        conn.execute(
+            "INSERT INTO ent_personality_preferences VALUES (?,?,?,?)",
+            (WRITERS_CHAT, 42, "absurd", 1),
+        )
+        conn.commit()
+        conn.close()
+        upgraded = SQLiteEntertainmentStorage(legacy)
+        await upgraded.initialize()
+        try:
+            self.assertEqual(await upgraded.get_personality_style(WRITERS_CHAT, 42), "absurd")
+            self.assertIsNone(await upgraded.get_personality_topic(WRITERS_CHAT, 42))
+            self.assertTrue(await upgraded.set_personality_topic(WRITERS_CHAT, 42, "writing"))
+            self.assertEqual(await upgraded.get_personality_topic(WRITERS_CHAT, 42), "writing")
+        finally:
+            await upgraded.close()
+
     async def test_unknown_style_does_not_enter_database(self):
         with self.assertRaises(ValueError):
             await self.storage.set_personality_style(WRITERS_CHAT, 10, "infinite_power")
@@ -124,6 +227,8 @@ class PersonalityCommandTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.storage = SimpleNamespace(
             get_personality_style=AsyncMock(return_value=None),
+            get_personality_topic=AsyncMock(return_value=None),
+            set_personality_topic=AsyncMock(return_value=True),
             set_personality_style=AsyncMock(),
             get_remember_enabled=AsyncMock(return_value=True),
             set_remember_enabled=AsyncMock(),
@@ -152,6 +257,43 @@ class PersonalityCommandTests(unittest.IsolatedAsyncioTestCase):
         self.storage.set_personality_style.reset_mock()
         await self.service.configure_personality_style(self.message("/fun_style off"))
         self.storage.set_personality_style.assert_awaited_once_with(WRITERS_CHAT, 31415, None)
+
+    async def test_topic_commands_require_opt_in_and_support_off(self):
+        msg = self.message("/fun_topic обложки")
+        await self.service.configure_personality_topic(msg)
+        self.storage.set_personality_topic.assert_not_awaited()
+        self.assertIn("/fun_style", msg.reply.await_args.args[0])
+        self.storage.get_personality_style.return_value = "ironic"
+        msg = self.message("/fun_topic обложки")
+        await self.service.configure_personality_topic(msg)
+        self.storage.set_personality_topic.assert_awaited_once_with(
+            WRITERS_CHAT, 31415, "covers",
+        )
+        self.storage.set_personality_topic.reset_mock()
+        await self.service.configure_personality_topic(self.message("/fun_topic off"))
+        self.storage.set_personality_topic.assert_awaited_once_with(
+            WRITERS_CHAT, 31415, None,
+        )
+        msg = self.message("/fun_profile")
+        await self.service.show_personality_profile(msg)
+        self.assertIn("ирония", msg.reply.await_args.args[0])
+
+    async def test_topic_requires_memory_consent_and_is_ignored_in_exempt_topics(self):
+        self.storage.get_personality_style.return_value = "absurd"
+        self.storage.get_remember_enabled.return_value = False
+        msg = self.message("/fun_topic герои")
+        await self.service.configure_personality_topic(msg)
+        self.storage.set_personality_topic.assert_not_awaited()
+        self.storage.get_remember_enabled.return_value = True
+        for chat, topic in (
+            (WRITERS_CHAT, 292358), (WRITERS_CHAT, 14637),
+            (WRITERS_CHAT, 42817), (LEXICON_CHAT, None),
+        ):
+            msg = self.message("/fun_topic герои", chat=chat, topic=topic)
+            await self.service.configure_personality_topic(msg)
+            await self.service.show_personality_profile(msg)
+            msg.reply.assert_not_awaited()
+        self.storage.set_personality_topic.assert_not_awaited()
 
     async def test_refuse_opt_in_when_memory_is_disabled(self):
         self.storage.get_remember_enabled.return_value = False

@@ -132,9 +132,20 @@ class SQLiteEntertainmentStorage(CoreSQLiteEntertainmentStorage):
             CREATE TABLE IF NOT EXISTS ent_personality_preferences (
                 chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
                 style TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                preferred_topic TEXT, last_personalized_at INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(chat_id, user_id)
             )
         """)
+        async with connection.execute("PRAGMA table_info(ent_personality_preferences)") as cursor:
+            personality_columns = {str(row[1]) for row in await cursor.fetchall()}
+        if "preferred_topic" not in personality_columns:
+            await connection.execute(
+                "ALTER TABLE ent_personality_preferences ADD COLUMN preferred_topic TEXT"
+            )
+        if "last_personalized_at" not in personality_columns:
+            await connection.execute(
+                "ALTER TABLE ent_personality_preferences ADD COLUMN last_personalized_at INTEGER NOT NULL DEFAULT 0"
+            )
         await connection.commit()
 
     async def get_personality_style(self, chat_id: int, user_id: int) -> str | None:
@@ -164,6 +175,41 @@ class SQLiteEntertainmentStorage(CoreSQLiteEntertainmentStorage):
                 (int(chat_id), int(user_id), style, int(time.time())),
             )
         await conn.commit()
+
+    async def get_personality_topic(self, chat_id: int, user_id: int) -> str | None:
+        conn = self._require_connection()
+        async with conn.execute(
+            "SELECT preferred_topic FROM ent_personality_preferences WHERE chat_id=? AND user_id=?",
+            (int(chat_id), int(user_id)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row[0]) if row and row[0] else None
+
+    async def set_personality_topic(self, chat_id: int, user_id: int, topic: str | None) -> bool:
+        from ..personality import PERSONALITY_TOPICS
+        if topic is not None and topic not in PERSONALITY_TOPICS:
+            raise ValueError("Unsupported personality topic")
+        conn = self._require_connection()
+        cursor = await conn.execute(
+            "UPDATE ent_personality_preferences SET preferred_topic=?,updated_at=? "
+            "WHERE chat_id=? AND user_id=?",
+            (topic, int(time.time()), int(chat_id), int(user_id)),
+        )
+        await conn.commit()
+        return int(cursor.rowcount) > 0
+
+    async def try_reserve_personality_reply(
+        self, chat_id: int, user_id: int, *, now: int, cooldown_seconds: int,
+    ) -> bool:
+        """Atomically enforce per-personality cooldown across bot instances."""
+        conn = self._require_connection()
+        cursor = await conn.execute(
+            "UPDATE ent_personality_preferences SET last_personalized_at=? "
+            "WHERE chat_id=? AND user_id=? AND last_personalized_at <= ?",
+            (int(now), int(chat_id), int(user_id), int(now) - int(cooldown_seconds)),
+        )
+        await conn.commit()
+        return int(cursor.rowcount) > 0
 
     async def add_message(self, chat_id: int, topic_id: int, user_id: int, text: str, *, message_id: int | None = None, created_at: int | None = None) -> None:
         connection = self._require_connection()
@@ -327,9 +373,17 @@ class PostgresEntertainmentStorage(CorePostgresEntertainmentStorage):
                     CREATE TABLE IF NOT EXISTS ent_personality_preferences (
                         chat_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
                         style TEXT NOT NULL, updated_at BIGINT NOT NULL,
+                        preferred_topic TEXT,
+                        last_personalized_at BIGINT NOT NULL DEFAULT 0,
                         PRIMARY KEY(chat_id, user_id)
                     )
                 """)
+                await connection.execute(
+                    "ALTER TABLE ent_personality_preferences ADD COLUMN IF NOT EXISTS preferred_topic TEXT"
+                )
+                await connection.execute(
+                    "ALTER TABLE ent_personality_preferences ADD COLUMN IF NOT EXISTS last_personalized_at BIGINT NOT NULL DEFAULT 0"
+                )
 
     async def get_personality_style(self, chat_id: int, user_id: int) -> str | None:
         value = await self._require_pool().fetchval(
@@ -355,6 +409,35 @@ class PostgresEntertainmentStorage(CorePostgresEntertainmentStorage):
             "SET style=EXCLUDED.style,updated_at=EXCLUDED.updated_at",
             int(chat_id), int(user_id), style, int(time.time()),
         )
+
+    async def get_personality_topic(self, chat_id: int, user_id: int) -> str | None:
+        value = await self._require_pool().fetchval(
+            "SELECT preferred_topic FROM ent_personality_preferences WHERE chat_id=$1 AND user_id=$2",
+            int(chat_id), int(user_id),
+        )
+        return str(value) if value else None
+
+    async def set_personality_topic(self, chat_id: int, user_id: int, topic: str | None) -> bool:
+        from ..personality import PERSONALITY_TOPICS
+        if topic is not None and topic not in PERSONALITY_TOPICS:
+            raise ValueError("Unsupported personality topic")
+        result = await self._require_pool().execute(
+            "UPDATE ent_personality_preferences SET preferred_topic=$1,updated_at=$2 "
+            "WHERE chat_id=$3 AND user_id=$4",
+            topic, int(time.time()), int(chat_id), int(user_id),
+        )
+        return result == "UPDATE 1"
+
+    async def try_reserve_personality_reply(
+        self, chat_id: int, user_id: int, *, now: int, cooldown_seconds: int,
+    ) -> bool:
+        """Atomic SQL gate: never two personalized replies in one cooldown."""
+        result = await self._require_pool().execute(
+            "UPDATE ent_personality_preferences SET last_personalized_at=$1 "
+            "WHERE chat_id=$2 AND user_id=$3 AND last_personalized_at <= $4",
+            int(now), int(chat_id), int(user_id), int(now) - int(cooldown_seconds),
+        )
+        return result == "UPDATE 1"
 
     async def add_message(self, chat_id:int, topic_id:int, user_id:int, text:str, *, message_id:int|None=None, created_at:int|None=None)->None:
         pool=self._require_pool(); timestamp=int(time.time()) if created_at is None else int(created_at)

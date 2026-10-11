@@ -607,6 +607,87 @@ class EntertainmentService:
             "если отвечаешь ему. Настройку можно отключить: /fun_style off."
         )
 
+    async def configure_personality_topic(self, message: Message) -> None:
+        """Let a participant choose an interest without inferring a profile."""
+        from .personality import (
+            PERSONALITY_TOPIC_LABELS, resolve_personality_topic,
+        )
+        sender = getattr(message, "from_user", None)
+        if sender is None or getattr(sender, "is_bot", False):
+            return
+        chat_id, user_id = int(message.chat.id), int(sender.id)
+        read_style = getattr(self.storage, "get_personality_style", None)
+        read_topic = getattr(self.storage, "get_personality_topic", None)
+        write_topic = getattr(self.storage, "set_personality_topic", None)
+        if not all(callable(action) for action in (read_style, read_topic, write_topic)):
+            await message.reply("Настройка тем пока недоступна в хранилище.")
+            return
+        args = (getattr(message, "text", "") or "").split(maxsplit=1)
+        requested = args[1].strip().casefold() if len(args) > 1 else ""
+        if not requested:
+            topic = await read_topic(chat_id, user_id)
+            current = PERSONALITY_TOPIC_LABELS.get(topic, "не выбрана")
+            await message.reply(
+                f"📚 Любимая тема для шуток: <b>{current}</b>. "
+                "Выбери /fun_topic главы, /fun_topic чтение, /fun_topic герои "
+                "или /fun_topic обложки. Сбросить: /fun_topic off. "
+                "Это влияет только на ответы Фосгена по твоему запросу."
+            )
+            return
+        if requested in {"off", "выкл", "отключить"}:
+            await write_topic(chat_id, user_id, None)
+            await message.reply("📚 Выбранная тема удалена. Остался обычный юмор Фосгена.")
+            return
+        topic = resolve_personality_topic(requested)
+        if topic is None:
+            await message.reply(
+                "Доступные темы: /fun_topic главы, /fun_topic чтение, "
+                "/fun_topic герои, /fun_topic обложки или /fun_topic off."
+            )
+            return
+        if not await self.storage.get_remember_enabled(chat_id, user_id):
+            await message.reply(
+                "🧠 Запоминание отключено. Сначала используй /fun_remember_me."
+            )
+            return
+        if not await read_style(chat_id, user_id):
+            await message.reply(
+                "🎭 Для личных тематических шуток сначала выбери "
+                "/fun_style мягкий, /fun_style ирония или /fun_style абсурд."
+            )
+            return
+        if not await write_topic(chat_id, user_id, topic):
+            await message.reply("Настройка не сохранилась. Проверь /fun_style.")
+            return
+        await message.reply(
+            f"📚 Твоя тема: <b>{PERSONALITY_TOPIC_LABELS[topic]}</b>. "
+            "Теперь при прямой просьбе пошутить я иногда выберу эту тему. "
+            "Если речь о другом — останусь в контексте беседы."
+        )
+
+    async def show_personality_profile(self, message: Message) -> None:
+        """Only report the caller's explicit preferences; no implicit analysis."""
+        from .personality import PERSONALITY_STYLE_LABELS, PERSONALITY_TOPIC_LABELS
+        sender = getattr(message, "from_user", None)
+        if sender is None or getattr(sender, "is_bot", False):
+            return
+        chat_id, user_id = int(message.chat.id), int(sender.id)
+        read_style = getattr(self.storage, "get_personality_style", None)
+        read_topic = getattr(self.storage, "get_personality_topic", None)
+        if not callable(read_style) or not callable(read_topic):
+            await message.reply("Настройки пока недоступны.")
+            return
+        style = await read_style(chat_id, user_id)
+        topic = await read_topic(chat_id, user_id)
+        await message.reply(
+            "🎭 <b>Твои добровольные настройки Фосгена</b>\n"
+            f"Манера: <b>{PERSONALITY_STYLE_LABELS.get(style, 'выключена')}</b>\n"
+            f"Тема: <b>{PERSONALITY_TOPIC_LABELS.get(topic, 'не выбрана')}</b>\n"
+            "Изменить: /fun_style, /fun_topic. Удалить: "
+            "/fun_style off или /fun_delete_me. "
+            "Никаких скрытых характеристик личности я не собираю."
+        )
+
     async def delete_my_memory(self, message: Message) -> int:
         from_user = getattr(message, "from_user", None)
         user_id = getattr(from_user, "id", None)
