@@ -68,6 +68,24 @@ class LexiconFairyNoticeTests(unittest.IsolatedAsyncioTestCase):
                 msg.reply.assert_not_awaited()
                 self.next_handler.assert_not_awaited()
 
+    async def test_gandolyer_insult_is_deleted_with_fairy_notice(self):
+        msg = message("Что за гандольер?")
+        await self.middleware(self.next_handler, msg, {})
+        msg.delete.assert_awaited_once_with()
+        msg.answer.assert_awaited_once_with(LEXICON_FAIRY_NOTICE)
+        self.next_handler.assert_not_awaited()
+
+    async def test_gondolier_profession_does_not_trigger_chat_moderation(self):
+        for text in ("гондольер", "У гондольера красивая гондола"):
+            with self.subTest(text=text):
+                msg = message(text)
+                self.next_handler.reset_mock()
+                result = await self.middleware(self.next_handler, msg, {})
+                self.assertEqual(result, "lexicon_game_handled")
+                msg.delete.assert_not_awaited()
+                msg.answer.assert_not_awaited()
+                self.next_handler.assert_awaited_once()
+
     async def test_leading_star_mat_gets_deleted_and_fairy_notice(self):
         msg = message("*лять")
         await self.middleware(self.next_handler, msg, {})
