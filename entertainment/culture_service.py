@@ -40,7 +40,10 @@ from .models import (
     MemoryEventType,
 )
 from .novelty import is_novel_generated_text
-from .personality import choose_personality_line
+from .personality import (
+    PERSONALITY_USER_COOLDOWN_SECONDS,
+    choose_personality_line,
+)
 from .moderation_safety import is_safe_entertainment_text
 from .service import (
     EntertainmentService as PhaseBEntertainmentService,
@@ -450,45 +453,9 @@ class EntertainmentService(PhaseBEntertainmentService):
         generated, emoji_signature = generation_outcome
         generation_result = getattr(generation_outcome, "diagnostics", None)
 
-        # Personality is an optional add-on to Generation v3, NOT its new
-        # default. Only a user who explicitly /fun_style opted in can trigger
-        # it while replying to Fosgen. Never profile non-consenting members,
-        # use supervisor messages, or alter the topic/presence budgets.
         personality_theme: str | None = None
         personality_style: str | None = None
-        if generation_mode is GenerationMode.DIRECT_REPLY and not supervisor:
-            sender = getattr(message, "from_user", None)
-            read_style = getattr(self.storage, "get_personality_style", None)
-            read_consent = getattr(self.storage, "get_remember_enabled", None)
-            if (
-                sender is not None
-                and not getattr(sender, "is_bot", False)
-                and callable(read_style)
-                and callable(read_consent)
-                and await read_consent(chat_id, int(sender.id))
-            ):
-                candidate_style = await read_style(chat_id, int(sender.id))
-                if candidate_style:
-                    # Bounded historical check gives templates a 24h cooldown
-                    # beyond the main autonomy engine's 30-minute action budget.
-                    past = await self.storage.recent_actions(
-                        chat_id, topic_id, since=now - 24 * 60 * 60, limit=100
-                    )
-                    day_outputs = [
-                        str(action.metadata.get("output") or "")
-                        for action in past if isinstance(action.metadata, dict)
-                    ]
-                    choice = choose_personality_line(
-                        style=candidate_style,
-                        trigger_text=trigger_text,
-                        recent_outputs=day_outputs,
-                        rng=self.rng,
-                    )
-                    if choice is not None and is_safe_entertainment_text(choice[0]):
-                        generated, personality_theme = choice
-                        personality_style = candidate_style
-                        generation_result = None
-                        emoji_signature = None
+        personality_personal = False
 
         media_actions = tuple(
             await self.storage.recent_actions(
@@ -563,6 +530,81 @@ class EntertainmentService(PhaseBEntertainmentService):
                 action_id = await self.storage.record_action(record)
                 return replace(record, id=action_id)
 
+        # Relationship Engine runs AFTER the media decision, so an image or
+        # sticker cannot consume a person's rare personalized-response slot.
+        # This does not create another action: the autonomy/presence budget
+        # has already approved this exact message.
+        if generated is not None or generation_mode is GenerationMode.DIRECT_REPLY:
+            style_for_line: str | None = None
+            preferred_topic: str | None = None
+            eligible_user_id: int | None = None
+            chance = 0.0
+            if generation_mode is GenerationMode.DIRECT_REPLY and not supervisor:
+                sender = getattr(message, "from_user", None)
+                read_style = getattr(self.storage, "get_personality_style", None)
+                read_consent = getattr(self.storage, "get_remember_enabled", None)
+                reserve = getattr(self.storage, "try_reserve_personality_reply", None)
+                if (
+                    sender is not None
+                    and not bool(getattr(sender, "is_bot", False))
+                    and callable(read_style)
+                    and callable(read_consent)
+                    and callable(reserve)
+                    and await read_consent(chat_id, int(sender.id))
+                ):
+                    style_for_line = await read_style(chat_id, int(sender.id))
+                    if style_for_line:
+                        read_topic = getattr(self.storage, "get_personality_topic", None)
+                        if callable(read_topic):
+                            preferred_topic = await read_topic(chat_id, int(sender.id))
+                        eligible_user_id = int(sender.id)
+                        chance = 0.28
+            elif generation_mode is GenerationMode.AUTONOMOUS and not supervisor and generated:
+                # Rare community-wide literary interventions are original
+                # authored jokes about current CHAT context, not a person.
+                style_for_line = self.rng.choice(("gentle", "ironic", "absurd"))
+                chance = 0.08
+
+            if style_for_line:
+                recent_day = await self.storage.recent_actions(
+                    chat_id, topic_id, since=now - 24 * 60 * 60, limit=100,
+                )
+                recent_lines = [
+                    str(action.metadata.get("output") or "")
+                    for action in recent_day
+                    if isinstance(action.metadata, dict)
+                ]
+                request_text = (
+                    trigger_text if eligible_user_id is not None
+                    else (
+                        snapshot.generation.context_messages[-1]
+                        if snapshot.generation.context_messages else None
+                    )
+                )
+                choice = choose_personality_line(
+                    style=style_for_line,
+                    trigger_text=request_text,
+                    recent_outputs=recent_lines,
+                    rng=self.rng,
+                    engagement_probability=chance,
+                    preferred_topic=preferred_topic,
+                )
+                if choice is not None and is_safe_entertainment_text(choice[0]):
+                    allowed = True
+                    if eligible_user_id is not None:
+                        # Atomic in PostgreSQL: two workers cannot both send
+                        # personalized jokes to one person during this window.
+                        allowed = await reserve(
+                            chat_id, eligible_user_id, now=now,
+                            cooldown_seconds=PERSONALITY_USER_COOLDOWN_SECONDS,
+                        )
+                    if allowed:
+                        generated, personality_theme = choice
+                        personality_style = style_for_line
+                        personality_personal = eligible_user_id is not None
+                        generation_result = None
+                        emoji_signature = None
+
         if generated is None:
             return None
         await self._send_text_fallback(
@@ -600,6 +642,7 @@ class EntertainmentService(PhaseBEntertainmentService):
                 ),
                 "personality_theme": personality_theme,
                 "personality_style": personality_style,
+                "personality_personal": personality_personal,
                 "generation_mode": generation_mode.value,
                 "generation_candidate_count": (
                     generation_result.candidate_count if generation_result is not None else 0
