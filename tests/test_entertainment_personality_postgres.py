@@ -42,6 +42,63 @@ class PostgreSQLPersonalityTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.set_personality_style(self.chat, self.owner, None)
         self.assertIsNone(await self.storage.get_personality_style(self.chat, self.owner))
 
+    async def test_topic_and_atomic_personal_reply_cooldown_survive_restart(self):
+        await self.storage.set_personality_style(self.chat, self.owner, "ironic")
+        self.assertTrue(await self.storage.set_personality_topic(
+            self.chat, self.owner, "characters",
+        ))
+        self.assertFalse(await self.storage.set_personality_topic(
+            self.chat, self.owner + 1, "characters",
+        ))
+        self.assertEqual(
+            await self.storage.get_personality_topic(self.chat, self.owner),
+            "characters",
+        )
+        self.assertTrue(await self.storage.try_reserve_personality_reply(
+            self.chat, self.owner, now=90000, cooldown_seconds=21600,
+        ))
+        self.assertFalse(await self.storage.try_reserve_personality_reply(
+            self.chat, self.owner, now=90001, cooldown_seconds=21600,
+        ))
+        await self.storage.close()
+        await self.storage.initialize()
+        self.assertEqual(
+            await self.storage.get_personality_topic(self.chat, self.owner),
+            "characters",
+        )
+        self.assertFalse(await self.storage.try_reserve_personality_reply(
+            self.chat, self.owner, now=100000, cooldown_seconds=21600,
+        ))
+        self.assertTrue(await self.storage.try_reserve_personality_reply(
+            self.chat, self.owner, now=111600, cooldown_seconds=21600,
+        ))
+        await self.storage.set_personality_topic(self.chat, self.owner, None)
+        self.assertIsNone(
+            await self.storage.get_personality_topic(self.chat, self.owner)
+        )
+        await self.storage.set_personality_style(self.chat, self.owner, None)
+        self.assertFalse(await self.storage.try_reserve_personality_reply(
+            self.chat, self.owner, now=200000, cooldown_seconds=21600,
+        ))
+
+    async def test_migration_adds_columns_without_replacing_previous_data(self):
+        # The previous release already stores styles. The new schema must
+        # keep that row when applying the relationship migration repeatedly.
+        await self.storage.set_personality_style(self.chat, self.owner, "gentle")
+        await self.storage.close()
+        await self.storage.initialize()
+        self.assertEqual(
+            await self.storage.get_personality_style(self.chat, self.owner),
+            "gentle",
+        )
+        fields = await self.storage._require_pool().fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='ent_personality_preferences'"
+        )
+        columns = {row["column_name"] for row in fields}
+        self.assertIn("preferred_topic", columns)
+        self.assertIn("last_personalized_at", columns)
+
     async def test_unsupported_styles_never_persist(self):
         with self.assertRaises(ValueError):
             await self.storage.set_personality_style(self.chat, self.owner, "unknown")
