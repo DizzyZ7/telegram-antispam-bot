@@ -118,6 +118,11 @@ class EntertainmentService(PhaseCEntertainmentService):
             return
         await super().set_remember_me(message, enabled)
 
+    async def configure_personality_style(self, message: Message) -> None:
+        if not self._message_scope_allowed(message):
+            return
+        await super().configure_personality_style(message)
+
     async def delete_my_memory(self, message: Message) -> int:
         if not self._message_scope_allowed(message):
             return 0
