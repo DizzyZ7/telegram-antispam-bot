@@ -40,6 +40,8 @@ from .models import (
     MemoryEventType,
 )
 from .novelty import is_novel_generated_text
+from .personality import choose_personality_line
+from .moderation_safety import is_safe_entertainment_text
 from .service import (
     EntertainmentService as PhaseBEntertainmentService,
     _CULTURE_FALLBACK_CONTEXT_LIMIT,
@@ -448,6 +450,46 @@ class EntertainmentService(PhaseBEntertainmentService):
         generated, emoji_signature = generation_outcome
         generation_result = getattr(generation_outcome, "diagnostics", None)
 
+        # Personality is an optional add-on to Generation v3, NOT its new
+        # default. Only a user who explicitly /fun_style opted in can trigger
+        # it while replying to Fosgen. Never profile non-consenting members,
+        # use supervisor messages, or alter the topic/presence budgets.
+        personality_theme: str | None = None
+        personality_style: str | None = None
+        if generation_mode is GenerationMode.DIRECT_REPLY and not supervisor:
+            sender = getattr(message, "from_user", None)
+            read_style = getattr(self.storage, "get_personality_style", None)
+            read_consent = getattr(self.storage, "get_remember_enabled", None)
+            if (
+                sender is not None
+                and not getattr(sender, "is_bot", False)
+                and callable(read_style)
+                and callable(read_consent)
+                and await read_consent(chat_id, int(sender.id))
+            ):
+                candidate_style = await read_style(chat_id, int(sender.id))
+                if candidate_style:
+                    # Bounded historical check gives templates a 24h cooldown
+                    # beyond the main autonomy engine's 30-minute action budget.
+                    past = await self.storage.recent_actions(
+                        chat_id, topic_id, since=now - 24 * 60 * 60, limit=100
+                    )
+                    day_outputs = [
+                        str(action.metadata.get("output") or "")
+                        for action in past if isinstance(action.metadata, dict)
+                    ]
+                    choice = choose_personality_line(
+                        style=candidate_style,
+                        trigger_text=trigger_text,
+                        recent_outputs=day_outputs,
+                        rng=self.rng,
+                    )
+                    if choice is not None and is_safe_entertainment_text(choice[0]):
+                        generated, personality_theme = choice
+                        personality_style = candidate_style
+                        generation_result = None
+                        emoji_signature = None
+
         media_actions = tuple(
             await self.storage.recent_actions(
                 chat_id,
@@ -553,8 +595,11 @@ class EntertainmentService(PhaseBEntertainmentService):
                 "culture_historical_events": snapshot.generation.historical_event_count,
                 "culture_runs": snapshot.generation.conversation_run_count,
                 "generation_engine": (
+                    "personality_v1" if personality_style else
                     generation_result.engine if generation_result is not None else "unknown"
                 ),
+                "personality_theme": personality_theme,
+                "personality_style": personality_style,
                 "generation_mode": generation_mode.value,
                 "generation_candidate_count": (
                     generation_result.candidate_count if generation_result is not None else 0
