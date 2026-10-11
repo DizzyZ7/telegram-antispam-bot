@@ -45,6 +45,28 @@ class ProhibitedLanguageTests(unittest.TestCase):
                 self.assertFalse(contains_prohibited_language(text))
                 self.assertIsNone(detect_prohibited_language(text))
 
+    def test_insult_gandolyer_is_blocked_but_profession_gondolier_is_not(self):
+        # One vowel is meaningful: author's insulting word must be blocked,
+        # the actual profession (гондольер) must remain readable.
+        blocked = (
+            "гандольер", "ГАНДОЛЬЕР", "гандольера", "гандольеру",
+            "гандольером", "гандольеры", "гандольерами",
+            "гандольерский", "Вот же гандольер!",
+        )
+        for word in blocked:
+            with self.subTest(word=word):
+                self.assertTrue(contains_prohibited_language(word))
+                self.assertEqual(detect_prohibited_language(word), "rare_insult")
+        allowed = (
+            "гондольер", "ГОНДОЛЬЕР", "гондольера", "гондольеру",
+            "гондольером", "гондольеры", "гондольерами",
+            "гондольерский", "гондола", "Увидел гондольера у канала",
+        )
+        for word in allowed:
+            with self.subTest(word=word):
+                self.assertFalse(contains_prohibited_language(word))
+                self.assertIsNone(detect_prohibited_language(word))
+
     def test_unicode_and_symbol_bypasses(self):
         original_extra_terms = moderation.EXTRA_BLOCKED_TOKENS
         overlay_terms = ("\u0431\u0434\u044c", "\u0445\u0439", "\u043f\u0437\u0434", "pzd", "xj")
