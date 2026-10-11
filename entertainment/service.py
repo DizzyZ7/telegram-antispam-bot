@@ -544,6 +544,11 @@ class EntertainmentService:
         if user_id is None:
             return
         await self.storage.set_remember_enabled(int(message.chat.id), int(user_id), bool(enabled))
+        if not enabled:
+            # Disabling memory also removes explicitly opted-in personalization.
+            disable_style = getattr(self.storage, "set_personality_style", None)
+            if callable(disable_style):
+                await disable_style(int(message.chat.id), int(user_id), None)
         if enabled:
             await message.reply("🧠 Снова запоминаю твои новые сообщения в этом чате.")
         else:
@@ -551,6 +556,56 @@ class EntertainmentService:
                 "🧠 Хорошо, теперь я не запоминаю твои новые сообщения в этом чате. "
                 "Старую память можно удалить командой /fun_delete_me."
             )
+
+    async def configure_personality_style(self, message: Message) -> None:
+        """User-controlled writing tone; never infer a participant profile."""
+        from .personality import PERSONALITY_STYLE_LABELS, resolve_personality_style
+
+        user = getattr(message, "from_user", None)
+        if user is None or getattr(user, "is_bot", False):
+            return
+        chat_id, user_id = int(message.chat.id), int(user.id)
+        read_style = getattr(self.storage, "get_personality_style", None)
+        write_style = getattr(self.storage, "set_personality_style", None)
+        if not callable(read_style) or not callable(write_style):
+            await message.reply("Эта настройка пока недоступна в хранилище чата.")
+            return
+
+        arguments = (getattr(message, "text", "") or "").split(maxsplit=1)
+        requested = arguments[1].strip().casefold() if len(arguments) > 1 else ""
+        if not requested:
+            current = await read_style(chat_id, user_id)
+            mode = PERSONALITY_STYLE_LABELS.get(current, "выключена")
+            await message.reply(
+                f"🎭 Персональная манера Фосгена: <b>{mode}</b>. "
+                "Выбор добровольный: /fun_style мягкий, "
+                "/fun_style ирония, /fun_style абсурд или /fun_style off. "
+                "Она влияет только на редкие литературные ответы бота, "
+                "не на других участников."
+            )
+            return
+
+        if requested in {"off", "выкл", "отключить"}:
+            await write_style(chat_id, user_id, None)
+            await message.reply("🎭 Персональная манера отключена. Без персональных реплик.")
+            return
+
+        style = resolve_personality_style(requested)
+        if style is None:
+            await message.reply("Выбери: /fun_style мягкий, /fun_style ирония, /fun_style абсурд, /fun_style off.")
+            return
+        if not await self.storage.get_remember_enabled(chat_id, user_id):
+            await message.reply(
+                "🧠 Ты отключил запоминание. Для добровольного стиля "
+                "сначала используй /fun_remember_me."
+            )
+            return
+        await write_style(chat_id, user_id, style)
+        await message.reply(
+            f"🎭 Выбран стиль <b>{PERSONALITY_STYLE_LABELS[style]}</b>. "
+            "Иногда Фосген обыграет литературную тему в этом стиле, "
+            "если отвечаешь ему. Настройку можно отключить: /fun_style off."
+        )
 
     async def delete_my_memory(self, message: Message) -> int:
         from_user = getattr(message, "from_user", None)
@@ -560,6 +615,9 @@ class EntertainmentService:
         chat_id = int(message.chat.id)
         canonical = await self.storage.delete_user_memory(chat_id, int(user_id))
         legacy = await self.storage.delete_legacy_user_messages(chat_id, int(user_id))
+        delete_style = getattr(self.storage, "set_personality_style", None)
+        if callable(delete_style):
+            await delete_style(chat_id, int(user_id), None)
         for key in [key for key in self._active_topics if key[0] == chat_id]:
             self._active_topics.pop(key, None)
         removed = int(canonical) + int(legacy)

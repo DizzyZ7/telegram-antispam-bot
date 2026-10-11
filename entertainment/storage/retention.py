@@ -128,7 +128,42 @@ class SQLiteEntertainmentStorage(CoreSQLiteEntertainmentStorage):
                 PRIMARY KEY(chat_id, user_id)
             )
         """)
+        await connection.execute("""
+            CREATE TABLE IF NOT EXISTS ent_personality_preferences (
+                chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+                style TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                PRIMARY KEY(chat_id, user_id)
+            )
+        """)
         await connection.commit()
+
+    async def get_personality_style(self, chat_id: int, user_id: int) -> str | None:
+        conn = self._require_connection()
+        async with conn.execute(
+            "SELECT style FROM ent_personality_preferences WHERE chat_id=? AND user_id=?",
+            (int(chat_id), int(user_id)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row[0]) if row is not None else None
+
+    async def set_personality_style(self, chat_id: int, user_id: int, style: str | None) -> None:
+        conn = self._require_connection()
+        if style is None:
+            await conn.execute(
+                "DELETE FROM ent_personality_preferences WHERE chat_id=? AND user_id=?",
+                (int(chat_id), int(user_id)),
+            )
+        else:
+            from ..personality import PERSONALITY_STYLES
+            if style not in PERSONALITY_STYLES:
+                raise ValueError("Unsupported personality style")
+            await conn.execute(
+                "INSERT INTO ent_personality_preferences(chat_id,user_id,style,updated_at) "
+                "VALUES(?,?,?,?) ON CONFLICT(chat_id,user_id) DO UPDATE "
+                "SET style=excluded.style,updated_at=excluded.updated_at",
+                (int(chat_id), int(user_id), style, int(time.time())),
+            )
+        await conn.commit()
 
     async def add_message(self, chat_id: int, topic_id: int, user_id: int, text: str, *, message_id: int | None = None, created_at: int | None = None) -> None:
         connection = self._require_connection()
@@ -288,6 +323,38 @@ class PostgresEntertainmentStorage(CorePostgresEntertainmentStorage):
                 await connection.execute("CREATE INDEX IF NOT EXISTS idx_ent_memory_scope_order ON ent_memory_events(chat_id,topic_id,created_at DESC,message_id DESC,id DESC)")
                 await connection.execute("CREATE INDEX IF NOT EXISTS idx_ent_memory_user ON ent_memory_events(chat_id,user_id,id DESC)")
                 await connection.execute("CREATE TABLE IF NOT EXISTS ent_memory_preferences (chat_id BIGINT NOT NULL,user_id BIGINT NOT NULL,remember_enabled BOOLEAN NOT NULL DEFAULT TRUE,updated_at BIGINT NOT NULL,PRIMARY KEY(chat_id,user_id))")
+                await connection.execute("""
+                    CREATE TABLE IF NOT EXISTS ent_personality_preferences (
+                        chat_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
+                        style TEXT NOT NULL, updated_at BIGINT NOT NULL,
+                        PRIMARY KEY(chat_id, user_id)
+                    )
+                """)
+
+    async def get_personality_style(self, chat_id: int, user_id: int) -> str | None:
+        value = await self._require_pool().fetchval(
+            "SELECT style FROM ent_personality_preferences WHERE chat_id=$1 AND user_id=$2",
+            int(chat_id), int(user_id),
+        )
+        return str(value) if value is not None else None
+
+    async def set_personality_style(self, chat_id: int, user_id: int, style: str | None) -> None:
+        pool = self._require_pool()
+        if style is None:
+            await pool.execute(
+                "DELETE FROM ent_personality_preferences WHERE chat_id=$1 AND user_id=$2",
+                int(chat_id), int(user_id),
+            )
+            return
+        from ..personality import PERSONALITY_STYLES
+        if style not in PERSONALITY_STYLES:
+            raise ValueError("Unsupported personality style")
+        await pool.execute(
+            "INSERT INTO ent_personality_preferences(chat_id,user_id,style,updated_at) "
+            "VALUES($1,$2,$3,$4) ON CONFLICT(chat_id,user_id) DO UPDATE "
+            "SET style=EXCLUDED.style,updated_at=EXCLUDED.updated_at",
+            int(chat_id), int(user_id), style, int(time.time()),
+        )
 
     async def add_message(self, chat_id:int, topic_id:int, user_id:int, text:str, *, message_id:int|None=None, created_at:int|None=None)->None:
         pool=self._require_pool(); timestamp=int(time.time()) if created_at is None else int(created_at)
