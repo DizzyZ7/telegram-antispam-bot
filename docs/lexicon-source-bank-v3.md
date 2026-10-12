@@ -15,8 +15,9 @@ of guaranteed playable rounds.
 - The established `pymorphy3` canonical-noun validation, profanity filter,
   minimum-source length and minimum number of available solutions continue
   to apply. Unknown/unrecognized terms are excluded, not forced into the game.
-- The prior bank cap and tier-balanced selection are retained. The actual
-  playable count is shown at runtime through `/lexicon_pool`.
+- The playable shortlist upper cap expands from 1,600 to 2,100 while keeping
+  tier-balanced quality selection. The actual playable count depends on the
+  grammar and subword checks and is shown at runtime through `/lexicon_pool`.
 
 ## Permanent no-replay policy (SQLite)
 
