@@ -1,8 +1,8 @@
 """Dictionary-strength patch for the Lexicon mini-game.
 
 This layer keeps the core rule strict: only nouns in their base form are accepted.
-It extends the source-word pool with curated long words and rotates all playable
-sources without repeats until the current per-topic cycle is complete.
+It extends the source-word pool with curated long words and permanently reserves
+every played starting word globally across this SQLite database.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ LOGGER = logging.getLogger(__name__)
 MIN_SOURCE_LENGTH = 10
 MAX_SOURCE_LENGTH = 24
 SOURCE_CYCLE_THREAD_NONE = 0
-SOURCE_CYCLES_TO_KEEP = 3  # legacy table is retained for historic import only
 
 
 class LexiconSourceExhausted(RuntimeError):
