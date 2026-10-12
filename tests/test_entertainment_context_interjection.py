@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from entertainment.context_interjection import (
     ContextInterjection, authored_interjections, choose_context_interjection,
+    detect_discussion_scene,
 )
 from entertainment.models import (
     EntertainmentActionRecord, EntertainmentActionType,
@@ -55,6 +56,42 @@ class InterjectionSafetyTests(unittest.TestCase):
         ])
         self.assertIsNotNone(result)
         self.assertEqual(result.scene, "writing")
+
+    def test_seven_new_discussion_scenes_are_connected_to_real_chat(self):
+        scenarios = {
+            "games": ("Прошел сложный уровень в игре", "Этот босс из игры суровый"),
+            "music": ("Новый музыкальный альбом вышел", "Слушаю трек из альбома"),
+            "art": ("Рисую обложку к истории", "Палитра для обложки готова"),
+            "movies": ("Посмотрел вчера фильм", "Фильм реально интересный"),
+            "study": ("Подготовка к экзамену", "Завтра экзамен по истории"),
+            "food": ("Нашел новый рецепт пирога", "Этот рецепт надо попробовать"),
+            "travel": ("Купил билет на поездку", "Уже выбираю маршрут поездки"),
+        }
+        for scene, (one, two) in scenarios.items():
+            with self.subTest(scene=scene):
+                self.assertEqual(detect_discussion_scene(one), scene)
+                self.assertEqual(detect_discussion_scene(two), scene)
+                result = choose([
+                    evt(1, 11, one, ago=55),
+                    evt(2, 12, two, ago=8),
+                ])
+                self.assertIsNotNone(result)
+                self.assertEqual(result.scene, scene)
+                self.assertTrue(is_safe_entertainment_reply(result.text))
+
+    def test_new_scenes_still_require_distinct_speakers_and_no_sensitive_messages(self):
+        self.assertIsNone(choose([
+            evt(1, 11, "Слушаю новый альбом", ago=60),
+            evt(2, 11, "Этот альбом шикарный", ago=5),
+        ]))
+        self.assertIsNone(choose([
+            evt(1, 11, "Слушаю новый альбом", ago=60),
+            evt(2, 12, "Эта игра шикарная", ago=5),
+        ]))
+        self.assertIsNone(choose([
+            evt(1, 11, "Слушаю новый альбом", ago=60),
+            evt(2, 12, "Мне страшно в больнице", ago=5),
+        ]))
 
     def test_different_topics_do_not_falsely_count_two_people(self):
         cases = (
