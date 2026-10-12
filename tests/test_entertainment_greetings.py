@@ -24,6 +24,36 @@ class GreetingBehaviorTests(unittest.TestCase):
         self.assertIsNone(detect("утром я поеду в мастерскую"))
         self.assertIsNone(detect("ночью дописал главу"))
 
+    def test_colloquial_greetings_are_detected_and_incidental_phrases_are_not(self) -> None:
+        from entertainment.greetings import detect_greeting
+        morning = (
+            "Доброе утречко!", "доброго утра всем :)", "Утро доброе",
+            "с добрым утречком", "Доброе утречко всем ☀️",
+        )
+        night = (
+            "Спокойной ночки!", "доброй ноченьки", "спокушки",
+            "споки ноки всем 😴", "всем сладких снов",
+        )
+        for greeting in morning:
+            with self.subTest(greeting=greeting):
+                self.assertEqual(detect_greeting(greeting), "morning")
+        for greeting in night:
+            with self.subTest(greeting=greeting):
+                self.assertEqual(detect_greeting(greeting), "night")
+        for ordinary in ("доброе утро было вчера", "утро будет добрым, когда закончу",
+                         "вчера всем пожелал спокойной ночи"):
+            with self.subTest(ordinary=ordinary):
+                self.assertIsNone(detect_greeting(ordinary))
+
+    def test_every_curated_greeting_passes_strict_output_safety(self) -> None:
+        from entertainment.greetings import iter_greeting_texts
+        from entertainment.moderation_safety import is_safe_entertainment_reply
+        texts = list(iter_greeting_texts())
+        self.assertGreaterEqual(len(texts), 80)
+        for text in texts:
+            with self.subTest(text=text):
+                self.assertTrue(is_safe_entertainment_reply(text))
+
     def test_context_changes_style_without_profiling_a_user(self) -> None:
         mod = self.module()
 
