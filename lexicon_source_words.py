@@ -7,6 +7,7 @@ not enter live rounds.
 
 from lexicon_source_words_extra import LONG_SOURCE_WORDS_EXTRA
 from lexicon_source_words_extra2 import LONG_SOURCE_WORDS_EXTRA2
+from lexicon_source_words_extra3 import LONG_SOURCE_WORDS_EXTRA3
 
 LONG_SOURCE_WORDS_BASE: tuple[str, ...] = (
     # Everyday, professions, places and objects
@@ -148,4 +149,9 @@ LONG_SOURCE_WORDS: tuple[str, ...] = LONG_SOURCE_WORDS_BASE + tuple(
 _LONG_SOURCE_WORDS_INCLUDED = frozenset(LONG_SOURCE_WORDS)
 LONG_SOURCE_WORDS += tuple(
     word for word in LONG_SOURCE_WORDS_EXTRA2 if word not in _LONG_SOURCE_WORDS_INCLUDED
+)
+
+_LONG_SOURCE_WORDS_INCLUDED = frozenset(LONG_SOURCE_WORDS)
+LONG_SOURCE_WORDS += tuple(
+    word for word in LONG_SOURCE_WORDS_EXTRA3 if word not in _LONG_SOURCE_WORDS_INCLUDED
 )
