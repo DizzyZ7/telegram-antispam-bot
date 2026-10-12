@@ -44,6 +44,7 @@ from .personality import (
     PERSONALITY_USER_COOLDOWN_SECONDS,
     choose_personality_line,
 )
+from .output_balance import recent_literary_context, should_send_media
 from .moderation_safety import is_safe_entertainment_text
 from .service import (
     EntertainmentService as PhaseBEntertainmentService,
@@ -484,6 +485,53 @@ class EntertainmentService(PhaseBEntertainmentService):
             )
         )
 
+        # v3 is deliberately conservative and sometimes yields no viable
+        # phrase. Before falling back to a sticker again, try one *original*
+        # contextual literary joke. Only fresh human conversation from this
+        # topic is eligible; no stale memory or personal profile is inferred.
+        if generated is None:
+            fresh_topic_text = recent_literary_context(
+                snapshot.recent_events, now=now,
+            )
+            if fresh_topic_text and is_safe_entertainment_text(fresh_topic_text):
+                history_24h = await self.storage.recent_actions(
+                    chat_id, topic_id, since=now - 24 * 60 * 60, limit=100,
+                )
+                history_texts = [
+                    str(action.metadata.get("output") or "")
+                    for action in history_24h
+                    if isinstance(action.metadata, dict)
+                ]
+                # Try several styles before giving up. No random "free" new
+                # messages: autonomy has already authorized this exact slot.
+                styles = ["ironic", "absurd", "gentle"]
+                self.rng.shuffle(styles)
+                for recovery_style in styles:
+                    recovered = choose_personality_line(
+                        style=recovery_style,
+                        trigger_text=fresh_topic_text,
+                        recent_outputs=history_texts,
+                        rng=self.rng,
+                        engagement_probability=1.0,
+                    )
+                    if recovered and is_safe_entertainment_text(recovered[0]):
+                        generated, personality_theme = recovered
+                        personality_style = recovery_style
+                        generation_result = None
+                        emoji_signature = None
+                        break
+
+        # Previously media always won over an already-generated reply. Keep
+        # funny stickers/photos, but reserve most slots for good text when it
+        # exists. If no safe text can be produced, media remains available.
+        if media_allowed and media_candidate is not None:
+            media_allowed = should_send_media(
+                media_actions,
+                text_ready=generated is not None,
+                direct_reply=selected.is_direct,
+                rng=self.rng,
+            )
+
         if media_allowed and media_candidate is not None:
             try:
                 await self._send_media_candidate(
@@ -518,6 +566,7 @@ class EntertainmentService(PhaseBEntertainmentService):
                         "memory_count": memory_count,
                         "source": "supervisor" if supervisor else "message",
                         "direct": bool(selected.is_direct),
+                        "output_kind": "media",
                         "media_type": event.event_type.value,
                         "media_file_unique_id": event.file_unique_id,
                         "media_score_bucket": media_candidate.score_bucket,
@@ -629,6 +678,7 @@ class EntertainmentService(PhaseBEntertainmentService):
                 "phase": phase.value,
                 "mode": settings.behavior_mode.value,
                 "output": generated,
+                "output_kind": "text",
                 "memory_count": memory_count,
                 "source": "supervisor" if supervisor else "message",
                 "direct": bool(selected.is_direct),

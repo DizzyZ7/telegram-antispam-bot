@@ -191,7 +191,9 @@ class MediaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         service, bot = self.make_service(store)
         message = FakeMessage()
 
-        with patch.object(service, "_generate_culture_text", return_value=("fallback text", None)):
+        with patch.object(service, "_generate_culture_text", return_value=("fallback text", None)), patch(
+            "entertainment.culture_service.should_send_media", return_value=True,
+        ):
             result = await service.evaluate_topic(message)
 
         self.assertIsNotNone(result)
@@ -214,7 +216,9 @@ class MediaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         service, bot = self.make_service(store)
         message = FakeMessage()
 
-        with patch.object(service, "_generate_culture_text", return_value=("fallback text", None)):
+        with patch.object(service, "_generate_culture_text", return_value=("fallback text", None)), patch(
+            "entertainment.culture_service.should_send_media", return_value=True,
+        ):
             result = await service.evaluate_topic(message)
 
         self.assertIsNotNone(result)
@@ -275,7 +279,9 @@ class MediaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         service, _ = self.make_service(store, bot)
         message = FakeMessage()
 
-        with patch.object(service, "_generate_culture_text", return_value=("fallback <ok>", None)):
+        with patch.object(service, "_generate_culture_text", return_value=("fallback <ok>", None)), patch(
+            "entertainment.culture_service.should_send_media", return_value=True,
+        ):
             result = await service.evaluate_topic(message)
 
         self.assertIsNotNone(result)
