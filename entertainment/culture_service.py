@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from aiogram.types import Message
 
 from .autonomy import ConversationPhase, DecisionContext, derive_phase, select_action
+from .banter import choose_banter_line, recent_banter_context
 from .config import (
     BOOTSTRAP_TEXT_EVENT_THRESHOLD,
     GENERATION_SAMPLE_LIMIT,
@@ -457,6 +458,7 @@ class EntertainmentService(PhaseBEntertainmentService):
         personality_theme: str | None = None
         personality_style: str | None = None
         personality_personal = False
+        banter_topic: str | None = None
 
         media_actions = tuple(
             await self.storage.recent_actions(
@@ -520,6 +522,35 @@ class EntertainmentService(PhaseBEntertainmentService):
                         generation_result = None
                         emoji_signature = None
                         break
+
+        # Text Recovery v2: v3 sometimes fails outside literary discussions.
+        # Only an ALREADY-approved action, fresh human context in this topic,
+        # original non-personal lines and the existing 24h anti-repeat policy.
+        if generated is None:
+            fresh_banter = recent_banter_context(snapshot.recent_events, now=now)
+            if fresh_banter and is_safe_entertainment_text(fresh_banter):
+                history_24h = await self.storage.recent_actions(
+                    chat_id, topic_id, since=now - 24 * 60 * 60, limit=100,
+                )
+                recent_lines = [
+                    str(action.metadata.get("output") or "")
+                    for action in history_24h
+                    if isinstance(action.metadata, dict)
+                ]
+                recovered = choose_banter_line(
+                    trigger_text=fresh_banter,
+                    recent_outputs=recent_lines,
+                    rng=self.rng,
+                )
+                if recovered and is_safe_entertainment_text(recovered[0]):
+                    generated, emoji_signature = apply_emoji_style(
+                        recovered[0],
+                        snapshot.generation,
+                        recent_signatures=recent_signatures,
+                        rng=self.rng,
+                    )
+                    banter_topic = recovered[1]
+                    generation_result = None
 
         # Previously media always won over an already-generated reply. Keep
         # funny stickers/photos, but reserve most slots for good text when it
@@ -687,10 +718,12 @@ class EntertainmentService(PhaseBEntertainmentService):
                 "culture_historical_events": snapshot.generation.historical_event_count,
                 "culture_runs": snapshot.generation.conversation_run_count,
                 "generation_engine": (
+                    "banter_v1" if banter_topic else
                     "personality_v1" if personality_style else
                     generation_result.engine if generation_result is not None else "unknown"
                 ),
                 "personality_theme": personality_theme,
+                "banter_topic": banter_topic,
                 "personality_style": personality_style,
                 "personality_personal": personality_personal,
                 "generation_mode": generation_mode.value,
