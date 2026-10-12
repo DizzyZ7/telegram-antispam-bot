@@ -1,6 +1,7 @@
 """Permanent Lexicon source reservations and science pack integration."""
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -94,6 +95,16 @@ class GlobalSourceLedgerTests(unittest.IsolatedAsyncioTestCase):
         service_again = self.make_service(self.storage)
         with self.assertRaises(LexiconSourceExhausted):
             await service_again._claim_next_source((-1001, 10))
+
+    async def test_concurrent_claims_in_different_topics_never_collide(self):
+        claims = await asyncio.gather(
+            self.service._claim_next_source((-1001, 10)),
+            self.service._claim_next_source((-1002, 20)),
+            self.service._claim_next_source((-1003, 30)),
+        )
+        self.assertEqual(len({word for word, _ in claims}), 3)
+        with self.assertRaises(LexiconSourceExhausted):
+            await self.service._claim_next_source((-1004, 40))
 
     async def test_old_cycle_and_archive_words_are_imported_before_selection(self):
         async with self.storage.lock:
