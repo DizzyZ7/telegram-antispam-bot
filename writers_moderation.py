@@ -705,7 +705,7 @@ def register_writers_chat_handlers(
             f"🛡 История подтвержденных нарушений очищена. Записей: <b>{removed}</b>."
         )
 
-    module.dp.message.handlers.insert(0, module.dp.message.handlers.pop())
+    promote_writers_moderation_handler(module.dp)
     return scope
 
 
