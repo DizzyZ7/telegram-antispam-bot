@@ -1,5 +1,10 @@
 # Lexicon Source Bank v3 — scientific words and permanent no-replay ledger
 
+> **Обновление:** правило постоянного запрета повторов из этой версии
+> заменено в Lexicon Source Rotation v4. Теперь источники не повторяются
+> **внутри одного круга**, а после его завершения следующий круг запускается
+> автоматически. Подробности: [Lexicon Source Rotation v4](lexicon-source-rotation-v4.md).
+
 ## Purpose
 
 Expand Russian starter words into chemistry, physics, medicine, geology,

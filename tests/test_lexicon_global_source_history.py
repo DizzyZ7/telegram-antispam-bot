@@ -1,4 +1,4 @@
-"""Permanent Lexicon source reservations and science pack integration."""
+"""Reusable Lexicon cycles, persisted migration and science word bank."""
 from __future__ import annotations
 
 import asyncio
@@ -69,32 +69,57 @@ class GlobalSourceLedgerTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.close()
         self.temp.cleanup()
 
-    async def test_never_repeat_between_topics_chats_or_after_restart(self):
-        word1, _ = await self.service._claim_next_source((-1001, 10))
-        word2, _ = await self.service._claim_next_source((-1001, 20))
-        self.assertNotEqual(word1, word2)
+    async def test_full_cycle_restarts_without_immediate_boundary_repeat(self):
+        first_cycle = [
+            (await self.service._claim_next_source((-1001, number)))[0]
+            for number in (1, 2, 3)
+        ]
+        self.assertEqual(len(set(first_cycle)), 3)
+        self.assertEqual(await self.service.source_cycle_status(), (1, 0))
 
-        # New process / restart, same SQLite data. No in-memory history.
-        new_service = self.make_service(self.storage)
-        word3, _ = await new_service._claim_next_source((-1002, None))
-        self.assertEqual({word1, word2, word3}, {
-            "радиостанция", "хроматография", "полимеризация",
-        })
-        with self.assertRaises(LexiconSourceExhausted):
-            await new_service._claim_next_source((-1002, None))
+        first_second_cycle, _ = await self.service._claim_next_source((-2000, 1))
+        self.assertIn(first_second_cycle, first_cycle)
+        self.assertNotEqual(first_second_cycle, first_cycle[-1])
+        self.assertEqual(await self.service.source_cycle_status(), (2, 2))
+        self.assertEqual(await self.service.count_unplayed_sources(), 2)
+
+        second_cycle = [first_second_cycle] + [
+            (await self.service._claim_next_source((-1001, number)))[0]
+            for number in (4, 5)
+        ]
+        self.assertEqual(len(set(second_cycle)), 3)
+        self.assertEqual(set(second_cycle), set(first_cycle))
+        self.assertEqual(await self.service.source_cycle_status(), (2, 0))
+
+        next_word, _ = await self.service._claim_next_source((-2000, 2))
+        self.assertNotEqual(next_word, second_cycle[-1])
+        self.assertEqual(await self.service.source_cycle_status(), (3, 2))
 
         async with self.storage.connection.execute(
-            "SELECT source_word FROM wordgame_source_claims"
+            "SELECT cycle_no, source_word FROM wordgame_source_cycle_history"
         ) as cursor:
-            rows = await cursor.fetchall()
-        self.assertEqual(len(rows), 3)
+            archive = await cursor.fetchall()
+        self.assertEqual(len(archive), 6)
+        self.assertEqual({int(row[0]) for row in archive}, {1, 2})
 
+    async def test_cycle_state_persists_across_full_sqlite_restart(self):
+        first = (await self.service._claim_next_source((-1001, 1)))[0]
+        second = (await self.service._claim_next_source((-1001, 2)))[0]
         await self.storage.close()
         self.storage = MiniGameStorage(self.path)
         await self.storage.initialize()
-        service_again = self.make_service(self.storage)
-        with self.assertRaises(LexiconSourceExhausted):
-            await service_again._claim_next_source((-1001, 10))
+        restarted_service = self.make_service(self.storage)
+        self.assertEqual(await restarted_service.source_cycle_status(), (1, 1))
+        third = (await restarted_service._claim_next_source((-2000, 4)))[0]
+        self.assertEqual(len({first, second, third}), 3)
+        fourth = (await restarted_service._claim_next_source((-2000, 5)))[0]
+        self.assertNotEqual(third, fourth)
+        self.assertEqual(await restarted_service.source_cycle_status(), (2, 2))
+        await self.storage.close()
+        self.storage = MiniGameStorage(self.path)
+        await self.storage.initialize()
+        second_restart = self.make_service(self.storage)
+        self.assertEqual(await second_restart.source_cycle_status(), (2, 2))
 
     async def test_concurrent_claims_in_different_topics_never_collide(self):
         claims = await asyncio.gather(
@@ -103,10 +128,12 @@ class GlobalSourceLedgerTests(unittest.IsolatedAsyncioTestCase):
             self.service._claim_next_source((-1003, 30)),
         )
         self.assertEqual(len({word for word, _ in claims}), 3)
-        with self.assertRaises(LexiconSourceExhausted):
-            await self.service._claim_next_source((-1004, 40))
+        next_word, _ = await self.service._claim_next_source((-1004, 40))
+        self.assertIn(next_word, {word for word, _ in claims})
+        self.assertNotEqual(next_word, claims[-1][0])
+        self.assertEqual(await self.service.source_cycle_status(), (2, 2))
 
-    async def test_in_memory_active_game_is_also_excluded(self):
+    async def test_active_game_excluded_even_at_cycle_boundary(self):
         active = WordGameRound(
             chat_id=-1001,
             round_code="ACTV",
@@ -121,10 +148,27 @@ class GlobalSourceLedgerTests(unittest.IsolatedAsyncioTestCase):
         first, _ = await self.service._claim_next_source((-1002, 20))
         second, _ = await self.service._claim_next_source((-1002, 30))
         self.assertEqual({first, second}, {"хроматография", "полимеризация"})
-        with self.assertRaises(LexiconSourceExhausted):
-            await self.service._claim_next_source((-1002, 40))
+        repeated, _ = await self.service._claim_next_source((-1002, 40))
+        self.assertNotEqual(repeated, active.base_word)
+        self.assertNotEqual(repeated, second)
+        self.assertEqual(await self.service.source_cycle_status(), (2, 1))
 
-    async def test_old_cycle_and_archive_words_are_imported_before_selection(self):
+    async def test_only_active_word_waits_for_finished_game(self):
+        self.service.round_candidates = [("радиостанция", {"радио"})]
+        self.service.active_word_games[(-1001, 10)] = WordGameRound(
+            chat_id=-1001, round_code="A1", base_word="радиостанция",
+            allowed_words={"радио"}, min_length=4,
+            started_at=1.0, ends_at=9999.0, message_thread_id=10,
+        )
+        with self.assertRaises(LexiconSourceExhausted):
+            await self.service._claim_next_source((-1002, 10))
+        self.service.active_word_games.clear()
+        first, _ = await self.service._claim_next_source((-1002, 10))
+        again, _ = await self.service._claim_next_source((-1002, 10))
+        self.assertEqual(first, again)  # Single-source cycle necessarily repeats.
+        self.assertEqual(await self.service.source_cycle_status(), (2, 0))
+
+    async def test_legacy_cycle_and_archive_import_only_once(self):
         async with self.storage.lock:
             await self.service._ensure_source_cycle_table_locked()
             await self.storage.connection.execute(
@@ -143,18 +187,47 @@ class GlobalSourceLedgerTests(unittest.IsolatedAsyncioTestCase):
             )
             await self.storage.connection.commit()
 
-        word, _ = await self.service._claim_next_source((-1001, 77))
-        self.assertEqual(word, "полимеризация")
-        with self.assertRaises(LexiconSourceExhausted):
-            await self.service._claim_next_source((-1001, 77))
+        final_word, _ = await self.service._claim_next_source((-1001, 77))
+        self.assertEqual(final_word, "полимеризация")
+        repeat, _ = await self.service._claim_next_source((-1001, 78))
+        self.assertNotEqual(final_word, repeat)
+        self.assertEqual(await self.service.source_cycle_status(), (2, 2))
 
-    async def test_existing_anagram_of_old_source_is_also_blocked(self):
+        # Reopening must NOT import legacy rows into the restarted cycle.
+        await self.storage.close()
+        self.storage = MiniGameStorage(self.path)
+        await self.storage.initialize()
+        again = self.make_service(self.storage)
+        self.assertEqual(await again.source_cycle_status(), (2, 2))
+        second, _ = await again._claim_next_source((-1001, 79))
+        third, _ = await again._claim_next_source((-1001, 80))
+        self.assertEqual(len({repeat, second, third}), 3)
+
+    async def test_v3_claims_migrate_without_erasing_existing_progress(self):
+        await self.storage.connection.execute(
+            "CREATE TABLE wordgame_source_claims("
+            "source_word TEXT PRIMARY KEY, letter_bag TEXT NOT NULL UNIQUE,"
+            "chat_id INTEGER NOT NULL, thread_id INTEGER NOT NULL,"
+            "used_at INTEGER NOT NULL)"
+        )
+        await self.storage.connection.execute(
+            "INSERT INTO wordgame_source_claims VALUES(?,?,?,?,?)",
+            ("радиостанция", _source_letter_bag("радиостанция"), -1, 0, 100),
+        )
+        await self.storage.connection.commit()
+        self.assertEqual(await self.service.source_cycle_status(), (1, 2))
+        used_word, _ = await self.service._claim_next_source((-1, 2))
+        self.assertNotEqual(used_word, "радиостанция")
+
+    async def test_historic_anagram_does_not_double_count_cycle(self):
         self.service.round_candidates = [
             ("абвгдежзик", {"абвг"}),
-            ("зжедгвбаик", {"абвг"}),  # exactly same letters
+            ("зжедгвбаик", {"абвг"}),  # same bag, not a distinct puzzle
             ("хроматография", {"граф"}),
         ]
-        assert _source_letter_bag("абвгдежзик") == _source_letter_bag("зжедгвбаик")
+        self.assertEqual(
+            _source_letter_bag("абвгдежзик"), _source_letter_bag("зжедгвбаик"),
+        )
         async with self.storage.lock:
             await self.service._ensure_source_cycle_table_locked()
             await self.storage.connection.execute(
@@ -166,10 +239,11 @@ class GlobalSourceLedgerTests(unittest.IsolatedAsyncioTestCase):
             await self.storage.connection.commit()
         word, _ = await self.service._claim_next_source((-1001, 11))
         self.assertEqual(word, "хроматография")
-        with self.assertRaises(LexiconSourceExhausted):
-            await self.service._claim_next_source((-1001, 11))
+        fresh, _ = await self.service._claim_next_source((-1001, 12))
+        self.assertIn(fresh, {"абвгдежзик", "зжедгвбаик"})
+        self.assertEqual(await self.service.source_cycle_status(), (2, 1))
 
-    async def test_empty_bank_or_unavailable_storage_cannot_force_repeats(self):
+    async def test_empty_bank_or_unavailable_storage_does_not_bypass_safety(self):
         self.service.round_candidates = []
         with self.assertRaises(LexiconSourceExhausted):
             await self.service._claim_next_source((-1001, 10))
@@ -181,6 +255,7 @@ class GlobalSourceLedgerTests(unittest.IsolatedAsyncioTestCase):
                 await self.service._claim_next_source((-1001, 10))
         finally:
             self.service.storage.connection = original
+
 
 
 if __name__ == "__main__":
