@@ -223,7 +223,12 @@ class BalancedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.service._send_media_candidate.assert_not_awaited()
 
     async def test_no_context_leaves_media_alive_when_text_unavailable(self):
-        self.snapshot.recent_events = [event(text="Привет")]
+        self.service._culture_memory_snapshot.return_value = CultureMemorySnapshot(
+            recent_events=[event(text="Привет"), picture()],
+            historical_windows=[],
+            counts=MemoryCounts(total=20, text=15, photo=1),
+            generation=self.snapshot.generation,
+        )
         record = await self.run_slot(None, random_value=0.99)
         self.assertEqual(record.metadata["output_kind"], "media")
         self.service._send_media_candidate.assert_awaited_once()
