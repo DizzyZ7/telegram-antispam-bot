@@ -145,13 +145,12 @@ _EXTRA_SCENE_PATTERNS: dict[str, re.Pattern[str]] = {
 
 
 def detect_discussion_scene(text: str) -> str:
-    existing = infer_scene(text)
-    if existing != "general":
-        return existing
+    # More specific art/study/travel cues take precedence over broad terms
+    # such as "история" (which alone can look like a writing discussion).
     for scene, expression in _EXTRA_SCENE_PATTERNS.items():
         if expression.search(text):
             return scene
-    return "general"
+    return infer_scene(text)
 
 
 
