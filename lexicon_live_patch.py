@@ -30,6 +30,8 @@ from minigames import (
     WordGameRound,
 )
 from wordgame_dictionary import BASE_WORDS
+from lexicon_source_quality import select_quality_sources
+from writers_moderation import contains_prohibited_language
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,12 +49,12 @@ MORPH = pymorphy3.MorphAnalyzer() if pymorphy3 is not None else None
 MIN_MORPH_SCORE = 0.45
 ACCEPTED_POS = frozenset({"NOUN"})
 WORD_FREQ_DICTIONARY_LIMIT = 45_000
-WORD_FREQ_SOURCE_LIMIT = 7_500
-SOURCE_CANDIDATE_LIMIT = 1_500
+WORD_FREQ_SOURCE_LIMIT = 13_000
+SOURCE_CANDIDATE_LIMIT = 2_400
 MIN_SOURCE_LENGTH = 10
 MAX_SOURCE_LENGTH = 18
 MIN_DYNAMIC_SOLUTIONS_PER_ROUND = 38
-MAX_PLAYABLE_ROUNDS = 900
+MAX_PLAYABLE_ROUNDS = 1_600
 
 LIVE_EXTRA_WORDS = frozenset(
     {
@@ -65,6 +67,15 @@ LIVE_EXTRA_WORDS = frozenset(
         "актер", "терка", "сектор", "секатор",
     }
 )
+
+
+def _letters_mask(word: str) -> int:
+    """Bit-set prefilter: reject impossible answer alphabets in constant time."""
+    mask = 0
+    for letter in word:
+        if "а" <= letter <= "я":
+            mask |= 1 << (ord(letter) - ord("а"))
+    return mask
 
 
 def _letters_signature(word: str) -> tuple[int, ...]:
@@ -135,6 +146,8 @@ class PatchedMiniGameService(MiniGameService):
         for word in words:
             if len(word) < MIN_WORD_LENGTH or not WORD_RE.match(word):
                 continue
+            if contains_prohibited_language(word):
+                continue
             if MORPH is not None and not cls.is_valid_dictionary_lemma(word):
                 continue
             filtered.add(word)
@@ -151,11 +164,12 @@ class PatchedMiniGameService(MiniGameService):
                 continue
             if not (MIN_SOURCE_LENGTH <= len(word) <= MAX_SOURCE_LENGTH):
                 continue
-            if not WORD_RE.match(word):
+            if not WORD_RE.match(word) or contains_prohibited_language(word):
                 continue
-            if MORPH is not None and word not in {cls.normalize_word(item) for item in BASE_WORDS}:
-                if not cls.is_valid_dictionary_lemma(word):
-                    continue
+            # All auto-generated base words must be real noun lemmas, not
+            # adjectives or inflected variants, including legacy BASE_WORDS.
+            if MORPH is not None and not cls.is_valid_dictionary_lemma(word):
+                continue
             seen.add(word)
             source_words.append(word)
             if len(source_words) >= SOURCE_CANDIDATE_LIMIT:
@@ -163,20 +177,28 @@ class PatchedMiniGameService(MiniGameService):
         return source_words
 
     def build_round_candidates(self) -> list[tuple[str, set[str]]]:
-        answer_words = sorted(self.dictionary_words, key=lambda item: (len(item), item))
-        answer_signatures = {word: _letters_signature(word) for word in answer_words}
+        # Index once by length, then reject impossible letter alphabets with
+        # a cheap bit-mask before checking repeated-letter counts. This keeps
+        # startup bounded even after expanding the candidate source bank.
+        answer_index: dict[int, list[tuple[str, int, tuple[int, ...]]]] = {}
+        for word in sorted(self.dictionary_words):
+            answer_index.setdefault(len(word), []).append(
+                (word, _letters_mask(word), _letters_signature(word))
+            )
         candidates: list[tuple[str, set[str]]] = []
         best_fallback: tuple[str, set[str]] | None = None
-
         for base_word in self.load_source_words():
+            if contains_prohibited_language(base_word):
+                continue
             base_signature = _letters_signature(base_word)
-            allowed = {
-                word
-                for word in answer_words
-                if word != base_word
-                and len(word) <= len(base_word)
-                and _signature_fits(answer_signatures[word], base_signature)
-            }
+            base_mask = _letters_mask(base_word)
+            allowed: set[str] = set()
+            for word_length in range(MIN_WORD_LENGTH, len(base_word) + 1):
+                for word, word_mask, signature in answer_index.get(word_length, ()):
+                    if word == base_word or word_mask & ~base_mask:
+                        continue
+                    if _signature_fits(signature, base_signature):
+                        allowed.add(word)
             if best_fallback is None or len(allowed) > len(best_fallback[1]):
                 best_fallback = (base_word, allowed)
             if len(allowed) >= MIN_DYNAMIC_SOLUTIONS_PER_ROUND:
@@ -185,9 +207,9 @@ class PatchedMiniGameService(MiniGameService):
         if not candidates:
             return [best_fallback] if best_fallback is not None else []
 
-        # Keep a broad but not huge playable set for quick random choice.
-        candidates.sort(key=lambda item: (len(item[1]), len(item[0])), reverse=True)
-        return candidates[:MAX_PLAYABLE_ROUNDS]
+        # Avoid the old top-N-by-count bias: combine rich rounds, moderately
+        # challenging pages and broad pages with many medium/long answers.
+        return select_quality_sources(candidates, limit=MAX_PLAYABLE_ROUNDS)
 
     def choose_base_word(self) -> tuple[str, set[str]]:
         if not self.round_candidates:

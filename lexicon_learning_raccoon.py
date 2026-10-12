@@ -23,6 +23,7 @@ from lexicon_raccoon_collection import (
 )
 from lexicon_raccoon_sticker import load_raccoon_sticker_file_id, save_raccoon_sticker_file_id
 from minigames import PlayerResult, WordGameRound
+from lexicon_source_quality import source_tier
 
 LOGGER = logging.getLogger(__name__)
 ScorePeriod = Literal["all", "day", "week"]
@@ -361,8 +362,37 @@ class LearningLexiconService(BaseLearningLexiconService):
         lines.extend(("", "Каждый енот найден среди букв и бережно отправлен в коллекцию."))
         await message.reply("\n".join(lines))
 
+    def render_source_pool(self) -> str:
+        """Public bank health without spoiling any unrevealed start word."""
+        tiers = {"classic": 0, "rich": 0, "legendary": 0}
+        total_solutions = 0
+        for _word, allowed in self.round_candidates:
+            tiers[source_tier(len(allowed))] += 1
+            total_solutions += len(allowed)
+        total = sum(tiers.values())
+        avg = round(total_solutions / total) if total else 0
+        return (
+            "📚 <b>ЛЕКСИКОН · библиотека страниц</b>\n\n"
+            f"Готовых стартовых слов: <b>{total}</b>\n"
+            f"📖 Классических (38–74 слов): <b>{tiers['classic']}</b>\n"
+            f"✨ Богатых (75–149 слов): <b>{tiers['rich']}</b>\n"
+            f"💎 Легендарных (150+ слов): <b>{tiers['legendary']}</b>\n"
+            f"В среднем допустимых слов на страницу: <b>{avg}</b>\n\n"
+            "Стартовые слова не повторяются в теме, пока не закончится текущий цикл. "
+            "Слова новых страниц заранее не раскрываются."
+        )
+
+    async def show_source_pool(self, message: Message) -> None:
+        if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
+            return
+        await message.reply(self.render_source_pool())
+
     def render_help(self) -> str:
-        return f"{super().render_help()}\n🦝 /raccoon_top — коллекционеры енотов"
+        return (
+            f"{super().render_help()}\n"
+            "📚 /lexicon_pool — сколько разных страниц в игре\n"
+            "🦝 /raccoon_top — коллекционеры енотов"
+        )
 
 
 def _promote_last_message_handler(dispatcher: Any) -> None:
@@ -377,6 +407,12 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
     @dispatcher.message(Command(commands=["raccoon_top", "enot_top"]))
     async def raccoon_top(message: Message) -> None:
         await service.show_raccoon_leaderboard(message)
+
+    _promote_last_message_handler(dispatcher)
+
+    @dispatcher.message(Command(commands=["lexicon_pool", "lex_sources"]))
+    async def lexicon_pool(message: Message) -> None:
+        await service.show_source_pool(message)
 
     _promote_last_message_handler(dispatcher)
 
