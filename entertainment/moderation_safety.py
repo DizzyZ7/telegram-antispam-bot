@@ -141,4 +141,38 @@ def is_safe_entertainment_text(text: str | None) -> bool:
     return detect_unsafe_entertainment_language(text) is None
 
 
-__all__ = ["detect_unsafe_entertainment_language", "is_safe_entertainment_text"]
+# Entertainment output is held to a stricter standard than human messages:
+# store harmless second-person chat for context, but do not echo potentially
+# insulting direct addresses or target users when the bot replies.
+_DIRECT_ADDRESS_RE = re.compile(
+    r"(?<![\w@])(?:ты|тебя|тебе|тобой|тво(?:й|я|е|и|его|ему|им|ей|их)|"
+    r"вы|вас|вам|вами|ваш(?:и|а|е|его|ему|им|ей|их)?)(?!\w)",
+    re.IGNORECASE,
+)
+_MENTION_RE = re.compile(r"@[a-zA-Z0-9_]{3,}", re.IGNORECASE)
+_INSULT_RE = re.compile(
+    r"\b(?:идиот\w*|дебил\w*|дурак\w*|дурочк\w*|туп\w*|"
+    r"лох\w*|убог\w*|урод\w*|ничтож\w*|бездар\w*|"
+    r"отстал\w*|неудачник\w*|клоун\w*|заткни\w*|"
+    r"сдох\w*|пош[её]л\w*\s+вон)\b",
+    re.IGNORECASE,
+)
+
+
+def is_safe_entertainment_reply(text: str | None) -> bool:
+    """Conservative outgoing-only social safety gate for entertainment.
+
+    None / empty are NOT approved output. No personal addresses, @mentions,
+    demeaning epithets or any lexicon-detected prohibited language. Human
+    messages can still contain benign second-person phrases in memory.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return False
+    if len(text) > 600 or _MENTION_RE.search(text):
+        return False
+    if _DIRECT_ADDRESS_RE.search(text) or _INSULT_RE.search(text):
+        return False
+    return is_safe_entertainment_text(text)
+
+
+__all__ = ["detect_unsafe_entertainment_language", "is_safe_entertainment_text", "is_safe_entertainment_reply"]
