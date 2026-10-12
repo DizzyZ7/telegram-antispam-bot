@@ -19,6 +19,7 @@ from lexicon_approved_storage import (
     load_approved_words,
     save_approved_snapshot,
 )
+from lexicon_dictionary_patch import LexiconSourceExhausted, LexiconSourceStorageError
 from lexicon_balanced_storage import save_balanced_round
 from lexicon_game_scope import LEXICON_ONLY_CHAT_IDS
 from lexicon_learning import (
@@ -92,7 +93,20 @@ class LearningLexiconService(BaseLearningLexiconService):
                 await message.reply(self.render_status(active))
                 return
 
-            base_word, allowed = await self._claim_next_source(game_key)
+            try:
+                base_word, allowed = await self._claim_next_source(game_key)
+            except LexiconSourceExhausted:
+                await message.reply(
+                    "📚 Все доступные стартовые слова уже использованы. "
+                    "Повторяться не будем — нужен новый словарный набор."
+                )
+                return
+            except LexiconSourceStorageError:
+                await message.reply(
+                    "📚 Не удалось проверить историю стартовых слов. "
+                    "Чтобы не повторить старую страницу, новый раунд пока не открыт."
+                )
+                return
             now = time.monotonic()
             round_seconds = self.round_duration_seconds(len(allowed))
             round_data = WordGameRound(

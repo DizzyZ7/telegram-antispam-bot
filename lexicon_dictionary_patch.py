@@ -1,21 +1,21 @@
 """Dictionary-strength patch for the Lexicon mini-game.
 
 This layer keeps the core rule strict: only nouns in their base form are accepted.
-It extends the source-word pool with curated long words and rotates all playable
-sources without repeats until the current per-topic cycle is complete.
+It extends the source-word pool with curated long words and permanently reserves
+every played starting word globally across this SQLite database.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from typing import Any
 
 from aiogram.types import ChatMemberAdministrator, Message
 
 from lexicon_live_patch import MORPH, WORD_RE, PatchedMiniGameService
-from lexicon_source_cycle import choose_cycle_word
 from lexicon_source_words import LONG_SOURCE_WORDS
 from minigames import GameKey, MIN_WORD_LENGTH, WordGameRound
 from writers_moderation import contains_prohibited_language
@@ -24,7 +24,21 @@ LOGGER = logging.getLogger(__name__)
 MIN_SOURCE_LENGTH = 10
 MAX_SOURCE_LENGTH = 24
 SOURCE_CYCLE_THREAD_NONE = 0
-SOURCE_CYCLES_TO_KEEP = 3
+
+
+class LexiconSourceExhausted(RuntimeError):
+    """Every presently playable source has already been used."""
+
+
+class LexiconSourceStorageError(RuntimeError):
+    """Durable source reservation failed; must never fall back to repeats."""
+
+
+def _source_letter_bag(word: str) -> str:
+    """Canonical multiset; protects against anagrams of previous sources too."""
+    return "".join(sorted(word.casefold().replace("ё", "е")))
+
+
 
 
 class DictionaryBackedLexiconService(PatchedMiniGameService):
@@ -121,117 +135,175 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
             "ON wordgame_source_cycle(chat_id, thread_id, cycle_no, id)"
         )
 
-    async def _claim_next_source(self, game_key: GameKey) -> tuple[str, set[str]]:
-        """Atomically claim the next source for a chat topic.
+    async def _ensure_source_claims_locked(self) -> None:
+        """Create global reservation ledger and import recoverable older rounds.
 
-        Every playable source is used once per cycle. State lives in SQLite, so a
-        BotHost restart does not reset the cycle or cause early repetitions.
+        Existing source_cycle rows retain even empty rounds from the last
+        preserved cycles. The round archive adds older finished rounds with
+        players. Historic empty rounds already pruned in older versions
+        cannot be reconstructed; going forward every selection is permanent.
         """
-        if not self.round_candidates:
-            return self.choose_base_word()
-
-        candidate_map = {
-            base_word: set(allowed_words)
-            for base_word, allowed_words in self.round_candidates
-        }
-        candidate_words = list(candidate_map)
-        chat_id, message_thread_id = game_key
-        thread_id = message_thread_id if message_thread_id is not None else SOURCE_CYCLE_THREAD_NONE
         connection = self.storage.connection
         if connection is None:
-            LOGGER.warning("Lexicon source cycle fallback: storage is not initialized")
-            return self.choose_base_word()
+            raise LexiconSourceStorageError("Lexicon database not initialized")
+        await self._ensure_source_cycle_table_locked()
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wordgame_source_claims (
+                source_word TEXT PRIMARY KEY,
+                letter_bag TEXT NOT NULL UNIQUE,
+                chat_id INTEGER NOT NULL,
+                thread_id INTEGER NOT NULL,
+                used_at INTEGER NOT NULL
+            )
+            """
+        )
+        if getattr(self, "_source_claims_imported", False):
+            return
 
+        # Backfill before first new reservation, once per process. All queries
+        # and writes run under MiniGameStorage.lock to serialize concurrent
+        # forum topics and independent games sharing this SQLite file.
+        async with connection.execute(
+            "SELECT source_word, chat_id, thread_id, used_at "
+            "FROM wordgame_source_cycle ORDER BY id ASC"
+        ) as cursor:
+            cycle_rows = await cursor.fetchall()
+        async with connection.execute(
+            "SELECT base_word, chat_id, created_at "
+            "FROM wordgame_round_archive ORDER BY id ASC"
+        ) as cursor:
+            archive_rows = await cursor.fetchall()
+
+        for source, chat_id, thread_id, timestamp in cycle_rows:
+            word = str(source or "").casefold().replace("ё", "е")
+            if word:
+                await connection.execute(
+                    "INSERT OR IGNORE INTO wordgame_source_claims"
+                    "(source_word, letter_bag, chat_id, thread_id, used_at) "
+                    "VALUES(?, ?, ?, ?, ?)",
+                    (word, _source_letter_bag(word), int(chat_id), int(thread_id), int(timestamp)),
+                )
+        for source, chat_id, timestamp in archive_rows:
+            word = str(source or "").casefold().replace("ё", "е")
+            if word:
+                await connection.execute(
+                    "INSERT OR IGNORE INTO wordgame_source_claims"
+                    "(source_word, letter_bag, chat_id, thread_id, used_at) "
+                    "VALUES(?, ?, ?, ?, ?)",
+                    (word, _source_letter_bag(word), int(chat_id), 0, int(timestamp)),
+                )
+        await connection.commit()
+        self._source_claims_imported = True
+        LOGGER.info(
+            "LEXICON_SOURCE_HISTORY_IMPORTED cycle_rows=%s archive_rows=%s",
+            len(cycle_rows), len(archive_rows),
+        )
+
+    async def count_unplayed_sources(self) -> int | None:
+        """Remaining globally unique pages for /lexicon_pool, without spoilers."""
+        connection = self.storage.connection
+        if connection is None:
+            return None
         try:
             async with self.storage.lock:
-                await self._ensure_source_cycle_table_locked()
-
+                await self._ensure_source_claims_locked()
                 async with connection.execute(
-                    """
-                    SELECT MAX(cycle_no)
-                    FROM wordgame_source_cycle
-                    WHERE chat_id = ? AND thread_id = ?
-                    """,
-                    (chat_id, thread_id),
+                    "SELECT letter_bag FROM wordgame_source_claims"
                 ) as cursor:
-                    cycle_row = await cursor.fetchone()
-                cycle_no = int(cycle_row[0]) if cycle_row and cycle_row[0] is not None else 1
-
-                async with connection.execute(
-                    """
-                    SELECT source_word
-                    FROM wordgame_source_cycle
-                    WHERE chat_id = ? AND thread_id = ? AND cycle_no = ?
-                    """,
-                    (chat_id, thread_id, cycle_no),
-                ) as cursor:
-                    used_rows = await cursor.fetchall()
-                used_words = {str(row[0]) for row in used_rows if str(row[0]) in candidate_map}
-
-                async with connection.execute(
-                    """
-                    SELECT source_word
-                    FROM wordgame_source_cycle
-                    WHERE chat_id = ? AND thread_id = ?
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (chat_id, thread_id),
-                ) as cursor:
-                    last_row = await cursor.fetchone()
-                last_word = str(last_row[0]) if last_row else None
-
-                source_word, restarted = choose_cycle_word(
-                    candidate_words,
-                    used_words,
-                    last_word,
+                    used_bags = {str(row[0]) for row in await cursor.fetchall()}
+                used_bags.update(
+                    _source_letter_bag(round_data.base_word)
+                    for round_data in self.active_word_games.values()
                 )
-                if restarted:
-                    cycle_no += 1
-                    used_words = set()
+                return sum(
+                    _source_letter_bag(word) not in used_bags
+                    for word, _answers in self.round_candidates
+                )
+        except Exception:
+            LOGGER.exception("Could not count unplayed Lexicon sources")
+            return None
 
-                await connection.execute(
-                    """
-                    INSERT INTO wordgame_source_cycle(
-                        chat_id, thread_id, cycle_no, source_word, used_at
+    async def _claim_next_source(self, game_key: GameKey) -> tuple[str, set[str]]:
+        """Reserve a never-before-used source globally, atomically and durably.
+
+        No new playable source => no new round. No reliable SQLite write =>
+        no new round. Neither case can accidentally reselect an old word.
+        """
+        candidate_map = {
+            word: set(allowed) for word, allowed in self.round_candidates
+        }
+        if not candidate_map:
+            raise LexiconSourceExhausted("Lexicon has no playable sources")
+
+        connection = self.storage.connection
+        if connection is None:
+            raise LexiconSourceStorageError("Lexicon database unavailable")
+
+        chat_id, message_thread_id = game_key
+        thread_id = message_thread_id if message_thread_id is not None else SOURCE_CYCLE_THREAD_NONE
+        try:
+            async with self.storage.lock:
+                await self._ensure_source_claims_locked()
+                # Also serialize across independent bot processes sharing this
+                # SQLite file; UNIQUE constraints enforce the final invariant.
+                await connection.execute("BEGIN IMMEDIATE")
+                async with connection.execute(
+                    "SELECT source_word, letter_bag FROM wordgame_source_claims"
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                used_words = {str(row[0]) for row in rows}
+                used_bags = {str(row[1]) for row in rows}
+
+                # Defense in depth when games were already active before a
+                # service patch: do not select their source or its anagram.
+                active = tuple(self.active_word_games.values())
+                used_words.update(round_data.base_word for round_data in active)
+                used_bags.update(_source_letter_bag(round_data.base_word) for round_data in active)
+
+                available = [
+                    word for word in candidate_map
+                    if word not in used_words
+                    and _source_letter_bag(word) not in used_bags
+                ]
+                if not available:
+                    await connection.rollback()
+                    raise LexiconSourceExhausted(
+                        "Every playable source has been used"
                     )
-                    VALUES(?, ?, ?, ?, ?)
-                    """,
-                    (chat_id, thread_id, cycle_no, source_word, int(time.time())),
-                )
 
-                oldest_cycle_to_keep = max(1, cycle_no - SOURCE_CYCLES_TO_KEEP + 1)
+                source_word = random.choice(available)
+                # UNIQUE source_word and UNIQUE letter_bag are last-resort
+                # guarantees, including concurrent requests across topics.
                 await connection.execute(
-                    """
-                    DELETE FROM wordgame_source_cycle
-                    WHERE chat_id = ? AND thread_id = ? AND cycle_no < ?
-                    """,
-                    (chat_id, thread_id, oldest_cycle_to_keep),
+                    "INSERT INTO wordgame_source_claims"
+                    "(source_word, letter_bag, chat_id, thread_id, used_at) "
+                    "VALUES(?, ?, ?, ?, ?)",
+                    (source_word, _source_letter_bag(source_word),
+                     int(chat_id), int(thread_id), int(time.time())),
                 )
                 await connection.commit()
 
-            used_after_claim = len(used_words) + 1
-            remaining = max(0, len(candidate_words) - used_after_claim)
-            LOGGER.info(
-                "LEXICON_SOURCE_CYCLE chat_id=%s thread_id=%s cycle=%s source=%s "
-                "position=%s/%s remaining=%s restarted=%s",
-                chat_id,
-                message_thread_id,
-                cycle_no,
-                source_word,
-                used_after_claim,
-                len(candidate_words),
-                remaining,
-                restarted,
-            )
-            return source_word, candidate_map[source_word]
-        except Exception:
+                LOGGER.info(
+                    "LEXICON_SOURCE_CLAIMED chat_id=%s thread_id=%s "
+                    "source=%s remaining=%s seen=%s",
+                    chat_id, message_thread_id, source_word,
+                    len(available) - 1, len(used_words),
+                )
+                return source_word, candidate_map[source_word]
+        except LexiconSourceExhausted:
+            raise
+        except Exception as exc:
             LOGGER.exception(
-                "Lexicon source cycle failed; using safe random fallback chat_id=%s thread_id=%s",
-                chat_id,
-                message_thread_id,
+                "Lexicon source reservation failed; no random reuse "
+                "chat_id=%s thread_id=%s", chat_id, message_thread_id,
             )
-            return self.choose_base_word()
+            try:
+                async with self.storage.lock:
+                    await connection.rollback()
+            except Exception:
+                LOGGER.exception("Lexicon source reservation rollback failed")
+            raise LexiconSourceStorageError("Unable to reserve a unique source") from exc
 
     async def start_word_game(self, message: Message) -> None:
         """Start a round with a persistent non-repeating source cycle."""
@@ -247,7 +319,20 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
                 await message.reply(self.render_status(active))
                 return
 
-            base_word, allowed = await self._claim_next_source(game_key)
+            try:
+                base_word, allowed = await self._claim_next_source(game_key)
+            except LexiconSourceExhausted:
+                await message.reply(
+                    "📚 Все доступные стартовые слова уже использованы. "
+                    "Повторяться не будем — нужен новый словарный набор."
+                )
+                return
+            except LexiconSourceStorageError:
+                await message.reply(
+                    "📚 Не удалось проверить историю стартовых слов. "
+                    "Чтобы не повторить старую страницу, новый раунд пока не открыт."
+                )
+                return
             now = time.monotonic()
             round_seconds = self.round_duration_seconds(len(allowed))
             round_data = WordGameRound(

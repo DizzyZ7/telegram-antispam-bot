@@ -378,14 +378,20 @@ class LearningLexiconService(BaseLearningLexiconService):
             f"✨ Богатых (75–149 слов): <b>{tiers['rich']}</b>\n"
             f"💎 Легендарных (150+ слов): <b>{tiers['legendary']}</b>\n"
             f"В среднем допустимых слов на страницу: <b>{avg}</b>\n\n"
-            "Стартовые слова не повторяются в теме, пока не закончится текущий цикл. "
+            "Каждое стартовое слово резервируется навсегда для всех партий в базе. "
             "Слова новых страниц заранее не раскрываются."
         )
 
     async def show_source_pool(self, message: Message) -> None:
         if not self.app.is_group_chat(message) or not self.app.is_allowed_chat(message.chat.id):
             return
-        await message.reply(self.render_source_pool())
+        remaining = await self.count_unplayed_sources()
+        remaining_line = (
+            f"\nЕще ни разу не сыграно: <b>{remaining}</b>"
+            if remaining is not None
+            else "\nИсторию уже сыгранных страниц временно не удалось проверить."
+        )
+        await message.reply(self.render_source_pool() + remaining_line)
 
     def render_help(self) -> str:
         return (
