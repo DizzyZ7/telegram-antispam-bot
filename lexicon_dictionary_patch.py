@@ -222,6 +222,9 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
         try:
             async with self.storage.lock:
                 await self._ensure_source_claims_locked()
+                # Also serialize across independent bot processes sharing this
+                # SQLite file; UNIQUE constraints enforce the final invariant.
+                await connection.execute("BEGIN IMMEDIATE")
                 async with connection.execute(
                     "SELECT source_word, letter_bag FROM wordgame_source_claims"
                 ) as cursor:
@@ -241,6 +244,7 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
                     and _source_letter_bag(word) not in used_bags
                 ]
                 if not available:
+                    await connection.rollback()
                     raise LexiconSourceExhausted(
                         "Every playable source has been used"
                     )
@@ -272,7 +276,8 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
                 "chat_id=%s thread_id=%s", chat_id, message_thread_id,
             )
             try:
-                await connection.rollback()
+                async with self.storage.lock:
+                    await connection.rollback()
             except Exception:
                 LOGGER.exception("Lexicon source reservation rollback failed")
             raise LexiconSourceStorageError("Unable to reserve a unique source") from exc
