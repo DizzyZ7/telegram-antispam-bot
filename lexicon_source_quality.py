@@ -42,7 +42,7 @@ def source_tier(solution_count: int) -> str:
 
 
 def select_quality_sources(
-    candidates: Iterable[SourceCandidate], *, limit: int = 1600,
+    candidates: Iterable[SourceCandidate], *, limit: int = 2100,
 ) -> list[SourceCandidate]:
     """Tier-balanced shortlist without duplicate letter bags.
 
