@@ -222,6 +222,37 @@ class BalancedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.service._send_text_fallback.assert_awaited_once()
         self.service._send_media_candidate.assert_not_awaited()
 
+    async def test_general_chat_recovery_prefers_safe_text_to_sticker(self):
+        self.service._culture_memory_snapshot.return_value = CultureMemorySnapshot(
+            recent_events=[event(text="Ура, наконец все заработало"), picture()],
+            historical_windows=[],
+            counts=MemoryCounts(total=20, text=15, photo=1),
+            generation=self.snapshot.generation,
+        )
+        record = await self.run_slot(None, random_value=0.99)
+        self.assertIsNotNone(record)
+        self.assertEqual(record.metadata["output_kind"], "text")
+        self.assertEqual(record.metadata["generation_engine"], "banter_v1")
+        self.assertEqual(record.metadata["banter_topic"], "celebration")
+        self.service._send_text_fallback.assert_awaited_once()
+        self.service._send_media_candidate.assert_not_awaited()
+        self.storage.record_action.assert_awaited_once()
+
+    async def test_stale_general_chat_does_not_recover_text(self):
+        self.service._culture_memory_snapshot.return_value = CultureMemorySnapshot(
+            recent_events=[
+                event(text="Ура, наконец все заработало", created_at=NOW - 1300),
+                picture(),
+            ],
+            historical_windows=[],
+            counts=MemoryCounts(total=20, text=15, photo=1),
+            generation=self.snapshot.generation,
+        )
+        record = await self.run_slot(None, random_value=0.99)
+        self.assertEqual(record.metadata["output_kind"], "media")
+        self.service._send_media_candidate.assert_awaited_once()
+        self.service._send_text_fallback.assert_not_awaited()
+
     async def test_no_context_leaves_media_alive_when_text_unavailable(self):
         self.service._culture_memory_snapshot.return_value = CultureMemorySnapshot(
             recent_events=[event(text="Привет"), picture()],
