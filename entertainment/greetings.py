@@ -230,8 +230,16 @@ def detect_greeting(text: str | None) -> GreetingKind | None:
     if not isinstance(text, str):
         return None
     value = _normalized(text)
-    if not value or len(value.split()) > 5:
+    if not value or len(value.split()) > 6:
         return None
+    # "Фосген, спокойной ночи!" is just as intentional as the unaddressed
+    # greeting. Never match a longer sentence merely containing these words.
+    parts = value.split()
+    if parts and parts[0] in {"фосген", "fosgen"}:
+        parts = parts[1:]
+    if parts and parts[-1] in {"фосген", "fosgen"}:
+        parts = parts[:-1]
+    value = " ".join(parts)
     if value in _MORNING_FORMS:
         return "morning"
     if value in _NIGHT_FORMS:
