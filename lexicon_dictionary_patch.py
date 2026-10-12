@@ -18,6 +18,7 @@ from lexicon_live_patch import MORPH, WORD_RE, PatchedMiniGameService
 from lexicon_source_cycle import choose_cycle_word
 from lexicon_source_words import LONG_SOURCE_WORDS
 from minigames import GameKey, MIN_WORD_LENGTH, WordGameRound
+from writers_moderation import contains_prohibited_language
 
 LOGGER = logging.getLogger(__name__)
 MIN_SOURCE_LENGTH = 10
@@ -79,7 +80,11 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
                 continue
             if not (MIN_SOURCE_LENGTH <= len(word) <= MAX_SOURCE_LENGTH):
                 continue
-            if not WORD_RE.match(word):
+            if not WORD_RE.match(word) or contains_prohibited_language(word):
+                continue
+            # Curated packs are ideas, not proof of grammatical validity:
+            # only canonical noun lemmas may appear as starting words.
+            if MORPH is not None and not cls.is_valid_dictionary_lemma(word):
                 continue
             seen.add(word)
             source_words.append(word)
