@@ -48,6 +48,9 @@ until the whole live source set has been used, so its persistence is retained.
   endings or forms.
 - The game still presents one source word and the number of admitted answer
   words. The new curated words are only visible when selected for a round.
+- A new public `/lexicon_pool` (alias `/lex_sources`) shows the ACTUAL
+  playable source-bank total and classic/rich/legendary tier counts without
+  exposing future source words, player profiles, or word lists.
 
 ## Validation / rollout
 
