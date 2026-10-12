@@ -159,6 +159,13 @@ _INSULT_RE = re.compile(
 )
 
 
+def is_safe_entertainment_source(text: str | None) -> bool:
+    """Permit ordinary chat speech, but do not train on profane or insulting text."""
+    if not isinstance(text, str) or not text.strip():
+        return True
+    return is_safe_entertainment_text(text) and not bool(_INSULT_RE.search(text))
+
+
 def is_safe_entertainment_reply(text: str | None) -> bool:
     """Conservative outgoing-only social safety gate for entertainment.
 
@@ -175,4 +182,4 @@ def is_safe_entertainment_reply(text: str | None) -> bool:
     return is_safe_entertainment_text(text)
 
 
-__all__ = ["detect_unsafe_entertainment_language", "is_safe_entertainment_text", "is_safe_entertainment_reply"]
+__all__ = ["detect_unsafe_entertainment_language", "is_safe_entertainment_text", "is_safe_entertainment_reply", "is_safe_entertainment_source"]
