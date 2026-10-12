@@ -212,7 +212,7 @@ class DialogueRuntimeTests(unittest.IsolatedAsyncioTestCase):
         for text in ("хватит", "не хочу жить", "случайная фраза без связи"):
             message = FakeMessage(text, reply_to=bot_reply())
             with self.subTest(text=text):
-                with patch.object(SafetyEntertainmentService, "evaluate_topic", new=AsyncMock()) as fallback:
+                with patch.object(SafetyEntertainmentService, "evaluate_topic", new=AsyncMock(return_value=None)) as fallback:
                     self.assertIsNone(await self.service.evaluate_topic(message))
                     fallback.assert_not_awaited()
                 self.assertFalse(message.replies)
@@ -227,14 +227,14 @@ class DialogueRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ), TOPIC),
         ):
             message = FakeMessage("почему?", reply_to=reply, topic=topic)
-            with patch.object(SafetyEntertainmentService, "evaluate_topic", new=AsyncMock()) as fallback:
+            with patch.object(SafetyEntertainmentService, "evaluate_topic", new=AsyncMock(return_value=None)) as fallback:
                 result = await self.service.evaluate_topic(message)
                 self.assertIsNone(result)
                 fallback.assert_awaited_once()
             self.assertFalse(message.replies)
         self.clock[0] = NOW + SESSION_SECONDS + 1
         message = FakeMessage("а дальше?", reply_to=bot_reply())
-        with patch.object(SafetyEntertainmentService, "evaluate_topic", new=AsyncMock()) as fallback:
+        with patch.object(SafetyEntertainmentService, "evaluate_topic", new=AsyncMock(return_value=None)) as fallback:
             await self.service.evaluate_topic(message)
             fallback.assert_awaited_once()
         self.assertFalse(message.replies)
@@ -275,7 +275,7 @@ class DialogueRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 msg.forward_origin = object()
             if change == "command":
                 msg.text = "/why"
-            with patch.object(SafetyEntertainmentService, "evaluate_topic", new=AsyncMock()) as fallback:
+            with patch.object(SafetyEntertainmentService, "evaluate_topic", new=AsyncMock(return_value=None)) as fallback:
                 await self.service.evaluate_topic(msg)
                 fallback.assert_awaited_once()
             self.assertEqual(msg.replies, [])
