@@ -146,7 +146,7 @@ def is_safe_entertainment_text(text: str | None) -> bool:
 # insulting direct addresses or target users when the bot replies.
 _DIRECT_ADDRESS_RE = re.compile(
     r"(?<![\w@])(?:ты|тебя|тебе|тобой|тво(?:й|я|е|и|его|ему|им|ей|их)|"
-    r"вы|вас|вам|вами|ваш(?:и|а|е|его|ему|им|ей|их)?)(?!\w)",
+    r"вы|вас|вам|вами|ваш(?:и|а|е|его|ему|им|ей|их)?|твою|твоим|твоими)(?!\w)",
     re.IGNORECASE,
 )
 _MENTION_RE = re.compile(r"@[a-zA-Z0-9_]{3,}", re.IGNORECASE)
