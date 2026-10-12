@@ -122,7 +122,7 @@ class ProhibitedLanguageTests(unittest.TestCase):
 
         self.assertEqual(len(app.dp.chat_member.handlers), 0)
         self.assertEqual(len(app.dp.callback_query.handlers), 0)
-        self.assertEqual(len(app.dp.message.handlers), 1)
+        self.assertEqual(len(app.dp.message.handlers), 3)
 
 
 if __name__ == "__main__":
