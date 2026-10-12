@@ -69,7 +69,7 @@ class DialoguePhraseTests(unittest.TestCase):
         self.assertEqual(second.stage, 2)
 
     def test_refuse_unknown_and_max_depth(self):
-        for text in ("что-то случайное без контекста", "хватит", "спасибо"):
+        for text in ("случайная фраза без связи", "хватит", "спасибо"):
             self.assertIsNone(choose_continuation(
                 incoming_text=text, previous_text="привет",
                 previous_scene=None, previous_stage=0,
@@ -209,7 +209,7 @@ class DialogueRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.store.recorded), 2)
 
     async def test_unknown_or_sensitive_replies_are_not_replaced_by_random(self):
-        for text in ("хватит", "не хочу жить", "что-то не связанное"):
+        for text in ("хватит", "не хочу жить", "случайная фраза без связи"):
             message = FakeMessage(text, reply_to=bot_reply())
             with self.subTest(text=text):
                 with patch.object(SafetyEntertainmentService, "evaluate_topic", new=AsyncMock()) as fallback:
