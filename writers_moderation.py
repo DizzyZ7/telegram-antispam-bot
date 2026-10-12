@@ -18,6 +18,7 @@ from aiogram.filters import BaseFilter, Command
 from aiogram.types import Chat, ChatMemberUpdated, LinkPreviewOptions, Message
 
 from writers_guard_history import WritersModerationLedger
+from writers_guard_reports import ReportRateLimited, WritersReportQueue, VALID_REPORT_REASONS
 
 LOGGER = logging.getLogger(__name__)
 WRITERS_CHAT_USERNAME = os.getenv("WRITERS_CHAT_USERNAME", "chat_ikf").lstrip("@").lower()
@@ -545,6 +546,7 @@ def register_writers_chat_handlers(
     *,
     on_message_deleted: MessageDeletedHook | None = None,
     moderation_ledger: WritersModerationLedger | None = None,
+    report_queue: WritersReportQueue | None = None,
 ) -> WritersChatScope:
     """Register only writers-chat moderation; Zero Trust owns all captcha flow."""
     scope = WritersChatScope()
@@ -705,6 +707,148 @@ def register_writers_chat_handlers(
             f"🛡 История подтвержденных нарушений очищена. Записей: <b>{removed}</b>."
         )
 
+    @module.dp.message(chat_filter, Command("report"))
+    async def report_message(message: Message) -> None:
+        """Queue a report for an admin, without assuming any offense occurred."""
+        sender = getattr(message, "from_user", None)
+        replied = getattr(message, "reply_to_message", None)
+        if sender is None or bool(getattr(sender, "is_bot", False)):
+            return
+        if getattr(message, "sender_chat", None) is not None:
+            return
+        if report_queue is None:
+            await message.reply("Прием жалоб сейчас недоступен.")
+            return
+        target_id = _replied_human_id(message)
+        if target_id is None or replied is None or int(target_id) == int(sender.id):
+            await message.reply(
+                "Отправьте /report ответом на сообщение другого участника."
+            )
+            return
+        target_topic = getattr(replied, "message_thread_id", None)
+        command_topic = getattr(message, "message_thread_id", None)
+        if target_topic is not None and command_topic is not None and int(target_topic) != int(command_topic):
+            await message.reply("Жалобу можно подать только в той же теме.")
+            return
+        parts = str(getattr(message, "text", "") or "").strip().split()
+        reason_aliases = {
+            "спам": "spam", "оскорбление": "insult",
+            "травля": "harassment", "другое": "other",
+        }
+        provided = parts[1].casefold() if len(parts) == 2 else "other"
+        reason = reason_aliases.get(provided, provided)
+        if len(parts) > 2 or reason not in VALID_REPORT_REASONS:
+            await message.reply(
+                "Причина: /report спам, оскорбление, травля или другое."
+            )
+            return
+        try:
+            outcome = await report_queue.submit(
+                chat_id=int(message.chat.id),
+                topic_id=int(command_topic or 0),
+                target_message_id=int(replied.message_id),
+                target_user_id=int(target_id),
+                reporter_user_id=int(sender.id),
+                reason=reason,
+            )
+        except ReportRateLimited:
+            await message.reply(
+                "Лимит: три жалобы за сутки. Повторять обращение не нужно."
+            )
+            return
+        except Exception:
+            LOGGER.exception("WRITERS_REPORT_SUBMIT_FAILED")
+            await message.reply("Не удалось сохранить жалобу. Попробуйте позже.")
+            return
+        if not outcome.created:
+            await message.reply("Жалоба на это сообщение уже зарегистрирована.")
+        else:
+            await message.reply(
+                f"🛡 Жалоба №{outcome.report_id} принята для ручной проверки. "
+                "Она не означает, что нарушение уже подтверждено."
+            )
+
+    @module.dp.message(chat_filter, Command("reports"))
+    async def list_reports(message: Message) -> None:
+        """Only administrators may request details, delivered via DM."""
+        if not await _verified_admin(message):
+            return
+        if report_queue is None:
+            await message.reply("Очередь жалоб не подключена.")
+            return
+        try:
+            reports, total = await report_queue.pending(int(message.chat.id))
+        except Exception:
+            LOGGER.exception("WRITERS_REPORT_LIST_FAILED")
+            await message.reply("Очередь жалоб временно недоступна.")
+            return
+        sender = message.from_user
+        lines = [
+            f"🛡 Жалобы на проверке: {total}",
+            "Текст сообщений не сохраняется. Проверяйте контекст самостоятельно.",
+        ]
+        for item in reports:
+            lines.append(
+                f"№{item.id} · тема {item.topic_id} · сообщение {item.target_message_id}"
+                f" · причина {item.reason}"
+            )
+        lines.append(
+            "В чате: /report_confirm <номер> или /report_dismiss <номер>."
+        )
+        try:
+            await module.bot.send_message(
+                chat_id=int(sender.id), text="\n".join(lines),
+            )
+        except Exception:
+            # Fail closed rather than exposing reports to the whole group.
+            await message.reply(
+                "Нельзя отправить список в личные сообщения. "
+                "Откройте диалог с ботом, нажмите /start и повторите /reports в чате."
+            )
+            return
+        await message.reply("🛡 Список жалоб отправлен в личные сообщения.")
+
+    async def _review_report(message: Message, decision: str) -> None:
+        if not await _verified_admin(message):
+            return
+        if report_queue is None:
+            await message.reply("Очередь жалоб не подключена.")
+            return
+        parts = str(getattr(message, "text", "") or "").strip().split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            command = "/report_confirm" if decision == "confirmed" else "/report_dismiss"
+            await message.reply(f"Формат: {command} <номер>")
+            return
+        try:
+            success = await report_queue.decide(
+                chat_id=int(message.chat.id),
+                report_id=int(parts[1]),
+                admin_user_id=int(message.from_user.id),
+                decision=decision,
+            )
+        except Exception:
+            LOGGER.exception("WRITERS_REPORT_DECISION_FAILED")
+            await message.reply("Не удалось завершить рассмотрение жалобы.")
+            return
+        if not success:
+            await message.reply(
+                "Жалоба не найдена, уже рассмотрена или срок ее хранения истек."
+            )
+            return
+        result = "подтверждена" if decision == "confirmed" else "отклонена"
+        await message.reply(
+            f"🛡 Жалоба №{int(parts[1])} {result} администратором. "
+            "Решение записано; автоматические наказания не применяются."
+        )
+
+    @module.dp.message(chat_filter, Command("report_confirm"))
+    async def confirm_report(message: Message) -> None:
+        await _review_report(message, "confirmed")
+
+    @module.dp.message(chat_filter, Command("report_dismiss"))
+    async def dismiss_report(message: Message) -> None:
+        await _review_report(message, "dismissed")
+
     promote_writers_moderation_handler(module.dp)
     return scope
 
@@ -719,7 +863,8 @@ def promote_writers_moderation_handler(dispatcher: Any) -> None:
     if not isinstance(handlers, list):
         raise RuntimeError("Writers moderation dispatcher is not initialized")
     for position, handler_name in enumerate(
-        ("remove_prohibited_language", "guard_status", "guard_reset")
+        ("remove_prohibited_language", "guard_status", "guard_reset",
+         "report_message", "list_reports", "confirm_report", "dismiss_report")
     ):
         found = next(
             (i for i, record in enumerate(handlers)
@@ -731,7 +876,7 @@ def promote_writers_moderation_handler(dispatcher: Any) -> None:
         handlers.insert(position, handlers.pop(found))
     LOGGER.info(
         "WRITERS_MODERATION_PRIORITY_READY first=remove_prohibited_language "
-        "guard_commands=2 handlers=%s", len(handlers),
+        "guard_commands=6 handlers=%s", len(handlers),
     )
 
 

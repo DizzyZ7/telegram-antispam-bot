@@ -182,6 +182,7 @@ from lexicon_game_scope import (
 from lexicon_learning_unpin import LearningLexiconService, register_lexicon_learning_handlers
 from minigames import MiniGameStorage, register_minigame_handlers
 from writers_guard_history import WritersModerationLedger
+from writers_guard_reports import WritersReportQueue
 from writers_moderation import (
     MODERATION_LEXICON,
     promote_writers_moderation_handler,
@@ -287,6 +288,9 @@ async def main() -> None:
             on_message_deleted=entertainment_storage.delete_message_memory,
             moderation_ledger=WritersModerationLedger(
                 RUNTIME_DATA_DIR / "writers_guard.db"
+            ),
+            report_queue=WritersReportQueue(
+                RUNTIME_DATA_DIR / "writers_reports.db"
             ),
         )
         await scope.resolve(app.bot)
