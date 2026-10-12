@@ -65,7 +65,7 @@ class GuardHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.ledger.recent_count(
             CHAT,42,at=T0+8*86400), 1)
         await self.ledger.record_deleted_message(
-            chat_id=CHAT, user_id=42, message_id=3, at=T0+32*86400,
+            chat_id=CHAT, user_id=42, message_id=3, at=T0+45*86400,
         )
         db = await self.ledger._open()
         try:
@@ -74,7 +74,7 @@ class GuardHistoryTests(unittest.IsolatedAsyncioTestCase):
             ) as q:
                 count, oldest = await q.fetchone()
             self.assertEqual(count,1)
-            self.assertEqual(oldest,T0+32*86400)
+            self.assertEqual(oldest,T0+45*86400)
         finally:
             await db.close()
 
