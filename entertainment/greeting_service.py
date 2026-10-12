@@ -1,51 +1,69 @@
-"""Contextual morning/night reactions layered over Culture Memory Phase C."""
+"""Reliable contextual greetings for explicitly human-triggered morning/night wishes.
+
+An eligible greeting gets a curated text reply (no random probability).
+Duplicate greetings are gently throttled in the same topic and same kind.
+Ambient/supervisor messages are still controlled by Presence.
+"""
 
 from __future__ import annotations
 
 import html
-import logging
 import random
 from dataclasses import replace
 
 from aiogram.types import Message
 
-from .config import (
-    BOOTSTRAP_TEXT_EVENT_THRESHOLD,
-    MEDIA_REPEAT_COOLDOWN_SECONDS,
-)
 from .culture_service import EntertainmentService as PhaseCEntertainmentService
 from .greetings import GreetingKind, choose_greeting_reply, detect_greeting
-from .media_culture import select_media_candidate
 from .models import EntertainmentActionRecord, EntertainmentActionType
+from .moderation_safety import is_safe_entertainment_reply
 
-LOGGER = logging.getLogger(__name__)
-
-_GREETING_RESPONSE_CHANCE = 0.40
-_GREETING_MEDIA_CHANCE = 0.28
-_GREETING_COOLDOWN_SECONDS = 20 * 60
+# This is an anti-flood/deduplication window, not a random chance to stay silent.
+_GREETING_COOLDOWN_SECONDS = 2 * 60
 _GREETING_HISTORY_SECONDS = 24 * 60 * 60
 _GREETING_ACTION_HISTORY_LIMIT = 100
-_MEDIA_ACTION_HISTORY_LIMIT = 200
 
 
 class EntertainmentService(PhaseCEntertainmentService):
-    """Phase C plus bounded, safe and context-aware social greetings."""
+    """Phase C plus reliable, non-offensive, text-first greetings."""
+
+    @staticmethod
+    def _is_human_greeting(message: Message) -> bool:
+        sender = getattr(message, "from_user", None)
+        if sender is None or bool(getattr(sender, "is_bot", False)):
+            return False
+        if str(getattr(message, "text", "") or "").lstrip().startswith("/"):
+            return False
+        return not any(
+            getattr(message, name, None) is not None
+            for name in ("forward_origin", "forward_date", "forward_from", "forward_sender_name")
+        ) and not bool(getattr(message, "is_automatic_forward", False))
 
     async def observe_message(self, message: Message) -> None:
-        """Keep one-token greetings on the normal broad-memory observation path."""
-        greeting_kind = detect_greeting(getattr(message, "text", None))
-        short_greeting = (
-            greeting_kind is not None
+        """Reply to greetings even when short or learning consent is disabled.
+
+        Existing Culture Memory ingestion remains unchanged. For ordinary
+        consented text the parent evaluates the greeting exactly once.
+        For one-token or opted-out greetings we evaluate separately but never
+        store content behind the participant's consent decision.
+        """
+        greeting = detect_greeting(getattr(message, "text", None))
+        eligible = (
+            greeting is not None
+            and self._is_human_greeting(message)
             and self._is_eligible_culture_sender(message)
-            and not self.is_eligible_learning_message(message)
         )
+        legacy_eligible = self.is_eligible_learning_message(message) if eligible else False
+        consent = True
+        if eligible:
+            get_consent = getattr(self.storage, "get_remember_enabled", None)
+            if callable(get_consent):
+                consent = bool(await get_consent(int(message.chat.id), int(message.from_user.id)))
 
         await super().observe_message(message)
 
-        # Parent Phase C already calls self.evaluate_topic() for legacy-eligible
-        # text. Single-token greetings such as "споки" and "гн" are intentionally
-        # outside that legacy path, so evaluate them once after broad ingestion.
-        if short_greeting:
+        # Long, consented greetings run once inside Phase C's observe path.
+        if eligible and (not legacy_eligible or not consent):
             await self.evaluate_topic(message)
 
     @staticmethod
@@ -56,7 +74,7 @@ class EntertainmentService(PhaseCEntertainmentService):
         )
 
     def _fork_rng(self) -> random.Random:
-        """Keep chance rolls independent from random wording/media selection."""
+        """Use randomness for phrasing only, never to suppress a greeting."""
         return random.Random(self.rng.getrandbits(64))
 
     async def _handle_greeting(
@@ -77,14 +95,24 @@ class EntertainmentService(PhaseCEntertainmentService):
                 limit=_GREETING_ACTION_HISTORY_LIMIT,
             )
         )
-        if any(
+        # Never answer twice to a retried Telegram update.
+        message_id = getattr(message, "message_id", None)
+        if message_id is not None and any(
             self._is_greeting_action(action)
-            and 0 <= int(now) - int(action.created_at) <= _GREETING_COOLDOWN_SECONDS
+            and action.trigger_message_id is not None
+            and int(action.trigger_message_id) == int(message_id)
             for action in history
         ):
             return None
 
-        if self.rng.random() >= _GREETING_RESPONSE_CHANCE:
+        # Different greeting kinds have independent windows, so a night wish
+        # cannot silently prevent an unrelated morning wish.
+        if any(
+            self._is_greeting_action(action)
+            and action.metadata.get("greeting_kind") == kind
+            and 0 <= int(now) - int(action.created_at) < _GREETING_COOLDOWN_SECONDS
+            for action in history
+        ):
             return None
 
         context_messages = list(await self._generation_texts(int(chat_id), int(topic_id)))
@@ -101,79 +129,18 @@ class EntertainmentService(PhaseCEntertainmentService):
             recent_replies=recent_replies,
             rng=self._fork_rng(),
         )
+        if not is_safe_entertainment_reply(reply.text):
+            return None
 
-        snapshot = await self._culture_memory_snapshot(
-            int(chat_id),
-            int(topic_id),
-            trigger_text=getattr(message, "text", None),
-            now=int(now),
-        )
-        media_actions = tuple(
-            await self.storage.recent_actions(
-                int(chat_id),
-                int(topic_id),
-                since=int(now) - MEDIA_REPEAT_COOLDOWN_SECONDS,
-                limit=_MEDIA_ACTION_HISTORY_LIMIT,
-            )
-        )
-        media_candidate = select_media_candidate(
-            snapshot.recent_events,
-            snapshot.historical_windows,
-            context_messages=[*context_messages[-8:], str(getattr(message, "text", "") or "")],
-            recent_actions=media_actions,
-            now=int(now),
-            textual_event_count=int(snapshot.counts.text) + int(snapshot.counts.emoji),
-            bootstrap_threshold=BOOTSTRAP_TEXT_EVENT_THRESHOLD,
-            repeat_cooldown_seconds=MEDIA_REPEAT_COOLDOWN_SECONDS,
-            rng=self._fork_rng(),
-        )
-
-        if media_candidate is not None and self.rng.random() < _GREETING_MEDIA_CHANCE:
-            try:
-                await self._send_media_candidate(
-                    chat_id=int(chat_id),
-                    topic_id=int(topic_id),
-                    candidate=media_candidate,
-                )
-            except Exception:
-                LOGGER.warning(
-                    "ENTERTAINMENT_GREETING_MEDIA_SEND_FAILED chat_id=%s topic_id=%s media_type=%s",
-                    chat_id,
-                    topic_id,
-                    media_candidate.event.event_type.value,
-                    exc_info=True,
-                )
-            else:
-                event = media_candidate.event
-                record = EntertainmentActionRecord(
-                    id=None,
-                    chat_id=int(chat_id),
-                    topic_id=int(topic_id),
-                    action_type=EntertainmentActionType.MEMORY_CALLBACK,
-                    trigger_message_id=getattr(message, "message_id", None),
-                    created_at=int(now),
-                    metadata={
-                        "source": "greeting",
-                        "direct": True,
-                        "mode": settings.behavior_mode.value,
-                        "greeting_kind": kind,
-                        "greeting_style": reply.style,
-                        "media_type": event.event_type.value,
-                        "media_file_unique_id": event.file_unique_id,
-                        "media_score_bucket": media_candidate.score_bucket,
-                        "media_source_class": media_candidate.source_class,
-                    },
-                )
-                action_id = await self.storage.record_action(record)
-                return replace(record, id=action_id)
-
+        # Always send a textual greeting. Remembered stickers/animations stay
+        # available for other autonomous actions, not as replacements here.
         await message.reply(html.escape(reply.text))
         record = EntertainmentActionRecord(
             id=None,
             chat_id=int(chat_id),
             topic_id=int(topic_id),
             action_type=EntertainmentActionType.CONTEXTUAL_REPLY,
-            trigger_message_id=getattr(message, "message_id", None),
+            trigger_message_id=message_id,
             created_at=int(now),
             metadata={
                 "source": "greeting",
@@ -182,6 +149,7 @@ class EntertainmentService(PhaseCEntertainmentService):
                 "greeting_kind": kind,
                 "greeting_style": reply.style,
                 "output": reply.text,
+                "output_kind": "text",
             },
         )
         action_id = await self.storage.record_action(record)
@@ -196,21 +164,20 @@ class EntertainmentService(PhaseCEntertainmentService):
         if not supervisor:
             kind = detect_greeting(getattr(message, "text", None))
             if kind is not None:
+                if not self._is_human_greeting(message):
+                    return None
                 chat_id = int(message.chat.id)
                 topic_id = self._topic_id(message)
                 now = int(self._now_fn())
                 settings = await self.storage.get_settings(chat_id)
                 if not settings.enabled or not settings.autonomous_text_enabled:
                     return None
+                if self._quiet_hours_active(settings, now):
+                    return None
                 return await self._handle_greeting(
-                    message,
-                    kind=kind,
-                    chat_id=chat_id,
-                    topic_id=topic_id,
-                    now=now,
-                    settings=settings,
+                    message, kind=kind, chat_id=chat_id, topic_id=topic_id,
+                    now=now, settings=settings,
                 )
-
         return await super().evaluate_topic(message, supervisor=supervisor)
 
 
