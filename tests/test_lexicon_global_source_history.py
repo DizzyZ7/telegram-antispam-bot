@@ -14,7 +14,7 @@ from lexicon_dictionary_patch import (
 )
 from lexicon_source_words import LONG_SOURCE_WORDS
 from lexicon_source_words_extra3 import LONG_SOURCE_WORDS_EXTRA3
-from minigames import MiniGameStorage
+from minigames import MiniGameStorage, WordGameRound
 from writers_moderation import contains_prohibited_language
 
 
@@ -105,6 +105,24 @@ class GlobalSourceLedgerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len({word for word, _ in claims}), 3)
         with self.assertRaises(LexiconSourceExhausted):
             await self.service._claim_next_source((-1004, 40))
+
+    async def test_in_memory_active_game_is_also_excluded(self):
+        active = WordGameRound(
+            chat_id=-1001,
+            round_code="ACTV",
+            base_word="радиостанция",
+            allowed_words={"радио"},
+            min_length=4,
+            started_at=1.0,
+            ends_at=999.0,
+            message_thread_id=10,
+        )
+        self.service.active_word_games[(-1001, 10)] = active
+        first, _ = await self.service._claim_next_source((-1002, 20))
+        second, _ = await self.service._claim_next_source((-1002, 30))
+        self.assertEqual({first, second}, {"хроматография", "полимеризация"})
+        with self.assertRaises(LexiconSourceExhausted):
+            await self.service._claim_next_source((-1002, 40))
 
     async def test_old_cycle_and_archive_words_are_imported_before_selection(self):
         async with self.storage.lock:
