@@ -32,6 +32,7 @@ from .culture import (
 from .generation import generate_text
 from .generation_v3 import GenerationMode, GenerationRequest, GenerationResult
 from .media_culture import MediaCandidate, select_media_candidate
+from .slang import choose_slang_callback, learn_topic_slang
 from .memory import classify_memory_event
 from .models import (
     EntertainmentActionRecord,
@@ -46,7 +47,7 @@ from .personality import (
     choose_personality_line,
 )
 from .output_balance import recent_literary_context, should_send_media
-from .moderation_safety import is_safe_entertainment_text
+from .moderation_safety import is_safe_entertainment_reply, is_safe_entertainment_text
 from .service import (
     EntertainmentService as PhaseBEntertainmentService,
     _CULTURE_FALLBACK_CONTEXT_LIMIT,
@@ -454,11 +455,15 @@ class EntertainmentService(PhaseBEntertainmentService):
         )
         generated, emoji_signature = generation_outcome
         generation_result = getattr(generation_outcome, "diagnostics", None)
+        # Extra fail-closed boundary even for mocked/legacy generators.
+        if generated is not None and not is_safe_entertainment_reply(generated):
+            generated, emoji_signature, generation_result = None, None, None
 
         personality_theme: str | None = None
         personality_style: str | None = None
         personality_personal = False
         banter_topic: str | None = None
+        slang_term: str | None = None
 
         media_actions = tuple(
             await self.storage.recent_actions(
@@ -522,6 +527,34 @@ class EntertainmentService(PhaseBEntertainmentService):
                         generation_result = None
                         emoji_signature = None
                         break
+
+        # Fresh community slang is learned from persisted, consent-respecting
+        # Culture Memory: no new profile/dictionary and no per-user labels.
+        # Prefer a callback only occasionally, never override good v3 text.
+        if generated is None and self.rng.random() < 0.40:
+            terms = learn_topic_slang(
+                snapshot.recent_events, snapshot.historical_windows, now=now,
+            )
+            if terms:
+                history_24h = await self.storage.recent_actions(
+                    chat_id, topic_id, since=now - 24 * 60 * 60, limit=100,
+                )
+                recent_lines = [
+                    str(action.metadata.get("output") or "")
+                    for action in history_24h
+                    if isinstance(action.metadata, dict)
+                ]
+                slang_choice = choose_slang_callback(
+                    terms, recent_outputs=recent_lines, rng=self.rng,
+                )
+                if slang_choice is not None:
+                    generated, slang_term = slang_choice
+                    generated, emoji_signature = apply_emoji_style(
+                        generated, snapshot.generation,
+                        recent_signatures=recent_signatures, rng=self.rng,
+                    )
+                    if not is_safe_entertainment_reply(generated):
+                        generated, emoji_signature, slang_term = None, None, None
 
         # Text Recovery v2: v3 sometimes fails outside literary discussions.
         # Only an ALREADY-approved action, fresh human context in this topic,
@@ -685,7 +718,9 @@ class EntertainmentService(PhaseBEntertainmentService):
                         generation_result = None
                         emoji_signature = None
 
-        if generated is None:
+        # Protect the final send after any personality/banter/slang override.
+        # Media callbacks are handled separately above.
+        if generated is None or not is_safe_entertainment_reply(generated):
             return None
         await self._send_text_fallback(
             message,
@@ -718,12 +753,14 @@ class EntertainmentService(PhaseBEntertainmentService):
                 "culture_historical_events": snapshot.generation.historical_event_count,
                 "culture_runs": snapshot.generation.conversation_run_count,
                 "generation_engine": (
+                    "community_slang_v1" if slang_term else
                     "banter_v1" if banter_topic else
                     "personality_v1" if personality_style else
                     generation_result.engine if generation_result is not None else "unknown"
                 ),
                 "personality_theme": personality_theme,
                 "banter_topic": banter_topic,
+                "slang_callback": slang_term is not None,
                 "personality_style": personality_style,
                 "personality_personal": personality_personal,
                 "generation_mode": generation_mode.value,
