@@ -216,7 +216,7 @@ class MediaVarietyTests(unittest.TestCase):
             sticker(2, "relevant-sticker", 1010),
             MemoryEvent(
                 id=3, chat_id=CHAT_ID, topic_id=TOPIC_ID, message_id=3,
-                user_id=7, event_type=MemoryEventType.PHOTO, created_at=1020,
+                user_id=7, event_type=MemoryEventType.PHOTO, created_at=5000,
                 caption="зеленая планета и космос", file_id="file-photo",
                 file_unique_id="photo",
             ),
