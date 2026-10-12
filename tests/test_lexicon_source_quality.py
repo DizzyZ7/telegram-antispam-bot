@@ -91,6 +91,24 @@ class SourceBankQualityTests(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertIn("едгвба", {word for word, _ in result})
 
+    def test_public_source_bank_statistics_use_real_compiled_candidates(self):
+        from lexicon_learning_raccoon import LearningLexiconService
+        service = object.__new__(LearningLexiconService)
+        service.round_candidates = [
+            ("романтика", make_answers(40)),
+            ("путешествие", make_answers(90)),
+            ("конструирование", make_answers(155)),
+        ]
+        rendered = service.render_source_pool()
+        self.assertIn("Готовых стартовых слов: <b>3</b>", rendered)
+        self.assertIn("Классических (38–74 слов): <b>1</b>", rendered)
+        self.assertIn("Богатых (75–149 слов): <b>1</b>", rendered)
+        self.assertIn("Легендарных (150+ слов): <b>1</b>", rendered)
+        self.assertNotIn("романтика", rendered)
+        self.assertNotIn("путешествие", rendered)
+        self.assertNotIn("конструирование", rendered)
+        self.assertIn("/lexicon_pool", service.render_help())
+
     def test_letter_bitmask_never_rejects_a_really_buildable_word(self):
         sources = ("конструкторская", "программирование", "иллюстрация")
         words = ("кот", "корона", "станция", "роман", "слон", "программа")
