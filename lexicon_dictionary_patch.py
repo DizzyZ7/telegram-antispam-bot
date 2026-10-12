@@ -201,6 +201,30 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
             len(cycle_rows), len(archive_rows),
         )
 
+    async def count_unplayed_sources(self) -> int | None:
+        """Remaining globally unique pages for /lexicon_pool, without spoilers."""
+        connection = self.storage.connection
+        if connection is None:
+            return None
+        try:
+            async with self.storage.lock:
+                await self._ensure_source_claims_locked()
+                async with connection.execute(
+                    "SELECT letter_bag FROM wordgame_source_claims"
+                ) as cursor:
+                    used_bags = {str(row[0]) for row in await cursor.fetchall()}
+                used_bags.update(
+                    _source_letter_bag(round_data.base_word)
+                    for round_data in self.active_word_games.values()
+                )
+                return sum(
+                    _source_letter_bag(word) not in used_bags
+                    for word, _answers in self.round_candidates
+                )
+        except Exception:
+            LOGGER.exception("Could not count unplayed Lexicon sources")
+            return None
+
     async def _claim_next_source(self, game_key: GameKey) -> tuple[str, set[str]]:
         """Reserve a never-before-used source globally, atomically and durably.
 
