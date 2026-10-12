@@ -731,9 +731,16 @@ def register_writers_chat_handlers(
             await message.reply("Жалобу можно подать только в той же теме.")
             return
         parts = str(getattr(message, "text", "") or "").strip().split()
-        reason = parts[1].casefold() if len(parts) == 2 else "other"
+        reason_aliases = {
+            "спам": "spam", "оскорбление": "insult",
+            "травля": "harassment", "другое": "other",
+        }
+        provided = parts[1].casefold() if len(parts) == 2 else "other"
+        reason = reason_aliases.get(provided, provided)
         if len(parts) > 2 or reason not in VALID_REPORT_REASONS:
-            await message.reply("Причина: /report spam, insult, harassment или other.")
+            await message.reply(
+                "Причина: /report спам, оскорбление, травля или другое."
+            )
             return
         try:
             outcome = await report_queue.submit(
