@@ -11,7 +11,11 @@ from .culture import CultureGenerationContext, CultureMemorySnapshot, build_cult
 from .culture_service import CultureGenerationOutcome
 from .generation_v3 import GenerationMode
 from .models import MemoryEvent
-from .moderation_safety import is_safe_entertainment_text
+from .moderation_safety import (
+    is_safe_entertainment_reply,
+    is_safe_entertainment_source,
+    is_safe_entertainment_text,
+)
 from .observability_service import (
     EntertainmentService as ObservabilityEntertainmentService,
     _CURRENT_GENERATION_SCOPE,
@@ -28,7 +32,7 @@ class EntertainmentService(ObservabilityEntertainmentService):
 
     @classmethod
     def _safe_event(cls, event: MemoryEvent) -> bool:
-        return cls._safe_text(event.text) and cls._safe_text(event.caption)
+        return is_safe_entertainment_source(event.text) and is_safe_entertainment_source(event.caption)
 
     async def observe_message(self, message: Message) -> None:
         # Preserve the outer hard topic policy before even inspecting message text.
@@ -78,12 +82,12 @@ class EntertainmentService(ObservabilityEntertainmentService):
             safe_sources = [
                 value
                 for value in snapshot.generation.source_messages
-                if self._safe_text(value)
+                if is_safe_entertainment_source(value)
             ]
             safe_context = [
                 value
                 for value in snapshot.generation.context_messages
-                if self._safe_text(value)
+                if is_safe_entertainment_source(value)
             ]
             generation = replace(
                 snapshot.generation,
@@ -123,7 +127,7 @@ class EntertainmentService(ObservabilityEntertainmentService):
                 mode=mode,
                 trigger_text=safe_trigger,
             )
-            if outcome.text is None or self._safe_text(outcome.text):
+            if outcome.text is None or is_safe_entertainment_reply(outcome.text):
                 break
         else:
             outcome = CultureGenerationOutcome(None, None, None)
