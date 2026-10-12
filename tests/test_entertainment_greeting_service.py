@@ -167,20 +167,22 @@ class GreetingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["greeting_style"], "literary")
         self.assertNotIn("спокойной ночи всем", repr(metadata))
 
-    async def test_greeting_can_deliberately_stay_silent_outside_response_chance(self) -> None:
+    async def test_morning_greeting_is_guaranteed_regardless_of_rng(self) -> None:
         store = GreetingStore()
         service, bot = self.service(store, ScriptedRandom(0.99))
         message = FakeMessage("доброе утро")
         with patch.object(service, "_generate_culture_text", return_value=("не должен появиться", None)) as normal:
             result = await service.evaluate_topic(message)
         normal.assert_not_called()
-        self.assertIsNone(result)
-        self.assertEqual(message.replies, [])
+        self.assertIsNotNone(result)
+        self.assertEqual(result.metadata["greeting_kind"], "morning")
+        self.assertEqual(result.metadata["output_kind"], "text")
+        self.assertEqual(len(message.replies), 1)
         bot.send_sticker.assert_not_awaited()
-        self.assertEqual(store.recorded, [])
+        self.assertEqual(len(store.recorded), 1)
 
     async def test_recent_greeting_in_same_topic_enforces_cooldown(self) -> None:
-        store = GreetingStore(actions=[greeting_action("night", NOW - 300)])
+        store = GreetingStore(actions=[greeting_action("night", NOW - 90)])
         service, _ = self.service(store, ScriptedRandom(0.0))
         message = FakeMessage("споки")
         result = await service.evaluate_topic(message)
@@ -188,31 +190,99 @@ class GreetingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.replies, [])
         self.assertEqual(store.recorded, [])
 
-    async def test_recent_ordinary_bot_action_also_consumes_greeting_presence_budget(self) -> None:
-        store = GreetingStore(actions=[ordinary_action(NOW - 300)])
-        service, bot = self.service(store, ScriptedRandom(0.0, 0.0))
+    async def test_explicit_greeting_bypasses_recent_spontaneous_action(self) -> None:
+        store = GreetingStore(actions=[ordinary_action(NOW - 30)])
+        service, bot = self.service(store, ScriptedRandom(0.99))
         message = FakeMessage("споки")
         result = await service.evaluate_topic(message)
-        self.assertIsNone(result)
-        self.assertEqual(message.replies, [])
+        self.assertIsNotNone(result)
+        self.assertEqual(result.metadata["greeting_kind"], "night")
+        self.assertEqual(len(message.replies), 1)
         bot.send_sticker.assert_not_awaited()
-        self.assertEqual(store.recorded, [])
+        self.assertEqual(len(store.recorded), 1)
 
-    async def test_contextual_remembered_sticker_can_replace_greeting_text(self) -> None:
+    async def test_relevant_sticker_does_not_replace_guaranteed_text(self) -> None:
         events = [text_event(1, "спокойной ночи всем", NOW - 600), sticker_event(2, "sleep-sticker", NOW - 590)]
         store = GreetingStore(events=events, texts=["редактор закончил главу"])
         service, bot = self.service(store, ScriptedRandom(0.0, 0.0))
         message = FakeMessage("спокойной ночи")
         result = await service.evaluate_topic(message)
         self.assertIsNotNone(result)
-        self.assertEqual(result.action_type, EntertainmentActionType.MEMORY_CALLBACK)
-        bot.send_sticker.assert_awaited_once()
-        self.assertEqual(message.replies, [])
+        self.assertEqual(result.action_type, EntertainmentActionType.CONTEXTUAL_REPLY)
+        bot.send_sticker.assert_not_awaited()
+        self.assertEqual(len(message.replies), 1)
         metadata = store.recorded[0].metadata
         self.assertEqual(metadata["source"], "greeting")
         self.assertEqual(metadata["greeting_kind"], "night")
-        self.assertEqual(metadata["media_file_unique_id"], "sleep-sticker")
-        self.assertNotIn("спокойной ночи", repr(metadata))
+        self.assertEqual(metadata["output_kind"], "text")
+        self.assertNotIn("спокойной ночи всем", repr(metadata))
+
+    async def test_each_greeting_kind_has_independent_cooldown(self) -> None:
+        store = GreetingStore(actions=[greeting_action("morning", NOW - 20)])
+        service, _ = self.service(store, ScriptedRandom(0.99))
+        message = FakeMessage("спокойной ночи")
+        result = await service.evaluate_topic(message)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.metadata["greeting_kind"], "night")
+        self.assertEqual(len(message.replies), 1)
+
+    async def test_greeting_recovers_after_short_dedup_window(self) -> None:
+        store = GreetingStore(actions=[greeting_action("night", NOW - 121)])
+        service, _ = self.service(store, ScriptedRandom(0.99))
+        message = FakeMessage("споки")
+        result = await service.evaluate_topic(message)
+        self.assertIsNotNone(result)
+        self.assertEqual(len(message.replies), 1)
+
+    async def test_same_telegram_update_is_not_replied_to_twice(self) -> None:
+        store = GreetingStore(actions=[greeting_action("night", NOW - 600)])
+        service, _ = self.service(store, ScriptedRandom(0.99))
+        message = FakeMessage("спокойной ночи")
+        message.message_id = 600
+        result = await service.evaluate_topic(message)
+        self.assertIsNone(result)
+        self.assertEqual(message.replies, [])
+
+    async def test_off_mode_and_quiet_hours_still_suppress_greetings(self) -> None:
+        from dataclasses import replace
+        for updated_settings in (
+            EntertainmentSettings(enabled=False),
+            EntertainmentSettings(autonomous_text_enabled=False),
+            EntertainmentSettings(quiet_hours_start=0, quiet_hours_end=23, timezone="UTC"),
+        ):
+            with self.subTest(settings=updated_settings):
+                store = GreetingStore()
+                store.settings = updated_settings
+                service, _ = self.service(store, ScriptedRandom(0.99))
+                message = FakeMessage("доброе утро")
+                result = await service.evaluate_topic(message)
+                self.assertIsNone(result)
+                self.assertEqual(message.replies, [])
+
+    async def test_opted_out_participant_still_gets_reply_without_memory(self) -> None:
+        store = GreetingStore()
+        async def no_consent(_chat, _user): return False
+        store.get_remember_enabled = no_consent
+        service, _ = self.service(store, ScriptedRandom(0.99))
+        message = FakeMessage("доброе утро")
+        await service.observe_message(message)
+        self.assertEqual(len(message.replies), 1)
+        self.assertEqual(store.observed, [])
+        self.assertEqual(len(store.recorded), 1)
+
+    async def test_reject_bot_and_forwarded_greeting(self) -> None:
+        store = GreetingStore()
+        service, _ = self.service(store, ScriptedRandom(0.99))
+        bot_message = FakeMessage("спокойной ночи")
+        bot_message.from_user = SimpleNamespace(id=8, is_bot=True)
+        forwarded_message = FakeMessage("доброе утро")
+        forwarded_message.forward_origin = object()
+        for message in (bot_message, forwarded_message):
+            with self.subTest(message=message.text):
+                result = await service.evaluate_topic(message)
+                self.assertIsNone(result)
+                self.assertEqual(message.replies, [])
+        self.assertEqual(store.recorded, [])
 
     async def test_single_token_greeting_is_evaluated_from_observe_message(self) -> None:
         store = GreetingStore()

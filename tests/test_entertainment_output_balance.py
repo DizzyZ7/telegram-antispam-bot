@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -221,6 +222,69 @@ class BalancedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.metadata["personality_personal"], False)
         self.service._send_text_fallback.assert_awaited_once()
         self.service._send_media_candidate.assert_not_awaited()
+
+    async def test_general_chat_recovery_prefers_safe_text_to_sticker(self):
+        self.service._culture_memory_snapshot.return_value = CultureMemorySnapshot(
+            recent_events=[event(text="Ура, наконец все заработало"), picture()],
+            historical_windows=[],
+            counts=MemoryCounts(total=20, text=15, photo=1),
+            generation=self.snapshot.generation,
+        )
+        record = await self.run_slot(None, random_value=0.99)
+        self.assertIsNotNone(record)
+        self.assertEqual(record.metadata["output_kind"], "text")
+        self.assertEqual(record.metadata["generation_engine"], "banter_v1")
+        self.assertEqual(record.metadata["banter_topic"], "celebration")
+        self.service._send_text_fallback.assert_awaited_once()
+        self.service._send_media_candidate.assert_not_awaited()
+        self.storage.record_action.assert_awaited_once()
+
+    async def test_stale_general_chat_does_not_recover_text(self):
+        self.service._culture_memory_snapshot.return_value = CultureMemorySnapshot(
+            recent_events=[
+                event(text="Ура, наконец все заработало", created_at=NOW - 1300),
+                picture(),
+            ],
+            historical_windows=[],
+            counts=MemoryCounts(total=20, text=15, photo=1),
+            generation=self.snapshot.generation,
+        )
+        record = await self.run_slot(None, random_value=0.99)
+        self.assertEqual(record.metadata["output_kind"], "media")
+        self.service._send_media_candidate.assert_awaited_once()
+        self.service._send_text_fallback.assert_not_awaited()
+
+    async def test_existing_chat_memory_teaches_repeated_slang(self):
+        first = replace(
+            event(text="Это просто кайф, классный мем"),
+            user_id=10, message_id=1001, id=1001, created_at=NOW - 18,
+        )
+        second = replace(
+            event(text="Кайф, круто сегодня получилось"),
+            user_id=11, message_id=1002, id=1002, created_at=NOW - 8,
+        )
+        self.service._culture_memory_snapshot.return_value = CultureMemorySnapshot(
+            recent_events=[first, second, picture()],
+            historical_windows=[],
+            counts=MemoryCounts(total=20, text=17, photo=1),
+            generation=self.snapshot.generation,
+        )
+        record = await self.run_slot(None, random_value=0.39)
+        self.assertEqual(record.metadata["output_kind"], "text")
+        self.assertEqual(record.metadata["generation_engine"], "community_slang_v1")
+        self.assertTrue(record.metadata["slang_callback"])
+        self.service._send_text_fallback.assert_awaited_once()
+        self.service._send_media_candidate.assert_not_awaited()
+        self.storage.record_action.assert_awaited_once()
+
+    async def test_even_mocked_personal_insult_cannot_escape_final_send(self):
+        record = await self.run_slot("Ты полный идиот", random_value=0.99)
+        self.assertIsNotNone(record)
+        self.assertEqual(record.metadata["output_kind"], "text")
+        self.assertEqual(record.metadata["generation_engine"], "personality_v1")
+        sent_text = self.service._send_text_fallback.await_args.kwargs["generated"]
+        self.assertNotIn("идиот", sent_text.casefold())
+        self.storage.record_action.assert_awaited_once()
 
     async def test_no_context_leaves_media_alive_when_text_unavailable(self):
         self.service._culture_memory_snapshot.return_value = CultureMemorySnapshot(

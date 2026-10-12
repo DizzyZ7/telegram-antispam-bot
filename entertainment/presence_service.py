@@ -8,6 +8,7 @@ from aiogram.types import Message
 
 from .autonomy import DecisionContext, derive_phase, presence_budget_allows
 from .greeting_service import EntertainmentService as GreetingEntertainmentService
+from .greetings import detect_greeting
 from .models import EntertainmentActionRecord
 
 LOGGER = logging.getLogger(__name__)
@@ -81,6 +82,17 @@ class EntertainmentService(GreetingEntertainmentService):
         *,
         supervisor: bool = False,
     ) -> EntertainmentActionRecord | None:
+        # Explicit human greetings are requested replies, not spontaneous
+        # entertainment. They must not vanish because the bot recently spoke
+        # or the human-message counter is too low. The greeting service still
+        # enforces enabled/quiet-hours/topic limits and per-kind anti-flood.
+        if (
+            not supervisor
+            and detect_greeting(getattr(message, "text", None)) is not None
+            and self._is_human_greeting(message)
+        ):
+            return await super().evaluate_topic(message, supervisor=False)
+
         if not self._presence_storage_ready():
             return await super().evaluate_topic(message, supervisor=supervisor)
         now = int(self._now_fn())

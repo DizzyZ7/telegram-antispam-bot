@@ -209,6 +209,44 @@ def _raw_score(
     return max(0.0, min(1.0, score))
 
 
+def _recent_media_kinds(
+    actions: Sequence[EntertainmentActionRecord],
+    *,
+    scope: tuple[int, int],
+    now: int,
+) -> tuple[str, ...]:
+    """Only delivery-confirmed media from THIS topic affect type diversity."""
+    valid = frozenset(kind.value for kind in _SUPPORTED_MEDIA)
+    matching = (
+        action for action in actions
+        if action.action_type is EntertainmentActionType.MEMORY_CALLBACK
+        and (int(action.chat_id), int(action.topic_id)) == scope
+        and int(action.created_at) <= int(now)
+        and action.metadata.get("media_type") in valid
+    )
+    return tuple(
+        str(action.metadata["media_type"])
+        for action in sorted(
+            matching,
+            key=lambda item: (int(item.created_at), int(item.id or 0)),
+            reverse=True,
+        )[:6]
+    )
+
+
+def _kind_diversity_weight(kind: str, recent_kinds: tuple[str, ...]) -> float:
+    """Soft preference only BETWEEN already relevant near-equal media."""
+    if not recent_kinds:
+        return 1.0
+    occurrences = recent_kinds.count(kind)
+    if not occurrences:
+        return 1.18
+    weight = max(0.65, 1.0 - 0.12 * occurrences)
+    if kind == recent_kinds[0]:
+        weight *= 0.85
+    return weight
+
+
 def _live_rng(scope: tuple[int, int], now: int) -> random.Random:
     """Return a changing but reproducible local RNG without global state."""
     chat_id, topic_id = scope
@@ -332,6 +370,7 @@ def select_media_candidate(
         return band[0][0]
 
     choice_rng = rng if rng is not None else _live_rng(scope, int(now))
+    recent_kinds = _recent_media_kinds(recent_actions, scope=scope, now=int(now))
     weights: list[float] = []
     for candidate, is_recent in band:
         unique_id = candidate.event.file_unique_id
@@ -340,7 +379,8 @@ def select_media_candidate(
             int(repeat_cooldown_seconds),
         )
         recency = 1.08 if is_recent else 1.0
-        weights.append(max(0.01, candidate.score * reuse * recency))
+        kind_variety = _kind_diversity_weight(candidate.event.event_type.value, recent_kinds)
+        weights.append(max(0.01, candidate.score * reuse * recency * kind_variety))
 
     return choice_rng.choices([pair[0] for pair in band], weights=weights, k=1)[0]
 
