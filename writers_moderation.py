@@ -549,7 +549,7 @@ def register_writers_chat_handlers(
     """Register only writers-chat moderation; Zero Trust owns all captcha flow."""
     scope = WritersChatScope()
     chat_filter = WritersChatFilter(scope, module.ALLOWED_CHATS)
-    last_warning_at: dict[tuple[int, int], float] = {}
+    last_warning_at: dict[tuple[int, int], tuple[float, int]] = {}
 
     @module.dp.message(chat_filter, ProhibitedLanguageFilter())
     async def remove_prohibited_language(message: Message) -> None:
@@ -610,13 +610,14 @@ def register_writers_chat_handlers(
 
         key = (int(message.chat.id), int(user_id) if attributable else 0)
         now = time.monotonic()
-        previous_warning_at = last_warning_at.get(key)
-        if (
-            previous_warning_at is not None
-            and now - previous_warning_at < WARNING_COOLDOWN_SECONDS
-        ):
-            return
-        last_warning_at[key] = now
+        level = min(recent_violations or 1, 3)
+        previous_warning = last_warning_at.get(key)
+        if previous_warning is not None:
+            previous_at, previous_level = previous_warning
+            if now - previous_at < WARNING_COOLDOWN_SECONDS and level <= previous_level:
+                return
+        # Announce a new confirmed escalation once, not every deleted word.
+        last_warning_at[key] = (now, level)
 
         params: dict[str, Any] = {
             "chat_id": message.chat.id,
