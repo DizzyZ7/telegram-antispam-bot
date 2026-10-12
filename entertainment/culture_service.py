@@ -17,6 +17,7 @@ from aiogram.types import Message
 
 from .autonomy import ConversationPhase, DecisionContext, derive_phase, select_action
 from .banter import choose_banter_line, recent_banter_context
+from .context_interjection import choose_context_interjection
 from .config import (
     BOOTSTRAP_TEXT_EVENT_THRESHOLD,
     GENERATION_SAMPLE_LIMIT,
@@ -585,9 +586,39 @@ class EntertainmentService(PhaseBEntertainmentService):
                     banter_topic = recovered[1]
                     generation_result = None
 
+        # V5.2: occasionally join a real two-person discussion *only after*
+        # the existing phase/presence budget has approved an autonomous slot.
+        # The choice requires two consenting human speakers on the same
+        # harmless subject in this chat+topic and does not quote either one.
+        context_interjection_scene: str | None = None
+        if (
+            not supervisor
+            and generation_mode is GenerationMode.AUTONOMOUS
+            and phase is not ConversationPhase.PEAK
+            and self.rng.random() < 0.75
+        ):
+            entrance = choose_context_interjection(
+                snapshot.recent_events,
+                now=now,
+                recent_actions=recent_actions,
+                recent_outputs=recent_outputs,
+                rng=self.rng,
+            )
+            if entrance is not None and is_safe_entertainment_reply(entrance.text):
+                generated = entrance.text
+                context_interjection_scene = entrance.scene
+                emoji_signature = None
+                generation_result = None
+                personality_theme = None
+                personality_style = None
+                banter_topic = None
+                slang_term = None
+
         # Previously media always won over an already-generated reply. Keep
         # funny stickers/photos, but reserve most slots for good text when it
         # exists. If no safe text can be produced, media remains available.
+        if context_interjection_scene is not None:
+            media_allowed = False
         if media_allowed and media_candidate is not None:
             media_allowed = should_send_media(
                 media_actions,
@@ -647,7 +678,7 @@ class EntertainmentService(PhaseBEntertainmentService):
         # sticker cannot consume a person's rare personalized-response slot.
         # This does not create another action: the autonomy/presence budget
         # has already approved this exact message.
-        if generated is not None or generation_mode is GenerationMode.DIRECT_REPLY:
+        if (generated is not None or generation_mode is GenerationMode.DIRECT_REPLY) and context_interjection_scene is None:
             style_for_line: str | None = None
             preferred_topic: str | None = None
             eligible_user_id: int | None = None
@@ -746,13 +777,18 @@ class EntertainmentService(PhaseBEntertainmentService):
                 "output": generated,
                 "output_kind": "text",
                 "memory_count": memory_count,
-                "source": "supervisor" if supervisor else "message",
+                "source": (
+                    "context_interjection_v1" if context_interjection_scene is not None
+                    else "supervisor" if supervisor else "message"
+                ),
+                "context_interjection_scene": context_interjection_scene,
                 "direct": bool(selected.is_direct),
                 "emoji_signature": emoji_signature,
                 "culture_recent_events": snapshot.generation.recent_event_count,
                 "culture_historical_events": snapshot.generation.historical_event_count,
                 "culture_runs": snapshot.generation.conversation_run_count,
                 "generation_engine": (
+                    "context_interjection_v1" if context_interjection_scene else
                     "community_slang_v1" if slang_term else
                     "banter_v1" if banter_topic else
                     "personality_v1" if personality_style else
