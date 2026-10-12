@@ -256,10 +256,10 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
                     _source_letter_bag(round_data.base_word)
                     for round_data in self.active_word_games.values()
                 )
-                remaining = sum(
-                    _source_letter_bag(word) not in used_bags
-                    for word, _answers in self.round_candidates
-                )
+                candidate_bags = {
+                    _source_letter_bag(word) for word, _answers in self.round_candidates
+                }
+                remaining = len(candidate_bags - used_bags)
                 return int(row[0]), remaining
         except Exception:
             LOGGER.exception("Could not read current Lexicon cycle")
