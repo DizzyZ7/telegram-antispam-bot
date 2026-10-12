@@ -291,7 +291,20 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
                 await message.reply(self.render_status(active))
                 return
 
-            base_word, allowed = await self._claim_next_source(game_key)
+            try:
+                base_word, allowed = await self._claim_next_source(game_key)
+            except LexiconSourceExhausted:
+                await message.reply(
+                    "📚 Все доступные стартовые слова уже использованы. "
+                    "Повторяться не будем — нужен новый словарный набор."
+                )
+                return
+            except LexiconSourceStorageError:
+                await message.reply(
+                    "📚 Не удалось проверить историю стартовых слов. "
+                    "Чтобы не повторить старую страницу, новый раунд пока не открыт."
+                )
+                return
             now = time.monotonic()
             round_seconds = self.round_duration_seconds(len(allowed))
             round_data = WordGameRound(
