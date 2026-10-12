@@ -68,7 +68,7 @@ class InterjectionSafetyTests(unittest.TestCase):
              evt(2, 2, "Пишу главу", ago=10)],
             [evt(1, 1, "Пишу главу", ago=70),
              evt(2, 2, "Пишу главу", ago=100, bot=True)],
-            [evt(1, 1, "Пишу главу", ago=70),
+            [evt(1, 1, "Пишу главу", ago=110),
              evt(2, 2, "Пишу главу", ago=100)],
         )
         # Last case is stale: freshest event is over 90s old.
