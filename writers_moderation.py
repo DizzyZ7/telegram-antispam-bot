@@ -14,8 +14,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from aiogram.filters import BaseFilter
+from aiogram.filters import BaseFilter, Command
 from aiogram.types import Chat, ChatMemberUpdated, LinkPreviewOptions, Message
+
+from writers_guard_history import WritersModerationLedger
 
 LOGGER = logging.getLogger(__name__)
 WRITERS_CHAT_USERNAME = os.getenv("WRITERS_CHAT_USERNAME", "chat_ikf").lstrip("@").lower()
@@ -448,12 +450,29 @@ def build_captcha_success_text(user_tag: str) -> str:
     )
 
 
-def build_warning_text() -> str:
+def build_warning_text(recent_violations: int | None = None) -> str:
+    """Escalate confirmed warnings without public shaming or automatic bans."""
+    if recent_violations is None or recent_violations <= 1:
+        advisory = (
+            "В этом чате общаются авторы и читатели. Мат и прямые оскорбления "
+            "здесь не используем — уважение к участникам обязательно."
+        )
+    elif recent_violations == 2:
+        advisory = (
+            "Повторное нарушение за последние 7 дней. "
+            "Сообщение удалено. Правила чата действуют для всех одинаково."
+        )
+    else:
+        advisory = (
+            f"За последние 7 дней удалено нарушений: {min(int(recent_violations), 999)}. "
+            "Это серьезное предупреждение. Дальнейшие нарушения могут "
+            "стать основанием для решения администрации об ограничениях."
+        )
     return "\n".join(
         (
             "⚠️ <b>Сообщение удалено</b>",
             "",
-            "В этом чате общаются авторы, читатели и люди, которым важны истории. Мат и прямые оскорбления здесь не используем — давай оставим разговор комфортным и понятным для всех.",
+            advisory,
             "",
             f"📖 <a href=\"{WRITERS_RULES_URL}\">Правила чата</a>",
             "(°-°)",
@@ -525,6 +544,7 @@ def register_writers_chat_handlers(
     module: Any,
     *,
     on_message_deleted: MessageDeletedHook | None = None,
+    moderation_ledger: WritersModerationLedger | None = None,
 ) -> WritersChatScope:
     """Register only writers-chat moderation; Zero Trust owns all captcha flow."""
     scope = WritersChatScope()
@@ -561,7 +581,34 @@ def register_writers_chat_handlers(
                     exc,
                 )
 
-        key = (message.chat.id, message.from_user.id)
+        sender = getattr(message, "from_user", None)
+        sender_chat = getattr(message, "sender_chat", None)
+        user_id = getattr(sender, "id", None)
+        # Anonymous admins and channel senders cannot be attributed reliably
+        # to an individual account. Still delete their violations, but never
+        # guess a human's identity to build a repeat-offender record.
+        attributable = (
+            user_id is not None and sender_chat is None
+            and not bool(getattr(sender, "is_bot", False))
+        )
+        recent_violations: int | None = None
+        if attributable and moderation_ledger is not None:
+            try:
+                outcome = await moderation_ledger.record_deleted_message(
+                    chat_id=int(message.chat.id),
+                    user_id=int(user_id),
+                    message_id=int(message.message_id),
+                )
+                if not outcome.newly_recorded:
+                    return  # Telegram update replay, not another violation.
+                recent_violations = outcome.recent_count
+            except Exception:
+                LOGGER.exception(
+                    "WRITERS_GUARD_HISTORY_UNAVAILABLE chat_id=%s",
+                    getattr(message.chat, "id", None),
+                )
+
+        key = (int(message.chat.id), int(user_id) if attributable else 0)
         now = time.monotonic()
         previous_warning_at = last_warning_at.get(key)
         if (
@@ -573,7 +620,7 @@ def register_writers_chat_handlers(
 
         params: dict[str, Any] = {
             "chat_id": message.chat.id,
-            "text": build_warning_text(),
+            "text": build_warning_text(recent_violations),
             "link_preview_options": RULES_LINK_PREVIEW_OPTIONS,
         }
         if message.message_thread_id is not None:
@@ -583,6 +630,79 @@ def register_writers_chat_handlers(
             await module.bot.send_message(**params)
         except Exception as exc:
             LOGGER.warning("Could not send moderation warning: %s", exc)
+
+    async def _verified_admin(message: Message) -> bool:
+        sender = getattr(message, "from_user", None)
+        if sender is None or bool(getattr(sender, "is_bot", False)):
+            return False
+        if getattr(message, "sender_chat", None) is not None:
+            return False
+        try:
+            member = await module.bot.get_chat_member(
+                int(message.chat.id), int(sender.id),
+            )
+        except Exception:
+            LOGGER.warning("WRITERS_GUARD_ADMIN_LOOKUP_FAILED", exc_info=True)
+            return False
+        status = getattr(member, "status", "")
+        status = str(getattr(status, "value", status)).casefold()
+        return status in {"creator", "administrator", "owner"}
+
+    def _replied_human_id(message: Message) -> int | None:
+        original = getattr(message, "reply_to_message", None)
+        if original is None or getattr(original, "sender_chat", None) is not None:
+            return None
+        sender = getattr(original, "from_user", None)
+        if sender is None or bool(getattr(sender, "is_bot", False)):
+            return None
+        return int(sender.id) if getattr(sender, "id", None) is not None else None
+
+    @module.dp.message(chat_filter, Command("guard_status"))
+    async def guard_status(message: Message) -> None:
+        if not await _verified_admin(message):
+            return
+        target = _replied_human_id(message)
+        if target is None:
+            await message.reply(
+                "Ответьте командой /guard_status на сообщение участника."
+            )
+            return
+        if moderation_ledger is None:
+            await message.reply("Журнал модерации пока не подключен.")
+            return
+        try:
+            count = await moderation_ledger.recent_count(int(message.chat.id), target)
+        except Exception:
+            LOGGER.exception("WRITERS_GUARD_STATUS_FAILED")
+            await message.reply("Журнал временно недоступен.")
+            return
+        await message.reply(
+            f"🛡 Подтвержденных удалений за 7 дней: <b>{count}</b>. "
+            "Учитываются только реально удаленные сообщения."
+        )
+
+    @module.dp.message(chat_filter, Command("guard_reset"))
+    async def guard_reset(message: Message) -> None:
+        if not await _verified_admin(message):
+            return
+        target = _replied_human_id(message)
+        if target is None:
+            await message.reply(
+                "Ответьте командой /guard_reset на сообщение участника."
+            )
+            return
+        if moderation_ledger is None:
+            await message.reply("Журнал модерации пока не подключен.")
+            return
+        try:
+            removed = await moderation_ledger.clear_user(int(message.chat.id), target)
+        except Exception:
+            LOGGER.exception("WRITERS_GUARD_RESET_FAILED")
+            await message.reply("Не удалось сбросить историю модерации.")
+            return
+        await message.reply(
+            f"🛡 История подтвержденных нарушений очищена. Записей: <b>{removed}</b>."
+        )
 
     module.dp.message.handlers.insert(0, module.dp.message.handlers.pop())
     return scope
@@ -597,16 +717,21 @@ def promote_writers_moderation_handler(dispatcher: Any) -> None:
     handlers = getattr(getattr(dispatcher, "message", None), "handlers", None)
     if not isinstance(handlers, list):
         raise RuntimeError("Writers moderation dispatcher is not initialized")
-    for position, record in enumerate(handlers):
-        if getattr(getattr(record, "callback", None), "__name__", "") == "remove_prohibited_language":
-            if position:
-                handlers.insert(0, handlers.pop(position))
-            LOGGER.info(
-                "WRITERS_MODERATION_PRIORITY_READY first=remove_prohibited_language handlers=%s",
-                len(handlers),
-            )
-            return
-    raise RuntimeError("Writers profanity moderation handler was not registered")
+    for position, handler_name in enumerate(
+        ("remove_prohibited_language", "guard_status", "guard_reset")
+    ):
+        found = next(
+            (i for i, record in enumerate(handlers)
+             if getattr(getattr(record, "callback", None), "__name__", "") == handler_name),
+            None,
+        )
+        if found is None:
+            raise RuntimeError(f"Writers moderation handler missing: {handler_name}")
+        handlers.insert(position, handlers.pop(found))
+    LOGGER.info(
+        "WRITERS_MODERATION_PRIORITY_READY first=remove_prohibited_language "
+        "guard_commands=2 handlers=%s", len(handlers),
+    )
 
 
 async def report_writers_delete_permission(bot: Any, chat_id: int | None) -> None:
