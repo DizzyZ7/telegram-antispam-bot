@@ -147,10 +147,16 @@ class ReportHandlerTests(unittest.IsolatedAsyncioTestCase):
         await self.handlers["report_message"](sent)
         self.assertIn("принята",sent.reply.call_args.args[0])
         self.assertEqual((await self.queue.pending(CHAT))[1],1)
+        # Russian moderation reasons must map into known categories.
+        russian=self.message(75,reply_to=self.message(69,sender=203),
+                             text="/report оскорбление")
+        await self.handlers["report_message"](russian)
+        records,_=await self.queue.pending(CHAT)
+        self.assertEqual(records[-1].reason,"insult")
         same=self.message(74,reply_to=original,text="/report spam")
         await self.handlers["report_message"](same)
         self.assertIn("уже зарегистрирована",same.reply.call_args.args[0])
-        self.assertEqual((await self.queue.pending(CHAT))[1],1)
+        self.assertEqual((await self.queue.pending(CHAT))[1],2)
 
     async def test_admin_list_delivered_privately_only(self):
         original=self.message(70,sender=202)
