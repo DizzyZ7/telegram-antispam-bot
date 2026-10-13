@@ -273,22 +273,39 @@
   }
 
   function updateDynamicSections() {
-    const ff = selectedChoice("workType") === "ФФ";
+    const sketch = selectedChoice("workType") === "Зарисовка";
+    const ff = selectedChoice("workType") === "ФФ" || (sketch && selectedChoice("sketchOrigin") === "Фандом");
     const finished = selectedChoice("completion") === "завершен";
     const visual = selectedChoice("visualMode");
     $("fandomField").classList.toggle("hidden", !ff);
-    $("finishedFields").classList.toggle("hidden", !finished);
-    $("paletteFields").classList.toggle("hidden", visual !== "palette");
-    $("imageFields").classList.toggle("hidden", visual !== "image");
-    if (visual !== "image" && state.pendingFiles.some((entry) => entry.source === "image")) {
+    $("sketchOriginField").classList.toggle("hidden", !sketch);
+    $("sketchLinksFields").classList.toggle("hidden", !sketch);
+    $("sketchCoverNotice").classList.toggle("hidden", !sketch);
+    ["sizeCategorySection", "completionSection", "regularWorkUrlField", "extraLinksField",
+     "charactersField", "notesField", "visualModeSection", "bodySection"].forEach((id) => {
+      $(id).classList.toggle("hidden", sketch);
+    });
+    $("attachmentsSection").classList.toggle("hidden", sketch && !state.attachments.length);
+    $("warningsField").classList.toggle("hidden", selectedChoice("warningsPresent") !== "yes");
+    $("descriptionHint").textContent = sketch
+      ? "Для зарисовки: до 35 слов и 230 символов (примерно три короткие строки)."
+      : "Для большой работы: минимум 3 предложения, до 110 слов.";
+    form.description.maxLength = sketch ? 230 : 2000;
+    form.sketchProfile.required = sketch;
+    form.sketchArticle.required = sketch;
+    form.url.required = !sketch;
+    $("finishedFields").classList.toggle("hidden", sketch || !finished);
+    $("paletteFields").classList.toggle("hidden", sketch || visual !== "palette");
+    $("imageFields").classList.toggle("hidden", sketch || visual !== "image");
+    if ((sketch || visual !== "image") && state.pendingFiles.some((entry) => entry.source === "image")) {
       state.pendingFiles = state.pendingFiles.filter((entry) => entry.source !== "image");
       clearImagePreview();
       renderAttachments();
       updateImageStatus();
     }
-    if (visual === "palette") { renderIkfCover(); }
+    if (!sketch && visual === "palette") { renderIkfCover(); }
     form.fandom.required = ff;
-    [form.sizeWords, form.pages, form.parts].forEach((field) => { field.required = finished; });
+    [form.sizeWords, form.pages, form.parts].forEach((field) => { field.required = !sketch && finished; });
   }
 
   function clearImagePreview() {
@@ -304,7 +321,15 @@
     const revision = submission && submission.revision ? submission.revision : {};
     const details = revision.details || {};
     form.title.value = revision.title || "";
-    setChoice("workType", ["ФФ", "Оридж"].includes(revision.work_type) ? revision.work_type : "");
+    setChoice("workType", ["ФФ", "Оридж", "Зарисовка"].includes(revision.work_type) ? revision.work_type : "");
+    setChoice("sketchOrigin", details.sketch_origin || "");
+    setChoice("warningsPresent", details.warnings_present || "");
+    [form.mainGenre1, form.mainGenre2, form.mainGenre3].forEach((field, index) => {
+      field.value = Array.isArray(details.main_genres) ? (details.main_genres[index] || "") : "";
+    });
+    form.warnings.value = Array.isArray(details.warnings) ? details.warnings.join(", ") : "";
+    form.sketchProfile.value = details.sketch_profile_url || "";
+    form.sketchArticle.value = details.sketch_article_url || (revision.work_type === "Зарисовка" ? revision.external_url || "" : "");
     setChoice("sizeCategory", details.size_category || "");
     setChoice("completion", details.completion || "");
     setChoice("visualMode", details.visual_mode || "palette");
