@@ -132,6 +132,7 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
             created_at=100,
         )
         self.service.list_files = AsyncMock(return_value=[self.uploaded_file])
+        self.service.moderation_delivery_statuses = AsyncMock(return_value={})
         self.file_service = SimpleNamespace(
             attach_from_temp=AsyncMock(return_value=self.uploaded_file),
             delete_attachment=AsyncMock(),
@@ -597,6 +598,37 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["error"], "internal_error")
         self.assertEqual(len(payload["reference"]), 12)
         self.assertNotIn("private database traceback", str(payload))
+
+    async def test_author_can_check_moderation_delivery_without_chat_receipts(self):
+        expected = {str(self.item.id): {
+            "status": "RETRYING", "updated_at": NOW - 10,
+        }}
+        self.service.list_mine.return_value = [self.item]
+        self.service.moderation_delivery_statuses.return_value = expected
+
+        listed = await self.client.get(
+            "/api/writers/submissions",
+            headers=self.auth_headers(origin=None),
+        )
+        self.assertEqual(listed.status, 200)
+        payload = await listed.json()
+        self.assertEqual(payload["items"][0]["delivery"]["status"], "RETRYING")
+        self.assertNotIn("delivery_chat_id", str(payload))
+        self.assertNotIn("delivery_message_ids", str(payload))
+        self.service.moderation_delivery_statuses.assert_awaited_with(
+            77, now=NOW,
+        )
+
+        detail = await self.client.get(
+            f"/api/writers/submissions/{self.item.id}",
+            headers=self.auth_headers(origin=None),
+        )
+        self.assertEqual(detail.status, 200)
+        response = await detail.json()
+        self.assertEqual(response["submission"]["delivery"], expected[str(self.item.id)])
+        self.service.moderation_delivery_statuses.assert_awaited_with(
+            77, now=NOW, submission_id=self.item.id,
+        )
 
     async def test_detail_restores_persisted_files_after_reload(self):
         response = await self.client.get(
