@@ -35,7 +35,8 @@ def _link(url: str, label: str) -> str:
 def render_owner_promo(context: ModerationDeliveryContext) -> str:
     """HTML suitable for an ICФ-style copyable Telegram post."""
     details = context.details or {}
-    is_ficbook = details.get("form_version") == 2
+    is_ficbook = details.get("form_version") in (2, 3)
+    is_sketch = details.get("form_version") == 3 and context.work_type == "Зарисовка"
     tags = [
         _tag("Ориджиналы" if str(context.work_type) == "Оридж" else details.get("fandom"), "Фанфики"),
         _tag(str(details.get("size_category", "")).capitalize()) if is_ficbook else "",
