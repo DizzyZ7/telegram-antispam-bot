@@ -362,7 +362,7 @@
       ["png", "jpeg"].includes(file.file_class)
     );
     $("imageUploadStatus").textContent = pending.length
-      ? `Выбрана своя фотография: ${pending.map((entry) => entry.file.name).join(", ")}. Файл еще не отправлен. Передадим только после отправки анкеты.`
+      ? `Выбрана фотография: ${pending.map((entry) => entry.file.name).join(", ")}. Загружаем в черновик; при ошибке повтори выбор файла.`
       : uploaded.length
         ? `Изображение уже прикреплено к этой заявке: ${uploaded.map((file) => file.filename).join(", ")}`
         : "Выбери фото. До отправки анкеты оно останется только на устройстве. Своя обложка — платная опция.";
@@ -522,6 +522,21 @@
     });
   }
 
+  function countDescriptionSentences(text) {
+    const value = String(text || "").replace(/\s+/gu, " ").trim();
+    const endings = /[.!?]+[»”"’)\]]*(?=\s|$)/gu;
+    let found = 0;
+    let last = 0;
+    let match;
+    while ((match = endings.exec(value)) !== null) {
+      const part = value.slice(last, match.index)
+        .replace(/https?:\/\/\S+|(^|\s)#[^\s]+/gu, " ");
+      if (/[\p{L}\p{N}]/u.test(part)) found += 1;
+      last = endings.lastIndex;
+    }
+    return found;
+  }
+
   function countWords(text) {
     return (String(text || "").match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu) || []).length;
   }
@@ -583,9 +598,12 @@
         throw new Error("Описание зарисовки: не больше 35 слов и 230 символов.");
       }
     } else {
-      const sentenceCount = (values.description.match(/[^.!?]+[.!?]+/gu) || []).length;
-      if (sentenceCount < 3 || !/[.!?]\s*$/u.test(values.description)) {
-        throw new Error("Описание большой работы должно содержать не меньше трех предложений.");
+      const sentenceCount = countDescriptionSentences(values.description);
+      if (sentenceCount < 3) {
+        throw new Error(
+          "Нужно минимум 3 законченных предложения (с точкой, ! или ?). " +
+          "Хештеги и незаконченная последняя фраза не считаются предложениями."
+        );
       }
       if (wordCount > 110) {
         throw new Error("Описание большой работы: максимум 110 слов.");
@@ -606,12 +624,11 @@
     $("titleCounter").textContent = String(form.title.value.length);
     const wordCount = countWords(form.description.value);
     const sketch = selectedChoice("workType") === "Зарисовка";
-    const sentences = (form.description.value.match(/[^.!?]+[.!?]+/gu) || []).length;
-    const closedSentence = /[.!?]\s*$/u.test(form.description.value);
+    const sentences = countDescriptionSentences(form.description.value);
     $("descriptionCounter").textContent = sketch
       ? wordCount + "/35 слов · " + form.description.value.length + "/230 символов"
-      : wordCount + "/110 слов · " + sentences + "/3 предложения" +
-        (!closedSentence && form.description.value.trim() ? " (последнее не завершено)" : "");
+      : wordCount + "/110 слов · " + sentences + "/3 завершенных предложения" +
+        (sentences < 3 ? " (нужно еще " + (3 - sentences) + ")" : " ✓");
     const slots = [form.mainGenre1, form.mainGenre2, form.mainGenre3];
     const amount = slots.filter((field) => field.value.trim()).length;
     const progress = $("genreProgress");
@@ -1241,7 +1258,7 @@
       renderAttachments();
       updateImageStatus();
       setEditorError("");
-      updateUploadProgress(source, "Выбрано, не отправлено. Передадим вместе с заполненной анкетой.", null, "waiting");
+      updateUploadProgress(source, "Файл выбран. Загружаем его в черновик…", null, "waiting");
       return true;
     } catch (error) {
       setEditorError(error.message || "Не удалось подготовить файл.");
@@ -1251,6 +1268,18 @@
       state.uploadPreparing = false;
       updateActionAvailability();
     }
+  }
+
+  async function persistSelectedFiles(files, source) {
+    // Telegram users expect a chosen photo to be attached immediately, not
+    // silently left only in WebView RAM until the final submission.
+    if (!await queueFilesLocally(files, source)) return;
+    updateUploadProgress(source, "Сохраняю черновик перед загрузкой…", null, "processing");
+    if (!await autosave({ immediate: true })) {
+      updateUploadProgress(source, "Черновик не сохранился — файл пока на устройстве", null, "error");
+      return;
+    }
+    await uploadQueuedFiles();
   }
 
   async function uploadQueuedFiles() {
@@ -1443,14 +1472,14 @@
     $("saveButton").addEventListener("click", () => autosave({ immediate: true }));
     $("submitButton").addEventListener("click", submitCurrent);
     $("fileInput").addEventListener("change", (event) => {
-      void queueFilesLocally(event.target.files, "file");
-      $("fileInput").value = "";
+      const chosen = Array.from(event.target.files || []);
+      event.target.value = "";
+      if (chosen.length) void persistSelectedFiles(chosen, "file");
     });
-    $("imageInput").addEventListener("change", async (event) => {
-      const file = (event.target.files || [])[0];
-      if (!file) { return; }
-      await queueFilesLocally([file], "image");
-      $("imageInput").value = "";
+    $("imageInput").addEventListener("change", (event) => {
+      const chosen = Array.from(event.target.files || []).slice(0, 1);
+      event.target.value = "";
+      if (chosen.length) void persistSelectedFiles(chosen, "image");
     });
     $("withdrawButton").addEventListener("click", withdrawCurrent);
     $("revisionButton").addEventListener("click", createRevision);

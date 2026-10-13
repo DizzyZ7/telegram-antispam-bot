@@ -126,6 +126,43 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.storage.mark_outbox_retryable.assert_not_awaited()
         self.storage.mark_outbox_permanent_failure.assert_not_awaited()
 
+    async def test_moderator_sees_live_username_and_profile_link(self):
+        item = moderation_item()
+        self.storage.claim_due_outbox.return_value = [item]
+        self.bot.get_chat = AsyncMock(return_value=SimpleNamespace(
+            id=77, username="actual_author", first_name="Автор",
+        ))
+        await self.worker.run_once(now=135)
+        text = self.bot.send_message.await_args.kwargs["text"]
+        self.assertIn('href="https://t.me/actual_author"', text)
+        self.assertIn("@actual_author", text)
+        self.assertIn('href="tg://user?id=77"', text)
+        self.assertIn("Автор: <code>77</code>", text)
+
+    async def test_signed_username_and_name_work_even_if_bot_cannot_open_dm(self):
+        item = moderation_item()
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.author_username = "saved_writer"
+        context.author_first_name = "Писательница"
+        self.bot.get_chat = AsyncMock(side_effect=RuntimeError("user has not started bot"))
+        await self.worker.run_once(now=136)
+        text = self.bot.send_message.await_args.kwargs["text"]
+        self.assertIn('href="https://t.me/saved_writer"', text)
+        self.assertIn('href="tg://user?id=77"', text)
+
+    async def test_no_username_has_clickable_telegram_id_and_escaped_name(self):
+        item = moderation_item()
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.author_username = None
+        context.author_first_name = "<Мила & добра>"
+        await self.worker.run_once(now=137)
+        text = self.bot.send_message.await_args.kwargs["text"]
+        self.assertIn("Имя Telegram: &lt;Мила &amp; добра&gt;", text)
+        self.assertIn('href="tg://user?id=77"', text)
+        self.assertNotIn('href="https://t.me/None"', text)
+
     async def test_moderation_card_and_attachment_go_to_owner_dm_not_group(self):
         # Delivery consumes the effective destination from validated config.
         # A stale group value in the hosting ENV must not be consulted here.

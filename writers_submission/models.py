@@ -169,6 +169,8 @@ class ModerationDeliveryContext:
     external_url: str | None
     files: tuple[SubmissionFile, ...]
     details: dict[str, object] = field(default_factory=dict)
+    author_username: str | None = None
+    author_first_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

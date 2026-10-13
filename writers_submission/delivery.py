@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 import time
 from contextlib import suppress
 from io import BytesIO
@@ -107,7 +108,7 @@ def _author_notification_text(context: Any) -> str:
     return "\n".join(lines)
 
 
-def _moderation_text(context: Any) -> str:
+def _moderation_text(context: Any, *, author_contact: str = "") -> str:
     details = getattr(context, "details", None) or {}
     is_ficbook_form = details.get("form_version") in (2, 3)
     lines = [
@@ -118,6 +119,8 @@ def _moderation_text(context: Any) -> str:
         f"Тип: {_escaped_preview(context.work_type, max_units=80)}",
         f"{'Направление' if is_ficbook_form else 'Жанр'}: {_escaped_preview(context.genre, max_units=130)}",
     ]
+    if author_contact:
+        lines.insert(3, author_contact)
     if is_ficbook_form:
         for label, key in (
             ("Фандом", "fandom"),
@@ -338,6 +341,48 @@ class WritersDeliveryWorker:
             return await self._deliver_owner_preview(item)
         raise RuntimeError("unsupported outbox event type")
 
+    async def _author_contact(
+        self, author_user_id: int, *,
+        saved_username: str | None = None,
+        saved_first_name: str | None = None,
+    ) -> str:
+        """Moderator-only direct contact, never included in public promos."""
+        uid = int(author_user_id)
+        fallback = (
+            f'✉️ <a href="tg://user?id={uid}">Написать автору в Telegram</a>'
+        )
+        # Signed Telegram initData is recorded at Mini App login. Telegram
+        # Bot API get_chat may fail when the person has not started a DM;
+        # retain the signed username as a useful last-seen fallback.
+        saved = str(saved_username or "").lstrip("@")
+        if re.fullmatch(r"[A-Za-z0-9_]{5,32}", saved):
+            fallback = (
+                f'✉️ Telegram при заполнении: '
+                f'<a href="https://t.me/{saved}">@{saved}</a>'
+                f' · <a href="tg://user?id={uid}">по ID</a>'
+            )
+        elif saved_first_name:
+            import html
+            first = html.escape(str(saved_first_name)[:100])
+            fallback = f'✉️ Имя Telegram: {first} · ' + fallback
+        getter = getattr(self.bot, "get_chat", None)
+        if not callable(getter):
+            return fallback
+        try:
+            chat = await getter(uid)
+            if int(getattr(chat, "id", 0)) != uid:
+                return fallback
+            username = str(getattr(chat, "username", "") or "").lstrip("@")
+            if re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+                return (
+                    f'✉️ Telegram автора: '
+                    f'<a href="https://t.me/{username}">@{username}</a>'
+                    f' · <a href="tg://user?id={uid}">по ID</a>'
+                )
+        except Exception:
+            LOGGER.info("WRITERS_AUTHOR_CONTACT_LOOKUP_UNAVAILABLE user_id=%s", uid)
+        return fallback
+
     async def _deliver_moderation_card(
         self,
         item: Any,
@@ -362,7 +407,14 @@ class WritersDeliveryWorker:
             chat_id=moderation_chat_id,
             text=(
                 "<b>📦 Комплект заявки</b> <code>" + packet_id + "</code>\n"
-                + _moderation_text(context)
+                + _moderation_text(
+                    context,
+                    author_contact=await self._author_contact(
+                        context.author_user_id,
+                        saved_username=getattr(context, "author_username", None),
+                        saved_first_name=getattr(context, "author_first_name", None),
+                    ),
+                )
                 + "\n\nВсе вложения и цветовой макет — ответами на эту карточку."
             ),
             parse_mode="HTML",

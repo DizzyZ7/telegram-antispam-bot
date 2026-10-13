@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import logging
 import time
 from dataclasses import asdict, is_dataclass
 from enum import Enum
@@ -19,6 +20,8 @@ from .models import (
     ValidationError,
 )
 from .service import EligibilityUnavailableError
+LOGGER = logging.getLogger(__name__)
+
 from .security import (
     SESSION_COOKIE_NAME,
     SessionSigner,
@@ -421,6 +424,18 @@ def create_writers_web_app(
         except AuthorizationError:
             return _error("telegram_auth_invalid", status=401)
 
+        # Telegram initData is signature-verified above. Never trust profile
+        # fields in the work form itself. Contact is visible to moderators
+        # only, and the author can change Telegram username at any time.
+        contact_store = getattr(getattr(service, "storage", None), "record_author_identity", None)
+        if callable(contact_store):
+            try:
+                await contact_store(
+                    user_id=identity.user_id, username=identity.username,
+                    first_name=identity.first_name, now=int(now_fn()),
+                )
+            except Exception:
+                LOGGER.exception("WRITERS_AUTHOR_CONTACT_RECORD_FAILED")
         token = session_signer.issue(
             user_id=identity.user_id,
             now=int(now_fn()),
