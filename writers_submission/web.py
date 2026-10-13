@@ -15,6 +15,7 @@ from aiohttp import web
 from .models import (
     AuthorizationError,
     ConflictError,
+    EligibilityUnavailableError,
     NotFoundError,
     ValidationError,
 )
@@ -319,6 +320,8 @@ def create_writers_web_app(
                 status=422,
                 message=str(exc),
             )
+        except EligibilityUnavailableError:
+            return _error("eligibility_unavailable", status=503)
         except PermissionError:
             return _error("not_eligible", status=403)
         except web.HTTPRequestEntityTooLarge:
