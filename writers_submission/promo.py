@@ -11,7 +11,8 @@ import struct
 import zlib
 from urllib.parse import urlsplit
 
-from .models import ModerationDeliveryContext
+from .models import ModerationDeliveryContext, ValidationError
+from .uploads import normalize_extra_link
 
 
 def _preview(value: object, limit: int) -> str:
@@ -80,12 +81,19 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
         lines += ["📖 " + _link(details["sketch_article_url"], "Читать зарисовку в Telegraph")]
     elif context.external_url:
         lines += ["", "📖 " + _link(context.external_url, "Читать на Фикбуке")]
-    for i, url in enumerate((details.get("extra_links") or [])[:5] if not is_sketch else []):
-        if not isinstance(url, str) or urlsplit(url).scheme != "https":
+    for i, raw in enumerate((details.get("extra_links") or [])[:5] if not is_sketch else []):
+        # The sealed revision may still store Telegram's shorthand as typed
+        # because submit validation does not rewrite the author's draft JSON.
+        try:
+            url = normalize_extra_link(raw)
+        except ValidationError:
+            continue
+        if not url:
             continue
         domain = (urlsplit(url).hostname or "").lower()
-        label = "ТГ-канал" if domain in {"t.me", "telegram.me"} else f"Дополнительная ссылка {i + 1}"
-        lines.append(("💬 " if domain in {"t.me", "telegram.me"} else "🔗 ") + _link(url, label))
+        is_telegram = domain in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}
+        label = "ТГ-канал" if is_telegram else f"Дополнительная ссылка {i + 1}"
+        lines.append(("💬 " if is_telegram else "🔗 ") + _link(url, label))
     result = "\n".join(lines)
     # Telegram text is capped at 4096 chars. Use a conservative limit even
     # when HTML escaped entities and astral codepoints are counted.
