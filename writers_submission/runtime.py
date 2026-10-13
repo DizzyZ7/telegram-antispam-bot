@@ -10,7 +10,7 @@ from .files import WritersFileService
 from .handlers import register_writers_submission_handlers
 from .menu import install_writers_submission_menu
 from .security import SessionSigner
-from .service import WritersSubmissionService
+from .service import EligibilityUnavailableError, WritersSubmissionService
 from .storage import PostgresWritersSubmissionStorage
 from .web import WritersWebServer, create_writers_web_app
 
@@ -28,15 +28,25 @@ class TelegramWritersEligibilityChecker:
                 self.writers_chat_id,
                 int(user_id),
             )
-        except Exception:
-            # Eligibility gates creation/submission, so Telegram uncertainty
-            # fails closed instead of admitting an unverifiable actor.
-            LOGGER.warning("WRITERS_ELIGIBILITY_CHECK_FAILED")
-            return False
+        except Exception as exc:
+            # A Telegram API/network failure is NOT evidence that the author
+            # left the chat. Fail closed for submission but surface an honest
+            # retryable error rather than "not_eligible".
+            LOGGER.warning("WRITERS_ELIGIBILITY_CHECK_FAILED", exc_info=True)
+            raise EligibilityUnavailableError(
+                "Не удалось проверить участие в чате авторов. "
+                "Повторите отправку позже; черновик сохранен."
+            ) from exc
 
         raw_status = getattr(member, "status", "")
         status = str(getattr(raw_status, "value", raw_status)).casefold()
-        return status in {"member", "administrator", "creator"}
+        if status in {"member", "administrator", "creator", "owner"}:
+            return True
+        # Restricted Telegram members with is_member=True remain in the chat
+        # and must not be mistaken for users who left or were kicked.
+        if status == "restricted":
+            return bool(getattr(member, "is_member", False))
+        return False
 
 
 @dataclass(slots=True)

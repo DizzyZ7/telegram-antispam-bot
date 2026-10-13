@@ -606,9 +606,12 @@
     $("titleCounter").textContent = String(form.title.value.length);
     const wordCount = countWords(form.description.value);
     const sketch = selectedChoice("workType") === "Зарисовка";
+    const sentences = (form.description.value.match(/[^.!?]+[.!?]+/gu) || []).length;
+    const closedSentence = /[.!?]\s*$/u.test(form.description.value);
     $("descriptionCounter").textContent = sketch
       ? wordCount + "/35 слов · " + form.description.value.length + "/230 символов"
-      : wordCount + "/110 слов";
+      : wordCount + "/110 слов · " + sentences + "/3 предложения" +
+        (!closedSentence && form.description.value.trim() ? " (последнее не завершено)" : "");
     const slots = [form.mainGenre1, form.mainGenre2, form.mainGenre3];
     const amount = slots.filter((field) => field.value.trim()).length;
     const progress = $("genreProgress");
