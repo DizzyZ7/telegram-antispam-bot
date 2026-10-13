@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from writers_submission.service import EligibilityUnavailableError
 from writers_submission.runtime import (
     TelegramWritersEligibilityChecker,
     start_writers_submission_runtime,
@@ -28,7 +29,7 @@ class TelegramWritersEligibilityCheckerTests(unittest.IsolatedAsyncioTestCase):
                     77,
                 )
 
-    async def test_rejects_left_kicked_restricted_and_bot_api_errors(self):
+    async def test_rejects_nonmembers_but_accepts_restricted_current_members(self):
         bot = SimpleNamespace(get_chat_member=AsyncMock())
         checker = TelegramWritersEligibilityChecker(bot, -1002619489118)
 
@@ -36,7 +37,6 @@ class TelegramWritersEligibilityCheckerTests(unittest.IsolatedAsyncioTestCase):
             ("left", False),
             ("kicked", False),
             ("restricted", False),
-            ("restricted", True),
         ):
             with self.subTest(status=status, is_member=is_member):
                 bot.get_chat_member.return_value = SimpleNamespace(
@@ -45,8 +45,14 @@ class TelegramWritersEligibilityCheckerTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertFalse(await checker(77))
 
+        bot.get_chat_member.return_value = SimpleNamespace(
+            status="restricted", is_member=True,
+        )
+        self.assertTrue(await checker(77))
+
         bot.get_chat_member.side_effect = RuntimeError("Telegram unavailable")
-        self.assertFalse(await checker(77))
+        with self.assertRaises(EligibilityUnavailableError):
+            await checker(77)
 
 
 class WritersSubmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
