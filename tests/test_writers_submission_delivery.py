@@ -81,6 +81,9 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             mark_outbox_permanent_failure=AsyncMock(),
         )
         self.bot = SimpleNamespace(
+            get_chat=AsyncMock(return_value=SimpleNamespace(
+                username="author_writes", first_name="Мария", last_name="П.",
+            )),
             send_message=AsyncMock(return_value=SimpleNamespace(message_id=10)),
             send_document=AsyncMock(return_value=SimpleNamespace(message_id=11)),
             send_photo=AsyncMock(return_value=SimpleNamespace(message_id=12)),
@@ -125,6 +128,36 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.storage.mark_outbox_retryable.assert_not_awaited()
         self.storage.mark_outbox_permanent_failure.assert_not_awaited()
+
+    async def test_author_contact_shows_verified_telegram_username_and_account_link(self):
+        self.storage.claim_due_outbox.return_value = [moderation_item()]
+        await self.worker.run_once(now=111)
+        text = self.bot.send_message.await_args.kwargs["text"]
+        self.bot.get_chat.assert_awaited_once_with(77)
+        self.assertIn("Telegram: @author_writes", text)
+        self.assertIn('href="tg://user?id=77"', text)
+        self.assertIn("Автор: <code>77</code>", text)
+        self.assertNotIn("Мария", text)  # Username takes priority over name.
+
+    async def test_author_contact_without_username_shows_verified_display_name(self):
+        self.bot.get_chat.return_value = SimpleNamespace(
+            username=None, first_name='Мария <ИКФ>', last_name="С.",
+        )
+        self.storage.claim_due_outbox.return_value = [moderation_item()]
+        await self.worker.run_once(now=112)
+        text = self.bot.send_message.await_args.kwargs["text"]
+        self.assertIn("Имя в Telegram: Мария &lt;ИКФ&gt; С.", text)
+        self.assertIn('href="tg://user?id=77"', text)
+        self.assertNotIn("<ИКФ>", text)
+
+    async def test_lookup_error_still_delivers_id_and_contact_link(self):
+        self.bot.get_chat.side_effect = PermissionError("user blocked bot")
+        self.storage.claim_due_outbox.return_value = [moderation_item()]
+        await self.worker.run_once(now=113)
+        text = self.bot.send_message.await_args.kwargs["text"]
+        self.assertIn("Автор: <code>77</code>", text)
+        self.assertIn('href="tg://user?id=77"', text)
+        self.storage.mark_outbox_delivered.assert_awaited_once()
 
     async def test_moderation_card_and_attachment_go_to_owner_dm_not_group(self):
         # Delivery consumes the effective destination from validated config.
