@@ -82,9 +82,9 @@ class NewSubmissionFormTests(unittest.TestCase):
         valid = DESCRIPTION
         self.assertLessEqual(len(valid.split()), 110)
         validate_description_for_format(valid, "ФФ")
-        with self.assertRaisesRegex(ValidationError, "three sentences"):
+        with self.assertRaisesRegex(ValidationError, "three completed sentences"):
             full_submission(description="Это пока только одна фраза.")
-        with self.assertRaisesRegex(ValidationError, "three sentences"):
+        with self.assertRaisesRegex(ValidationError, "three completed sentences"):
             full_submission(description="Начало. Середина. Конец")
         with self.assertRaisesRegex(ValidationError, "110 words"):
             full_submission(description=" ".join(["слово"] * 111) + ". Потом. Конец.")
