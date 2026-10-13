@@ -33,16 +33,20 @@ class FicbookFormUiTests(unittest.TestCase):
             "extraLinksInput", "descriptionInput", "paletteEditors",
             "palettePreview", "imageInput", "imagePreview",
             "saveButton", "submitButton",
+            "sketchProfileUrlInput", "sketchArticleUrlInput",
+            "mainGenre1Input", "mainGenre2Input", "mainGenre3Input",
+            "genreProgress", "warningsInput", "warningsField",
         } <= parser.ids)
         self.assertEqual(parser.groups, {
             "workType", "sizeCategory", "completion", "visualMode",
+            "sketchOrigin", "warningsPresent",
         })
 
     def test_photo_upload_picker_supports_mobile_photos_and_cache_busting(self):
         html = (ROOT / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn("image/*,.png,.jpg,.jpeg,.webp,.heic,.heif", html)
-        self.assertIn("app.js?v=defer-upload-v1", html)
+        self.assertIn("app.js?v=genres-warnings-sketch-v3", html)
         self.assertIn("prepareUploadFile", script)
         self.assertIn("await autosave({ immediate: true })", script)
         self.assertIn("async function uploadQueuedFiles()", script)

@@ -16,6 +16,11 @@ TITLE_MAX = 160
 WORK_TYPE_MAX = 80
 GENRE_MAX = 120
 DESCRIPTION_MAX = 2000
+LONG_DESCRIPTION_WORDS_MAX = 110
+SKETCH_DESCRIPTION_WORDS_MAX = 35
+SKETCH_DESCRIPTION_CHARS_MAX = 230
+MAIN_GENRES_LIMIT = 3
+WARNINGS_LIMIT = 10
 BODY_MAX = 200_000
 EXTERNAL_URL_MAX = 2048
 
@@ -112,16 +117,20 @@ _DETAILS_ALLOWED = frozenset({
     "form_version", "fandom", "size_category", "rating", "completion",
     "size_words", "pages", "parts", "extra_links", "visual_mode",
     "palette_colors", "characters", "notes", "cover_template", "cover_file_id",
+    "main_genres", "warnings_present", "warnings", "sketch_origin",
+    "sketch_profile_url", "sketch_article_url",
 })
 
 
-def normalize_submission_details(value: object, *, complete: bool = False) -> dict[str, object]:
+def normalize_submission_details(value: object, *, complete: bool = False,
+                                 work_type: str = "") -> dict[str, object]:
     """Validate and normalize the Ficbook form; old work revisions are untouched."""
     if value is None:
         return {}
     if not isinstance(value, dict) or set(value) - _DETAILS_ALLOWED:
         raise ValidationError("details must be an object with supported fields")
-    if value.get("form_version") != 2:
+    version = value.get("form_version")
+    if version not in (2, 3):
         raise ValidationError("unsupported submission form version")
 
     # Ignore obsolete layout choices stored by older clients. Existing
@@ -129,7 +138,7 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
     legacy_template = value.get("cover_template")
     if legacy_template not in (None, "", "classic", "ribbon", "contrast", "minimal"):
         raise ValidationError("cover_template is no longer supported")
-    details: dict[str, object] = {"form_version": 2}
+    details: dict[str, object] = {"form_version": version}
     for name, limit in (("fandom", 160), ("rating", 40), ("characters", 600), ("notes", 1500)):
         raw = value.get(name, "")
         if not isinstance(raw, str) or len(raw) > limit:
@@ -139,7 +148,7 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
     for name, allowed in (
         ("size_category", {"мини", "миди", "макси"}),
         ("completion", {"завершен", "в процессе"}),
-        ("visual_mode", {"palette", "image"}),
+        ("visual_mode", {"palette", "image", "editorial"}),
     ):
         raw = value.get(name, "")
         if raw and (not isinstance(raw, str) or raw not in allowed):
@@ -195,6 +204,70 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
         except (ValueError, AttributeError) as exc:
             raise ValidationError("cover_file_id is invalid") from exc
 
+    if version == 3:
+        genres = value.get("main_genres", [])
+        if not isinstance(genres, list) or len(genres) > MAIN_GENRES_LIMIT:
+            raise ValidationError("main_genres must have 1–3 entries")
+        genre_items: list[str] = []
+        for raw in genres:
+            if not isinstance(raw, str) or len(raw) > 70:
+                raise ValidationError("main_genres entry is invalid")
+            item = " ".join(raw.split())
+            if item and item.casefold() not in {x.casefold() for x in genre_items}:
+                genre_items.append(item)
+            elif item:
+                raise ValidationError("main_genres must not repeat")
+        details["main_genres"] = genre_items
+
+        warnings_present = value.get("warnings_present", "")
+        if warnings_present not in ("", "yes", "no"):
+            raise ValidationError("warnings_present must be yes or no")
+        details["warnings_present"] = warnings_present
+        warnings = value.get("warnings", [])
+        if not isinstance(warnings, list) or len(warnings) > WARNINGS_LIMIT:
+            raise ValidationError("warnings must contain up to ten entries")
+        warning_items: list[str] = []
+        for raw in warnings:
+            if not isinstance(raw, str) or len(raw) > 85:
+                raise ValidationError("warning entry is invalid")
+            item = " ".join(raw.split())
+            if item and item.casefold() not in {x.casefold() for x in warning_items}:
+                warning_items.append(item)
+            elif item:
+                raise ValidationError("warnings must not repeat")
+        if warnings_present != "yes" and warning_items:
+            raise ValidationError("warnings require yes selection")
+        details["warnings"] = warning_items
+
+        sketch_origin = value.get("sketch_origin", "")
+        if sketch_origin not in ("", "Фандом", "Ориджинал"):
+            raise ValidationError("sketch_origin is invalid")
+        details["sketch_origin"] = sketch_origin
+        for key in ("sketch_profile_url", "sketch_article_url"):
+            raw = value.get(key, "")
+            if not isinstance(raw, str) or len(raw) > EXTERNAL_URL_MAX:
+                raise ValidationError(f"{key} is invalid")
+            details[key] = raw.strip()
+        if work_type == "Зарисовка" and complete:
+            if not details["sketch_origin"]:
+                raise ValidationError("sketch_origin is required")
+            if details["sketch_origin"] == "Фандом" and not details["fandom"]:
+                raise ValidationError("fandom is required for fandom sketches")
+            for key, hostname in (
+                ("sketch_profile_url", "ficbook.net"),
+                ("sketch_article_url", "telegra.ph"),
+            ):
+                url = _external_url(details[key])
+                if not url or (urlparse(url).hostname or "").lower() not in (hostname, "www." + hostname) or not urlparse(url).path.strip("/"):
+                    raise ValidationError(f"{key} must be an HTTPS {hostname} link")
+        if complete:
+            if not genre_items:
+                raise ValidationError("at least one main genre is required")
+            if warnings_present not in ("yes", "no"):
+                raise ValidationError("select yes or no for warnings")
+            if warnings_present == "yes" and not warning_items:
+                raise ValidationError("provide at least one content warning")
+
     if details["completion"] != "завершен":
         for name in ("size_words", "pages", "parts"):
             details[name] = None
@@ -204,15 +277,41 @@ def normalize_submission_details(value: object, *, complete: bool = False) -> di
         details["cover_file_id"] = None
 
     if complete:
-        for name in ("size_category", "rating", "completion", "visual_mode"):
+        required = (
+            ("rating", "visual_mode", "sketch_origin")
+            if version == 3 and work_type == "Зарисовка"
+            else ("size_category", "rating", "completion", "visual_mode")
+        )
+        for name in required:
             if not details[name]:
                 raise ValidationError(f"{name} is required")
+        if version == 3 and work_type == "Зарисовка" and details["visual_mode"] != "editorial":
+            raise ValidationError("sketches use the editorial rubric cover")
+        if version == 3 and work_type != "Зарисовка" and details["visual_mode"] == "editorial":
+            raise ValidationError("editorial cover is only for sketches")
         if details["visual_mode"] == "palette" and len(details["palette_colors"]) != 4:
             raise ValidationError("four palette colors are required")
-        if details["completion"] == "завершен":
+        if not (version == 3 and work_type == "Зарисовка") and details["completion"] == "завершен":
             if any(details[name] is None for name in ("size_words", "pages", "parts")):
                 raise ValidationError("finished work requires size, pages and parts")
     return details
+
+
+def validate_description_for_format(description: str, work_type: str) -> None:
+    """Short sketches fit roughly three Telegram lines; long work is balanced."""
+    text = " ".join(str(description or "").split()).strip()
+    words = re.findall(r"[^\W_]+(?:[-’'][^\W_]+)*", text, re.UNICODE)
+    if work_type == "Зарисовка":
+        if len(words) > SKETCH_DESCRIPTION_WORDS_MAX or len(text) > SKETCH_DESCRIPTION_CHARS_MAX:
+            raise ValidationError("sketch description: max 35 words and 230 characters")
+    else:
+        if len(words) > LONG_DESCRIPTION_WORDS_MAX:
+            raise ValidationError("work description: max 110 words")
+        # A sentence is a piece ending with terminal punctuation, not an
+        # arbitrary three semicolons or line breaks.
+        sentences = [s.strip() for s in re.findall(r"[^.!?]+[.!?]+", text) if s.strip()]
+        if len(sentences) < 3 or not re.search(r"[.!?]$", text):
+            raise ValidationError("work description needs at least three sentences")
 
 
 def validate_submission_fields(
@@ -227,7 +326,7 @@ def validate_submission_fields(
     details: object = None,
     require_work_content: bool = True,
 ) -> NormalizedSubmissionFields:
-    normalized_details = normalize_submission_details(details)
+    normalized_details = normalize_submission_details(details, work_type=str(work_type or ""))
     # v2 accepts partial drafts so authors can leave the Mini App and resume
     # even before completing the application. Submit enforces required fields.
     partial_draft = bool(normalized_details) and not require_work_content
@@ -249,6 +348,16 @@ def validate_submission_fields(
         ),
         details=normalized_details,
     )
+    if normalized_details.get("form_version") == 3 and bool(require_work_content):
+        validate_description_for_format(normalized.description, normalized.work_type)
+        normalize_submission_details(normalized_details, complete=True, work_type=normalized.work_type)
+        if normalized.work_type not in {"ФФ", "Оридж", "Зарисовка"}:
+            raise ValidationError("invalid work_type")
+        if normalized.work_type == "Зарисовка":
+            article_url = normalized.details.get("sketch_article_url")
+            if normalized.external_url != article_url:
+                raise ValidationError("sketch reading URL must match Telegraph article")
+
     if (
         bool(require_work_content)
         and not normalized.body_text

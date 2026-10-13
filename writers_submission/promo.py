@@ -35,7 +35,8 @@ def _link(url: str, label: str) -> str:
 def render_owner_promo(context: ModerationDeliveryContext) -> str:
     """HTML suitable for an ICФ-style copyable Telegram post."""
     details = context.details or {}
-    is_ficbook = details.get("form_version") == 2
+    is_ficbook = details.get("form_version") in (2, 3)
+    is_sketch = details.get("form_version") == 3 and context.work_type == "Зарисовка"
     tags = [
         _tag("Ориджиналы" if str(context.work_type) == "Оридж" else details.get("fandom"), "Фанфики"),
         _tag(str(details.get("size_category", "")).capitalize()) if is_ficbook else "",
@@ -43,23 +44,43 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
         _tag(details.get("rating")) if is_ficbook else "",
         _tag("Завершен" if details.get("completion") == "завершен" else "ВПроцессе") if details.get("completion") else "",
     ]
+    if is_sketch:
+        tags = [
+            _tag("Ориджинал" if details.get("sketch_origin") == "Ориджинал" else "Фандом"),
+            _tag(details.get("fandom")) if details.get("sketch_origin") == "Фандом" else "",
+            _tag(details.get("rating")),
+            _tag(context.genre),
+        ]
     lines = [
         f"🎩 <b>{_preview(context.title, 250)}</b> 🎩",
         "",
         _preview(context.description, 1650),
     ]
-    if details.get("notes"):
+    if details.get("form_version") == 3:
+        genres = details.get("main_genres") or []
+        if genres:
+            lines.extend(("", "• " + " • ".join(_preview(g, 70) for g in genres[:3]) + " •"))
+        if details.get("warnings_present") == "yes":
+            warnings = details.get("warnings") or []
+            lines.extend(("", "🚨 <b>ПРЕДУПРЕЖДЕНИЯ (18+)</b>",
+                          "× " + " × ".join(_preview(w, 85) for w in warnings[:10])))
+        if is_sketch:
+            lines.extend(("", "🎨 Обложка для рубрики — от команды ИКФ."))
+    if not is_sketch and details.get("notes"):
         lines += ["", f"<b>Примечания:</b>\n{_preview(details['notes'], 850)}"]
     hashtags = [tag for tag in tags if tag]
     if hashtags:
         lines += ["", " | ".join(hashtags)]
-    if details.get("completion") == "завершен" and details.get("pages") and details.get("parts"):
+    if not is_sketch and details.get("completion") == "завершен" and details.get("pages") and details.get("parts"):
         lines += ["", f"Объем: {int(details.get('size_words') or 0)} слов, {int(details['pages'])} страниц, {int(details['parts'])} частей"]
-    if details.get("characters"):
+    if not is_sketch and details.get("characters"):
         lines += ["", f"Основные персонажи / пейринг: {_preview(details['characters'], 350)}"]
-    if context.external_url:
+    if is_sketch:
+        lines += ["", "👤 " + _link(details["sketch_profile_url"], "Профиль автора на Фикбуке")]
+        lines += ["📖 " + _link(details["sketch_article_url"], "Читать зарисовку в Telegraph")]
+    elif context.external_url:
         lines += ["", "📖 " + _link(context.external_url, "Читать на Фикбуке")]
-    for i, url in enumerate((details.get("extra_links") or [])[:5]):
+    for i, url in enumerate((details.get("extra_links") or [])[:5] if not is_sketch else []):
         if not isinstance(url, str) or urlsplit(url).scheme != "https":
             continue
         domain = (urlsplit(url).hostname or "").lower()

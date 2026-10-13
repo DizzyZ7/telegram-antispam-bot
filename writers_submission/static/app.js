@@ -49,6 +49,12 @@
     rating: $("ratingInput"),
     fandom: $("fandomInput"),
     description: $("descriptionInput"),
+    mainGenre1: $("mainGenre1Input"),
+    mainGenre2: $("mainGenre2Input"),
+    mainGenre3: $("mainGenre3Input"),
+    warnings: $("warningsInput"),
+    sketchProfile: $("sketchProfileUrlInput"),
+    sketchArticle: $("sketchArticleUrlInput"),
     body: $("bodyInput"),
     url: $("urlInput"),
     extraLinks: $("extraLinksInput"),
@@ -228,50 +234,78 @@
   }
 
   function currentFields() {
+    const sketch = selectedChoice("workType") === "Зарисовка";
+    const genres = [form.mainGenre1, form.mainGenre2, form.mainGenre3]
+      .map((field) => field.value.trim()).filter(Boolean);
+    const warningList = form.warnings.value.split(/[,;\n]+/).map((value) => value.trim()).filter(Boolean);
     return {
       title: form.title.value.trim(),
       work_type: selectedChoice("workType"),
       genre: form.direction.value.trim(),
       description: form.description.value,
-      body_text: form.body.value,
-      external_url: form.url.value.trim() || null,
+      body_text: sketch ? "" : form.body.value,
+      external_url: sketch ? (form.sketchArticle.value.trim() || null) : (form.url.value.trim() || null),
       has_ready_file: state.attachments.length > 0,
       details: {
-        form_version: 2,
-        fandom: selectedChoice("workType") === "ФФ" ? form.fandom.value.trim() : "",
-        size_category: selectedChoice("sizeCategory"),
+        form_version: 3,
+        fandom: (selectedChoice("workType") === "ФФ" || (sketch && selectedChoice("sketchOrigin") === "Фандом"))
+          ? form.fandom.value.trim() : "",
+        sketch_origin: sketch ? selectedChoice("sketchOrigin") : "",
+        sketch_profile_url: sketch ? form.sketchProfile.value.trim() : "",
+        sketch_article_url: sketch ? form.sketchArticle.value.trim() : "",
+        main_genres: genres,
+        warnings_present: selectedChoice("warningsPresent"),
+        warnings: selectedChoice("warningsPresent") === "yes" ? warningList : [],
+        size_category: sketch ? "" : selectedChoice("sizeCategory"),
         rating: form.rating.value.trim(),
-        completion: selectedChoice("completion"),
-        size_words: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.sizeWords) : null,
-        pages: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.pages) : null,
-        parts: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.parts) : null,
-        extra_links: form.extraLinks.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean),
-        characters: form.characters.value,
-        notes: form.notes.value,
-        visual_mode: selectedChoice("visualMode"),
-        cover_file_id: selectedChoice("visualMode") === "image" ? state.coverFileId : null,
-        palette_colors: selectedChoice("visualMode") === "palette" ? state.paletteColors.slice() : [],
+        completion: sketch ? "" : selectedChoice("completion"),
+        size_words: !sketch && selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.sizeWords) : null,
+        pages: !sketch && selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.pages) : null,
+        parts: !sketch && selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.parts) : null,
+        extra_links: sketch ? [] : form.extraLinks.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean),
+        characters: sketch ? "" : form.characters.value,
+        notes: sketch ? "" : form.notes.value,
+        visual_mode: sketch ? "editorial" : selectedChoice("visualMode"),
+        cover_file_id: !sketch && selectedChoice("visualMode") === "image" ? state.coverFileId : null,
+        palette_colors: !sketch && selectedChoice("visualMode") === "palette" ? state.paletteColors.slice() : [],
       },
     };
   }
 
   function updateDynamicSections() {
-    const ff = selectedChoice("workType") === "ФФ";
+    const sketch = selectedChoice("workType") === "Зарисовка";
+    const ff = selectedChoice("workType") === "ФФ" || (sketch && selectedChoice("sketchOrigin") === "Фандом");
     const finished = selectedChoice("completion") === "завершен";
     const visual = selectedChoice("visualMode");
     $("fandomField").classList.toggle("hidden", !ff);
-    $("finishedFields").classList.toggle("hidden", !finished);
-    $("paletteFields").classList.toggle("hidden", visual !== "palette");
-    $("imageFields").classList.toggle("hidden", visual !== "image");
-    if (visual !== "image" && state.pendingFiles.some((entry) => entry.source === "image")) {
+    $("sketchOriginField").classList.toggle("hidden", !sketch);
+    $("sketchLinksFields").classList.toggle("hidden", !sketch);
+    $("sketchCoverNotice").classList.toggle("hidden", !sketch);
+    ["sizeCategorySection", "completionSection", "regularWorkUrlField", "extraLinksField",
+     "charactersField", "notesField", "visualModeSection", "bodySection"].forEach((id) => {
+      $(id).classList.toggle("hidden", sketch);
+    });
+    $("attachmentsSection").classList.toggle("hidden", sketch && !state.attachments.length);
+    $("warningsField").classList.toggle("hidden", selectedChoice("warningsPresent") !== "yes");
+    $("descriptionHint").textContent = sketch
+      ? "Для зарисовки: до 35 слов и 230 символов (примерно три короткие строки)."
+      : "Для большой работы: минимум 3 предложения, до 110 слов.";
+    form.description.maxLength = sketch ? 230 : 2000;
+    form.sketchProfile.required = sketch;
+    form.sketchArticle.required = sketch;
+    form.url.required = !sketch;
+    $("finishedFields").classList.toggle("hidden", sketch || !finished);
+    $("paletteFields").classList.toggle("hidden", sketch || visual !== "palette");
+    $("imageFields").classList.toggle("hidden", sketch || visual !== "image");
+    if ((sketch || visual !== "image") && state.pendingFiles.some((entry) => entry.source === "image")) {
       state.pendingFiles = state.pendingFiles.filter((entry) => entry.source !== "image");
       clearImagePreview();
       renderAttachments();
       updateImageStatus();
     }
-    if (visual === "palette") { renderIkfCover(); }
+    if (!sketch && visual === "palette") { renderIkfCover(); }
     form.fandom.required = ff;
-    [form.sizeWords, form.pages, form.parts].forEach((field) => { field.required = finished; });
+    [form.sizeWords, form.pages, form.parts].forEach((field) => { field.required = !sketch && finished; });
   }
 
   function clearImagePreview() {
@@ -287,7 +321,15 @@
     const revision = submission && submission.revision ? submission.revision : {};
     const details = revision.details || {};
     form.title.value = revision.title || "";
-    setChoice("workType", ["ФФ", "Оридж"].includes(revision.work_type) ? revision.work_type : "");
+    setChoice("workType", ["ФФ", "Оридж", "Зарисовка"].includes(revision.work_type) ? revision.work_type : "");
+    setChoice("sketchOrigin", details.sketch_origin || "");
+    setChoice("warningsPresent", details.warnings_present || "");
+    [form.mainGenre1, form.mainGenre2, form.mainGenre3].forEach((field, index) => {
+      field.value = Array.isArray(details.main_genres) ? (details.main_genres[index] || "") : "";
+    });
+    form.warnings.value = Array.isArray(details.warnings) ? details.warnings.join(", ") : "";
+    form.sketchProfile.value = details.sketch_profile_url || "";
+    form.sketchArticle.value = details.sketch_article_url || (revision.work_type === "Зарисовка" ? revision.external_url || "" : "");
     setChoice("sizeCategory", details.size_category || "");
     setChoice("completion", details.completion || "");
     setChoice("visualMode", details.visual_mode || "palette");
@@ -480,25 +522,79 @@
     });
   }
 
+  function countWords(text) {
+    return (String(text || "").match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu) || []).length;
+  }
+
+  function validDomain(value, host) {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && !url.username && !url.password &&
+        [host, "www." + host].includes(url.hostname.toLowerCase());
+    } catch (_) {
+      return false;
+    }
+  }
+
   function validateReadyForm() {
     const values = currentFields();
-    if (!values.title || !values.work_type || !values.details.size_category ||
-        !values.genre || !values.details.rating || !values.details.completion ||
-        !values.description.trim() || !values.external_url || !values.external_url.startsWith("https://") ||
-        !values.details.visual_mode) {
-      throw new Error("Заполни все обязательные строки анкеты и выбери варианты галочками.");
+    const sketch = values.work_type === "Зарисовка";
+    const details = values.details;
+    if (!values.title || !["ФФ", "Оридж", "Зарисовка"].includes(values.work_type) ||
+        !values.genre || !details.rating || !values.description.trim()) {
+      throw new Error("Заполни название, формат, направление, рейтинг и описание.");
     }
-    if (values.work_type === "ФФ" && !values.details.fandom) {
-      throw new Error("Для фанфика укажи фандом.");
+    if (!sketch && (!details.size_category || !details.completion || !details.visual_mode)) {
+      throw new Error("Для большой работы выбери размер, статус и оформление.");
     }
-    if (values.details.completion === "завершен" &&
-        [values.details.size_words, values.details.pages, values.details.parts].some((n) => !n)) {
-      throw new Error("Для завершенной работы укажи размер в словах, страницы и части.");
+    if (sketch) {
+      if (!details.sketch_origin || (details.sketch_origin === "Фандом" && !details.fandom)) {
+        throw new Error("Для зарисовки укажи фандом или ориджинал.");
+      }
+      if (!validDomain(details.sketch_profile_url, "ficbook.net") ||
+          !validDomain(details.sketch_article_url, "telegra.ph")) {
+        throw new Error("Нужны HTTPS-ссылки на профиль Фикбука и статью telegra.ph.");
+      }
+    } else {
+      if (!values.external_url || !values.external_url.startsWith("https://")) {
+        throw new Error("Укажи HTTPS-ссылку на произведение на Фикбуке.");
+      }
+      if (values.work_type === "ФФ" && !details.fandom) {
+        throw new Error("Для фанфика укажи фандом.");
+      }
+      if (details.completion === "завершен" &&
+          [details.size_words, details.pages, details.parts].some((n) => !n)) {
+        throw new Error("Для завершенной работы укажи размер, страницы и части.");
+      }
     }
-    if (values.details.extra_links.length > 5) {
+    if (!details.main_genres.length || details.main_genres.length > 3 ||
+        new Set(details.main_genres.map((value) => value.toLocaleLowerCase("ru"))).size !== details.main_genres.length) {
+      throw new Error("Укажи от одного до трех разных основных жанров.");
+    }
+    if (!["yes", "no"].includes(details.warnings_present)) {
+      throw new Error("Обязательно ответь на вопрос о предупреждениях: Да или Нет.");
+    }
+    if (details.warnings_present === "yes" && (!details.warnings.length || details.warnings.length > 10)) {
+      throw new Error("При выборе «Да» перечисли от 1 до 10 предупреждений.");
+    }
+    const wordCount = countWords(values.description);
+    if (sketch) {
+      if (wordCount > 35 || values.description.length > 230) {
+        throw new Error("Описание зарисовки: не больше 35 слов и 230 символов.");
+      }
+    } else {
+      const sentenceCount = (values.description.match(/[^.!?]+[.!?]+/gu) || []).length;
+      if (sentenceCount < 3 || !/[.!?]\s*$/u.test(values.description)) {
+        throw new Error("Описание большой работы должно содержать не меньше трех предложений.");
+      }
+      if (wordCount > 110) {
+        throw new Error("Описание большой работы: максимум 110 слов.");
+      }
+    }
+    if (!sketch && details.extra_links.length > 5) {
       throw new Error("Дополнительных ссылок может быть не больше пяти.");
     }
-    if (values.details.visual_mode === "image" &&
+    if (!sketch && details.visual_mode === "image" &&
         !state.pendingFiles.some((entry) => entry.source === "image") &&
         !state.attachments.some((file) => ["png", "jpeg"].includes(file.file_class))) {
       throw new Error("Выбери свою фотографию для платной обложки.");
@@ -508,7 +604,19 @@
 
   function refreshCounters() {
     $("titleCounter").textContent = String(form.title.value.length);
-    $("descriptionCounter").textContent = String(form.description.value.length);
+    const wordCount = countWords(form.description.value);
+    const sketch = selectedChoice("workType") === "Зарисовка";
+    $("descriptionCounter").textContent = sketch
+      ? wordCount + "/35 слов · " + form.description.value.length + "/230 символов"
+      : wordCount + "/110 слов";
+    const slots = [form.mainGenre1, form.mainGenre2, form.mainGenre3];
+    const amount = slots.filter((field) => field.value.trim()).length;
+    const progress = $("genreProgress");
+    progress.setAttribute("aria-label", "Заполнено жанров: " + amount + " из 3");
+    Array.from(progress.children).forEach((segment, index) => {
+      segment.classList.toggle("filled", index < amount);
+    });
+    $("genreProgressLabel").textContent = "Заполнено: " + amount + " из 3";
     $("bodyCounter").textContent = String(form.body.value.length);
   }
 
@@ -669,6 +777,12 @@
       ["Рейтинг", (revision.details || {}).rating || "—"],
       ["Статус произведения", (revision.details || {}).completion || "—"],
       ["Фандом", (revision.details || {}).fandom || "—"],
+      ["Основа зарисовки", (revision.details || {}).sketch_origin || "—"],
+      ["Основные жанры", ((revision.details || {}).main_genres || []).join(" • ") || "—"],
+      ["Предупреждения", (revision.details || {}).warnings_present === "no"
+        ? "Нет" : ((revision.details || {}).warnings || []).join(" × ") || "—"],
+      ["Профиль Фикбука", (revision.details || {}).sketch_profile_url || "—"],
+      ["Статья Telegraph", (revision.details || {}).sketch_article_url || "—"],
       ["Размер (слов)", (revision.details || {}).size_words || "—"],
       ["Страниц", (revision.details || {}).pages || "—"],
       ["Частей", (revision.details || {}).parts || "—"],

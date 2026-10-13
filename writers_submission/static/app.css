@@ -659,3 +659,14 @@ textarea {
 .upload-progress[data-phase="error"] progress::-webkit-progress-value {
   background: var(--danger);
 }
+
+
+/* Three genre slots provide a compact, accessible progress display. */
+.genre-slots, .sketch-links { display:grid; gap:10px; }
+.genre-slots input { width:100%; min-width:0; padding:12px 13px; border:1px solid var(--border); border-radius:12px; background:var(--bg); color:var(--text); }
+.genre-progress { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin-top:8px; }
+.genre-progress span { height:7px; border-radius:10px; background:color-mix(in srgb,var(--text) 12%,transparent); transition:background .2s; }
+.genre-progress span.filled { background:var(--accent); }
+#descriptionCounter { font-variant-numeric:tabular-nums; }
+#warningsField { margin-top:12px; }
+#sketchCoverNotice { margin-bottom:16px; padding:12px; border-radius:12px; background:color-mix(in srgb,var(--accent) 9%,var(--surface)); }
