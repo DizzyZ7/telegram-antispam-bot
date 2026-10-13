@@ -14,7 +14,7 @@ from uuid import uuid4
 from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
-from writers_submission.models import ConflictError, NotFoundError, ValidationError
+from writers_submission.models import ConflictError, EligibilityUnavailableError, NotFoundError, ValidationError
 from writers_submission.security import SESSION_COOKIE_NAME, SessionSigner
 from writers_submission.web import create_writers_web_app
 
@@ -317,6 +317,36 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         fields = self.service.create.await_args.kwargs["fields"]
         self.assertEqual(fields.body_text, "")
 
+
+    async def test_membership_failure_is_distinct_from_telegram_outage(self):
+        payload = {
+            "title": "Незавершенная работа",
+            "work_type": "ФФ",
+            "genre": "Гет",
+            "description": "",
+            "body_text": "",
+            "external_url": None,
+            "details": {"form_version": 3},
+        }
+        # Incomplete v3 drafts must reach the service and never be lost to a
+        # generic 422 message about description length.
+        self.service.create.side_effect = PermissionError("not a chat member")
+        denied = await self.client.post(
+            "/api/writers/submissions", json=payload,
+            headers={**self.auth_headers(), "Idempotency-Key": "membership-denied"},
+        )
+        self.assertEqual(denied.status, 403)
+        self.assertEqual((await denied.json())["error"], "not_eligible")
+
+        self.service.create.side_effect = EligibilityUnavailableError("Telegram outage")
+        unavailable = await self.client.post(
+            "/api/writers/submissions", json=payload,
+            headers={**self.auth_headers(), "Idempotency-Key": "membership-unavailable"},
+        )
+        self.assertEqual(unavailable.status, 503)
+        self.assertEqual(
+            (await unavailable.json())["error"], "eligibility_unavailable"
+        )
 
     async def test_actor_identity_comes_only_from_signed_session(self):
         payload = {
