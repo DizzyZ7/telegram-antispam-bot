@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 from uuid import UUID, uuid4
 
@@ -209,6 +210,20 @@ class PostgresWritersSubmissionStorage:
                 await self._initialize_schema(connection)
 
     async def _initialize_schema(self, connection: asyncpg.Connection) -> None:
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS writers_author_contacts (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                verified_at BIGINT NOT NULL
+            )
+            """
+        )
+        await connection.execute(
+            "CREATE INDEX IF NOT EXISTS writers_author_contacts_verified "
+            "ON writers_author_contacts(verified_at)"
+        )
         await connection.execute(
             """
             CREATE TABLE IF NOT EXISTS writers_submission_schema_meta (
@@ -2428,6 +2443,30 @@ class PostgresWritersSubmissionStorage:
             comment=comment,
         )
 
+    async def record_author_identity(
+        self, *, user_id: int, username: str | None,
+        first_name: str | None, now: int,
+    ) -> None:
+        """Signed Mini App user data; never accept form-supplied identity."""
+        username = username if isinstance(username, str) and re.fullmatch(
+            r"[A-Za-z0-9_]{5,32}", username
+        ) else None
+        first_name = str(first_name or "")[:100] or None
+        pool = self._require_pool()
+        await pool.execute(
+            """
+            INSERT INTO writers_author_contacts
+                (user_id, username, first_name, verified_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (user_id) DO UPDATE SET
+                username=EXCLUDED.username,
+                first_name=EXCLUDED.first_name,
+                verified_at=EXCLUDED.verified_at
+            WHERE writers_author_contacts.verified_at <= EXCLUDED.verified_at
+            """,
+            int(user_id), username, first_name, int(now),
+        )
+
     async def get_moderation_delivery_context(
         self,
         *,
@@ -2439,6 +2478,8 @@ class PostgresWritersSubmissionStorage:
             """
             SELECT
                 s.author_user_id,
+                p.username AS author_username,
+                p.first_name AS author_first_name,
                 r.title,
                 r.work_type,
                 r.genre,
@@ -2447,6 +2488,8 @@ class PostgresWritersSubmissionStorage:
                 r.external_url,
                 r.details_json
             FROM writers_submissions AS s
+            LEFT JOIN writers_author_contacts AS p
+              ON p.user_id=s.author_user_id
             JOIN writers_submission_revisions AS r
               ON r.submission_id = s.id
             WHERE s.id = $1 AND r.id = $2
@@ -2480,6 +2523,8 @@ class PostgresWritersSubmissionStorage:
             ),
             files=tuple(_file_from_row(item) for item in file_rows),
             details=json.loads(str(row["details_json"] or "{}")),
+            author_username=row["author_username"],
+            author_first_name=row["author_first_name"],
         )
 
     async def get_author_notification_context(
