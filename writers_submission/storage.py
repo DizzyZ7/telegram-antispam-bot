@@ -217,6 +217,25 @@ class PostgresWritersSubmissionStorage:
             )
             """
         )
+        # Observed users only. Telegram Bot API cannot enumerate all channel
+        # subscribers; this never claims to be a complete member directory.
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS writers_community_members (
+                chat_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                status TEXT NOT NULL,
+                is_member BOOLEAN NOT NULL,
+                source TEXT NOT NULL,
+                checked_at BIGINT NOT NULL,
+                PRIMARY KEY (chat_id, user_id)
+            )
+            """
+        )
+        await connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_writers_community_checked "
+            "ON writers_community_members(chat_id, checked_at DESC)"
+        )
         await connection.execute(
             """
             INSERT INTO writers_submission_schema_meta(key, value)
@@ -552,6 +571,36 @@ class PostgresWritersSubmissionStorage:
             return
         await self.pool.close()
         self.pool = None
+
+    async def record_community_member(
+        self, *,
+        chat_id: int,
+        user_id: int,
+        status: str,
+        is_member: bool,
+        source: str,
+        now: int,
+    ) -> None:
+        """Record an observed status; fresh Telegram checks still gate submit."""
+        if source not in {"live_lookup", "chat_member_update"}:
+            raise ValueError("Invalid community membership source")
+        pool = self._require_pool()
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO writers_community_members
+                    (chat_id, user_id, status, is_member, source, checked_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (chat_id, user_id) DO UPDATE SET
+                    status=EXCLUDED.status,
+                    is_member=EXCLUDED.is_member,
+                    source=EXCLUDED.source,
+                    checked_at=EXCLUDED.checked_at
+                WHERE writers_community_members.checked_at <= EXCLUDED.checked_at
+                """,
+                int(chat_id), int(user_id), str(status), bool(is_member),
+                source, int(now),
+            )
 
     def _require_pool(self) -> asyncpg.Pool:
         if self.pool is None:
