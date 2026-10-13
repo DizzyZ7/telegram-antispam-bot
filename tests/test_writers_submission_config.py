@@ -28,6 +28,40 @@ class WritersSubmissionConfigTests(unittest.TestCase):
         self.assertIsNone(config.public_url)
         self.assertEqual(config.moderator_ids, frozenset())
 
+    def test_community_channel_override_and_invite_link(self):
+        env = self._enabled_env()
+        env["WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID"] = "-1003334445556"
+        env["WRITERS_SUBMISSION_COMMUNITY_URL"] = "https://t.me/+IKFInvite"
+        with patch.dict(os.environ, env, clear=True):
+            config = WritersSubmissionConfig.from_env(
+                bot_token="token", database_url="postgresql://db",
+                writers_chat_id=-1002619489118,
+            )
+        self.assertEqual(config.membership_chat_id, -1003334445556)
+        self.assertEqual(config.community_url, "https://t.me/+IKFInvite")
+
+    def test_community_defaults_to_writers_chat_without_override(self):
+        with patch.dict(os.environ, self._enabled_env(), clear=True):
+            config = WritersSubmissionConfig.from_env(
+                bot_token="token", database_url="postgresql://db",
+                writers_chat_id=-1002619489118,
+            )
+        self.assertEqual(config.membership_chat_id, -1002619489118)
+        self.assertIsNone(config.community_url)
+
+    def test_community_rejects_nontelegram_links_and_nonchat_ids(self):
+        for overrides, label in (
+            ({"WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID": "42"}, "MEMBERSHIP_CHAT_ID"),
+            ({"WRITERS_SUBMISSION_COMMUNITY_URL": "https://evil.example/x"}, "COMMUNITY_URL"),
+        ):
+            with self.subTest(label=label):
+                with patch.dict(os.environ, {**self._enabled_env(), **overrides}, clear=True):
+                    with self.assertRaisesRegex(ValueError, label):
+                        WritersSubmissionConfig.from_env(
+                            bot_token="token", database_url="postgresql://db",
+                            writers_chat_id=-1002619489118,
+                        )
+
     def test_enabled_config_requires_every_security_boundary(self):
         base = self._enabled_env()
         required_cases = (
