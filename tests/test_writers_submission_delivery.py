@@ -459,7 +459,34 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message["chat_id"], 2039781854)
         self.assertIn("ожидает подтверждения оплаты", message["text"])
 
-    async def test_failed_palette_render_falls_back_to_owner_text(self):
+    async def test_palette_renderer_failure_still_sends_owner_rgb_image(self):
+        item = moderation_item()
+        item.event_type = OutboxEventType.OWNER_PREVIEW
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.title = "я люблю пуушукппу"
+        context.details = {
+            "form_version": 3, "visual_mode": "palette",
+            "palette_colors": ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"],
+            "size_category": "мини", "rating": "NC-17",
+            "completion": "завершен", "extra_links": [],
+        }
+        with patch("writers_submission.delivery.render_palette_png",
+                   side_effect=RuntimeError("Cyrillic serif font unavailable")):
+            with self.assertLogs("writers_submission.delivery", level="ERROR") as logs:
+                await self.worker.run_once(now=518)
+        self.assertIn("WRITERS_PALETTE_PRIMARY_RENDER_FAILED", "\n".join(logs.output))
+        self.bot.send_photo.assert_awaited_once()
+        raw = self.bot.send_photo.await_args.kwargs["photo"].data
+        with Image.open(BytesIO(raw)) as image:
+            self.assertEqual(image.size, (1200, 450))
+            self.assertEqual(image.getpixel((140, 225)), (0x5B, 0x67, 0xF1))
+            self.assertEqual(image.getpixel((440, 225)), (0xEF, 0x86, 0xAC))
+            self.assertEqual(image.getpixel((740, 225)), (0x78, 0xCF, 0xBC))
+            self.assertEqual(image.getpixel((1040, 225)), (0xFF, 0xC7, 0x77))
+        self.storage.mark_outbox_delivered.assert_awaited_once()
+
+    async def test_both_palette_renderers_failing_retains_text_warning(self):
         item = moderation_item()
         item.event_type = OutboxEventType.OWNER_PREVIEW
         self.storage.claim_due_outbox.return_value = [item]
@@ -471,17 +498,38 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             "size_category": "мини", "rating": "G",
             "completion": "в процессе", "extra_links": [],
         }
-        with patch("writers_submission.delivery.render_palette_png",
-                   side_effect=RuntimeError("test image renderer broken")):
+        with (
+            patch("writers_submission.delivery.render_palette_png",
+                  side_effect=RuntimeError("Pillow unavailable")),
+            patch("writers_submission.delivery.render_palette_fallback_png",
+                  side_effect=RuntimeError("fallback also unavailable")),
+        ):
             with self.assertLogs("writers_submission.delivery", level="ERROR") as log:
-                await self.worker.run_once(now=518)
+                await self.worker.run_once(now=519)
         self.assertIn("WRITERS_OWNER_PREVIEW_IMAGE_PREP_FAILED", "\n".join(log.output))
         self.bot.send_photo.assert_not_awaited()
         self.bot.send_message.assert_awaited_once()
-        kwargs = self.bot.send_message.await_args.kwargs
-        self.assertEqual(kwargs["chat_id"], 2039781854)
-        self.assertIn("Тест", kwargs["text"])
-        self.assertIn("Не удалось подготовить макет", kwargs["text"])
+        self.assertIn(
+            "Не удалось подготовить макет", self.bot.send_message.await_args.kwargs["text"]
+        )
+        self.storage.mark_outbox_delivered.assert_awaited_once()
+
+    async def test_moderation_palette_fallback_stays_a_reply_to_packet(self):
+        item = moderation_item()
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.title = "я люблю пуушукппу"
+        context.details = {
+            "form_version": 3, "visual_mode": "palette",
+            "palette_colors": ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"],
+        }
+        with patch("writers_submission.delivery.render_palette_png",
+                   side_effect=RuntimeError("font missing")):
+            await self.worker.run_once(now=517)
+        self.bot.send_photo.assert_awaited_once()
+        args = self.bot.send_photo.await_args.kwargs
+        self.assertEqual(args["reply_parameters"].message_id, 10)
+        self.assertTrue(args["photo"].data.startswith(b"\x89PNG\r\n\x1a\n"))
         self.storage.mark_outbox_delivered.assert_awaited_once()
 
     async def test_failed_photo_send_falls_back_to_owner_text(self):

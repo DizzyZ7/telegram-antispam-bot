@@ -12,7 +12,8 @@ from typing import Any
 
 from .handlers import build_moderation_keyboard
 from .models import OutboxEventType, ReviewAction
-from .promo import render_owner_promo, render_palette_png, render_custom_cover_png
+from .promo import (render_owner_promo, render_palette_png,
+                    render_palette_fallback_png, render_custom_cover_png)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -176,6 +177,23 @@ def _is_permanent_telegram_error(exc: Exception) -> bool:
         or "unauthorized" in name
         or "badrequest" in name
     )
+
+
+def _robust_palette_png(colors: Any, *, title: str, submission_id: Any) -> bytes:
+    """Render the branded preview, or a simple RGB board if unavailable.
+
+    The fallback has no external font or Pillow dependencies. A failure in
+    either renderer remains visible in delivery logs and doesn't block posts.
+    """
+    try:
+        return render_palette_png(colors, title=title)
+    except Exception:
+        LOGGER.exception(
+            "WRITERS_PALETTE_PRIMARY_RENDER_FAILED submission_id=%s "
+            "using=stdlib_rgb_board",
+            submission_id,
+        )
+        return render_palette_fallback_png(colors)
 
 
 class WritersDeliveryWorker:
@@ -366,8 +384,9 @@ class WritersDeliveryWorker:
         details = getattr(context, "details", None) or {}
         if details.get("visual_mode") == "palette":
             try:
-                palette = render_palette_png(
-                    details.get("palette_colors", []), title=context.title
+                palette = _robust_palette_png(
+                    details.get("palette_colors", []),
+                    title=context.title, submission_id=item.submission_id,
                 )
                 mockup = await self.bot.send_photo(
                     **reply_kwargs,
@@ -470,9 +489,10 @@ class WritersDeliveryWorker:
         try:
             if visual_mode == "palette":
                 photo = BufferedInputFile(
-                    render_palette_png(
+                    _robust_palette_png(
                         details.get("palette_colors", []),
                         title=context.title,
+                        submission_id=item.submission_id,
                     ),
                     filename="ikf-palette-mockup.png",
                 )
