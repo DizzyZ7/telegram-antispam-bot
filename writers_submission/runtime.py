@@ -11,6 +11,7 @@ from .delivery import WritersDeliveryWorker
 from .files import WritersFileService
 from .handlers import register_writers_submission_handlers
 from .menu import install_writers_submission_menu
+from .membership import register_community_membership_handler
 from .models import EligibilityUnavailableError
 from .security import SessionSigner
 from .service import WritersSubmissionService
@@ -223,6 +224,7 @@ async def start_writers_submission_runtime(
             service,
             config,
         )
+        register_community_membership_handler(app, storage, membership_chat_id)
 
         worker_start_attempted = True
         await delivery_worker.start()
