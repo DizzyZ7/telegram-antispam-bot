@@ -108,7 +108,7 @@ def _author_notification_text(context: Any) -> str:
 
 def _moderation_text(context: Any) -> str:
     details = getattr(context, "details", None) or {}
-    is_ficbook_form = details.get("form_version") == 2
+    is_ficbook_form = details.get("form_version") in (2, 3)
     lines = [
         "✒️ <b>Новая работа на модерацию</b>",
         "",
@@ -130,6 +130,22 @@ def _moderation_text(context: Any) -> str:
             value = details.get(key)
             if value not in (None, ""):
                 lines.append(f"{label}: {_escaped_preview(value, max_units=130)}")
+        if details.get("form_version") == 3:
+            genres = details.get("main_genres") or []
+            if genres:
+                lines.append("Основные жанры: " + _escaped_preview(" • ".join(genres), max_units=240))
+            lines.append("Предупреждения: " + (
+                _escaped_preview(" × ".join(details.get("warnings") or []), max_units=430)
+                if details.get("warnings_present") == "yes" else "нет"
+            ))
+            if context.work_type == "Зарисовка":
+                lines.append("Происхождение зарисовки: " +
+                             _escaped_preview(details.get("sketch_origin"), max_units=100))
+                lines.append("Профиль Фикбука: " +
+                             _escaped_preview(details.get("sketch_profile_url"), max_units=370))
+                lines.append("Текст Telegraph: " +
+                             _escaped_preview(details.get("sketch_article_url"), max_units=370))
+                lines.append("Обложка: редакционная для рубрики")
         if details.get("visual_mode") == "palette":
             colors = details.get("palette_colors") or []
             lines.append(f"Палитра RGB: {_escaped_preview(', '.join(colors), max_units=120)}")
