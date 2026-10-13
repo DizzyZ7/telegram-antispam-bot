@@ -99,6 +99,8 @@ class WritersSubmissionConfig:
     rate_limit_window_seconds: int
     owner_user_id: int = DEFAULT_OWNER_USER_ID
     moderation_mode: str = DEFAULT_MODERATION_MODE
+    membership_chat_id: int | None = None
+    community_url: str | None = None
 
     @classmethod
     def from_env(
