@@ -18,6 +18,7 @@ from .models import (
     NotFoundError,
     ValidationError,
 )
+from .service import EligibilityUnavailableError
 from .security import (
     SESSION_COOKIE_NAME,
     SessionSigner,
@@ -319,8 +320,19 @@ def create_writers_web_app(
                 status=422,
                 message=str(exc),
             )
+        except EligibilityUnavailableError as exc:
+            return _error(
+                "eligibility_unavailable", status=503, message=str(exc),
+            )
         except PermissionError:
-            return _error("not_eligible", status=403)
+            return _error(
+                "not_eligible", status=403,
+                message=(
+                    "Для отправки на проверку нужно состоять в чате авторов. "
+                    "Вступите в чат и повторите отправку. "
+                    "Черновик остается сохраненным."
+                ),
+            )
         except web.HTTPRequestEntityTooLarge:
             return _error("payload_too_large", status=413)
         except web.HTTPBadRequest as exc:
