@@ -9,6 +9,7 @@ from .delivery import WritersDeliveryWorker
 from .files import WritersFileService
 from .handlers import register_writers_submission_handlers
 from .menu import install_writers_submission_menu
+from .models import EligibilityUnavailableError
 from .security import SessionSigner
 from .service import WritersSubmissionService
 from .storage import PostgresWritersSubmissionStorage
@@ -28,14 +29,21 @@ class TelegramWritersEligibilityChecker:
                 self.writers_chat_id,
                 int(user_id),
             )
-        except Exception:
-            # Eligibility gates creation/submission, so Telegram uncertainty
-            # fails closed instead of admitting an unverifiable actor.
-            LOGGER.warning("WRITERS_ELIGIBILITY_CHECK_FAILED")
-            return False
+        except Exception as exc:
+            # Don't misreport Telegram outages or missing bot permissions as
+            # "not a member". Keep submission blocked until access is verified.
+            LOGGER.warning(
+                "WRITERS_ELIGIBILITY_CHECK_UNAVAILABLE chat_id=%s error_type=%s",
+                self.writers_chat_id, type(exc).__name__,
+            )
+            raise EligibilityUnavailableError("Telegram membership check unavailable") from exc
 
         raw_status = getattr(member, "status", "")
         status = str(getattr(raw_status, "value", raw_status)).casefold()
+        if status == "restricted":
+            # ChatMemberRestricted may still be an active chat member,
+            # even if some posting permissions were limited by admins.
+            return getattr(member, "is_member", False) is True
         return status in {"member", "administrator", "creator"}
 
 
