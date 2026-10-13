@@ -365,7 +365,7 @@ def validate_description_for_format(description: str, work_type: str) -> None:
         # invalidate the three or more sentences already present.
         sentences = [
             segment for segment in re.findall(r"[^.!?]+[.!?]+", text)
-            if re.search(r"[^\\W_]", segment, re.UNICODE)
+            if re.search(r"[^\W_]", segment, re.UNICODE)
         ]
         if len(sentences) < 3:
             raise ValidationError(
