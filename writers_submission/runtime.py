@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,9 +20,10 @@ LOGGER = logging.getLogger(__name__)
 
 
 class TelegramWritersEligibilityChecker:
-    def __init__(self, bot: Any, writers_chat_id: int) -> None:
+    def __init__(self, bot: Any, writers_chat_id: int, storage: Any = None) -> None:
         self.bot = bot
         self.writers_chat_id = int(writers_chat_id)
+        self.storage = storage
 
     async def __call__(self, user_id: int) -> bool:
         try:
@@ -40,11 +42,26 @@ class TelegramWritersEligibilityChecker:
 
         raw_status = getattr(member, "status", "")
         status = str(getattr(raw_status, "value", raw_status)).casefold()
-        if status == "restricted":
-            # ChatMemberRestricted may still be an active chat member,
-            # even if some posting permissions were limited by admins.
-            return getattr(member, "is_member", False) is True
-        return status in {"member", "administrator", "creator"}
+        is_member = (
+            getattr(member, "is_member", False) is True
+            if status == "restricted"
+            else status in {"member", "administrator", "creator", "owner"}
+        )
+        if self.storage is not None:
+            try:
+                await self.storage.record_community_member(
+                    chat_id=self.writers_chat_id,
+                    user_id=int(user_id),
+                    status=status,
+                    is_member=is_member,
+                    source="live_lookup",
+                    now=int(time.time()),
+                )
+            except Exception:
+                # A database telemetry outage cannot bypass or invalidate
+                # the *live* membership decision returned by Telegram.
+                LOGGER.exception("WRITERS_MEMBERSHIP_OBSERVATION_FAILED")
+        return is_member
 
 
 @dataclass(slots=True)
