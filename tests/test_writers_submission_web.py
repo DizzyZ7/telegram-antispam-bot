@@ -17,7 +17,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from writers_submission.models import ConflictError, NotFoundError, ValidationError
 from writers_submission.service import EligibilityUnavailableError
 from writers_submission.security import SESSION_COOKIE_NAME, SessionSigner
-from writers_submission.web import create_writers_web_app
+from writers_submission.web import _RateLimiter, create_writers_web_app
 
 
 BOT_TOKEN = "123456:test-token"
@@ -87,6 +87,19 @@ def bundle(*, author_user_id: int = 77, version: int = 1):
             sealed_at=None,
         ),
     )
+
+
+class DraftCreationRateLimitTests(unittest.TestCase):
+    def test_draft_creation_has_stricter_burst_limit_than_edits(self):
+        limiter = _RateLimiter(window_seconds=60)
+        self.assertTrue(all(
+            limiter.check(user_id=77, bucket="create", now=100)
+            for _ in range(12)
+        ))
+        self.assertFalse(limiter.check(user_id=77, bucket="create", now=100))
+        self.assertTrue(limiter.check(user_id=77, bucket="update", now=100))
+        self.assertTrue(limiter.check(user_id=77, bucket="create", now=161))
+        self.assertTrue(limiter.check(user_id=99, bucket="create", now=100))
 
 
 class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
