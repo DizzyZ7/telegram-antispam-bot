@@ -56,7 +56,17 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
         "",
         _preview(context.description, 1650),
     ]
-    if details.get("notes"):
+    if details.get("form_version") == 3:
+        genres = details.get("main_genres") or []
+        if genres:
+            lines.extend(("", "• " + " • ".join(_preview(g, 70) for g in genres[:3]) + " •"))
+        if details.get("warnings_present") == "yes":
+            warnings = details.get("warnings") or []
+            lines.extend(("", "🚨 <b>ПРЕДУПРЕЖДЕНИЯ (18+)</b>",
+                          "× " + " × ".join(_preview(w, 85) for w in warnings[:10])))
+        if is_sketch:
+            lines.extend(("", "🎨 Обложка для рубрики — от команды ИКФ."))
+    if not is_sketch and details.get("notes"):
         lines += ["", f"<b>Примечания:</b>\n{_preview(details['notes'], 850)}"]
     hashtags = [tag for tag in tags if tag]
     if hashtags:
