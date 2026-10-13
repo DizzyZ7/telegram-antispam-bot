@@ -1323,7 +1323,7 @@
         resolve(data);
       };
       xhr.onerror = () => {
-        const error = new Error("Соединение прервано при загрузке файла.");
+        const error = new Error("Не удалось передать файл: соединение прервано. Проверь интернет.");
         error.code = "upload_network_error";
         reject(error);
       };
