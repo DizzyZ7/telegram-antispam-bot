@@ -143,6 +143,12 @@
       idempotency_key_required: "Не передан идентификатор операции. Переоткрой Mini App.",
     };
     let explanation = lookup[code];
+    if (code === "telegram_file_staging_unavailable") {
+      explanation = details || "Не удалось передать файл в закрытое Telegram-хранилище. Повтори загрузку позднее.";
+    }
+    if (code === "eligibility_unavailable") {
+      explanation = details || "Telegram временно не может проверить подписку. Повтори отправку позднее.";
+    }
     if (!explanation && status === 401) explanation = lookup.unauthorized;
     if (!explanation && status === 403) explanation = details || "Нет разрешения на эту операцию.";
     if (!explanation && status === 404) explanation = lookup.not_found;
@@ -1309,17 +1315,23 @@
           return;
         }
         if (!data || !data.id) {
-          reject(new Error("Сервер не подтвердил сохранение файла."));
+          const error = new Error("Сервер не подтвердил сохранение файла.");
+          error.code = "upload_invalid_response";
+          reject(error);
           return;
         }
         resolve(data);
       };
-      xhr.onerror = () => reject(new Error(
-        "Не удалось передать файл: соединение прервано. Проверь интернет."
-      ));
-      xhr.ontimeout = () => reject(new Error(
-        "Сервер слишком долго обрабатывает файл. Проверь список вложений перед повтором."
-      ));
+      xhr.onerror = () => {
+        const error = new Error("Соединение прервано при загрузке файла.");
+        error.code = "upload_network_error";
+        reject(error);
+      };
+      xhr.ontimeout = () => {
+        const error = new Error("Сервер не подтвердил файл за пять минут.");
+        error.code = "upload_timeout";
+        reject(error);
+      };
       xhr.onabort = () => reject(new Error("Загрузка файла прервана."));
       try {
         xhr.send(formData);
@@ -1381,6 +1393,29 @@
     await uploadQueuedFiles();
   }
 
+  async function verifyAmbiguousFileUpload(entry, knownIds) {
+    // Never match by filename alone: two distinct photos often have the same
+    // name. A new server-side file must match the actual SHA-256 and size.
+    const subtle = typeof crypto !== "undefined" && crypto.subtle;
+    const digest = subtle && typeof entry.file.arrayBuffer === "function"
+      ? await subtle.digest("SHA-256", await entry.file.arrayBuffer())
+      : null;
+    const hash = digest
+      ? Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")
+      : null;
+    const payload = await api(
+      "/api/writers/submissions/" + encodeURIComponent(state.current.id)
+    );
+    if (payload && payload.submission) state.current = payload.submission;
+    const files = payload && Array.isArray(payload.files) ? payload.files : [];
+    if (!hash) return null;
+    return files.find((item) =>
+      !knownIds.has(String(item.id)) &&
+      String(item.sha256 || "").toLowerCase() === hash &&
+      Number(item.size) === entry.file.size
+    ) || null;
+  }
+
   async function uploadQueuedFiles() {
     if (state.reloadRequired || state.uploadPending || state.uploadPreparing) return false;
     if (!state.pendingFiles.length) return true;
@@ -1403,12 +1438,33 @@
         updateUploadProgress(source, "Передаю " + position + ": " + file.name, 0);
         const formData = new FormData();
         formData.append("file", file, file.name);
-        const uploaded = await sendFileWithProgress(
-          "/api/writers/submissions/" + encodeURIComponent(state.current.id) + "/files",
-          formData,
-          (percent) => updateUploadProgress(source, "Передаю " + position + ": " + file.name, percent),
-          () => updateUploadProgress(source, "Передано " + position + ". Сохраняем на сервере…", 100, "processing"),
-        );
+        const knownIds = new Set(state.attachments.map((item) => String(item.id)));
+        let uploaded;
+        try {
+          uploaded = await sendFileWithProgress(
+            "/api/writers/submissions/" + encodeURIComponent(state.current.id) + "/files",
+            formData,
+            (percent) => updateUploadProgress(source, "Передаю " + position + ": " + file.name, percent),
+            () => updateUploadProgress(source, "Передано " + position + ". Сохраняем на сервере…", 100, "processing"),
+          );
+        } catch (error) {
+          const ambiguous = ["upload_network_error", "upload_timeout", "upload_invalid_response"].includes(error.code) ||
+            (Number(error.status) >= 500 && error.code !== "telegram_file_staging_unavailable");
+          if (!ambiguous) throw error;
+          updateUploadProgress(source, "Проверяю, сохранился ли файл на сервере…", null, "processing");
+          try {
+            uploaded = await verifyAmbiguousFileUpload(entry, knownIds);
+          } catch (_checkError) {
+            uploaded = null;
+          }
+          if (!uploaded) {
+            setReloadRequired(true);
+            throw new Error(
+              "Сервер не подтвердил результат загрузки. Не загружай файл повторно вслепую: " +
+              "переоткрой черновик, проверь вложения и только затем повтори при необходимости."
+            );
+          }
+        }
         // HTTP 201 confirms storage. Remove locally before GET to avoid
         // re-sending a successfully stored file after interrupted refresh.
         state.pendingFiles = state.pendingFiles.filter((item) => item.id !== entry.id);
