@@ -149,5 +149,5 @@ test("upload markup has both accessible progress regions", () => {
   assert.ok(html.includes('id="imageUploadBar"'));
   assert.ok(html.includes('role="status"'));
   assert.ok(html.includes('aria-live="polite"'));
-  assert.ok(html.includes('app.js?v=mobile-upload-sentences-v4'));
+  assert.ok(html.includes('app.js?v=form-reliability-v5'));
 });
