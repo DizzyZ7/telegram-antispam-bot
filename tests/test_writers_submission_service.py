@@ -278,19 +278,18 @@ class WritersSubmissionServiceTests(unittest.IsolatedAsyncioTestCase):
             self.eligibility,
         )
 
-    async def test_create_requires_current_writers_eligibility(self):
+    async def test_any_authenticated_author_can_create_a_private_draft(self):
         self.eligibility.return_value = False
 
-        with self.assertRaisesRegex(PermissionError, "writers community"):
-            await self.service.create(
-                author_user_id=77,
-                fields=fields(),
-                idempotency_key="create-1",
-                now=100,
-            )
-
-        self.assertEqual(self.storage.create_calls, 0)
-        self.eligibility.assert_awaited_once_with(77)
+        draft = await self.service.create(
+            author_user_id=77,
+            fields=fields(),
+            idempotency_key="create-1",
+            now=100,
+        )
+        self.assertIsNotNone(draft.id)
+        self.assertEqual(self.storage.create_calls, 1)
+        self.eligibility.assert_not_awaited()
 
     async def test_create_is_idempotent_through_storage_key(self):
         first = await self.service.create(
@@ -442,7 +441,7 @@ class WritersSubmissionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.eligibility.reset_mock()
         self.eligibility.return_value = False
 
-        with self.assertRaisesRegex(PermissionError, "writers community"):
+        with self.assertRaisesRegex(PermissionError, "IKF community"):
             await self.service.submit(
                 author_user_id=77,
                 submission_id=created.id,
