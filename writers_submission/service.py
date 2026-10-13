@@ -18,6 +18,10 @@ from .uploads import NormalizedSubmissionFields
 WritersEligibilityChecker = Callable[[int], Awaitable[bool]]
 
 
+class EligibilityUnavailableError(RuntimeError):
+    """Telegram cannot currently confirm writers-chat membership."""
+
+
 class WritersSubmissionService:
     def __init__(
         self,
@@ -54,7 +58,10 @@ class WritersSubmissionService:
         idempotency_key: str,
         now: int,
     ) -> SubmissionBundle:
-        await self._require_eligible(author_user_id)
+        # Drafting requires signed Telegram authentication, enforced by the
+        # web layer, but not live membership in a group. Telegram getChatMember
+        # outages and temporary departures must never destroy unsaved writing.
+        # Eligibility is still checked immediately before actual submission.
         writers_chat_id = getattr(self.config, "writers_chat_id", None)
         if writers_chat_id is None:
             raise RuntimeError("Writers chat id is not configured")
