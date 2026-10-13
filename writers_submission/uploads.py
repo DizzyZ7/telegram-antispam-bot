@@ -117,11 +117,11 @@ _TELEGRAM_HOSTS = frozenset({
     "t.me", "www.t.me", "telegram.me", "www.telegram.me",
 })
 _TELEGRAM_BARE_LINK = re.compile(
-    r"^(?:(?:www\\.)?(?:t\\.me|telegram\\.me))/",
+    r"^(?:(?:www\.)?(?:t\.me|telegram\.me))/",
     re.IGNORECASE,
 )
-_TELEGRAM_USERNAME = re.compile(r"@[A-Za-z0-9_]{5,32}\\Z")
-_TELEGRAM_PATH = re.compile(r"/[A-Za-z0-9_+/-]+\\Z")
+_TELEGRAM_USERNAME = re.compile(r"@[A-Za-z0-9_]{5,32}\Z")
+_TELEGRAM_PATH = re.compile(r"/[A-Za-z0-9_+/-]+\Z")
 
 
 def normalize_extra_link(value: object) -> str | None:
@@ -159,7 +159,7 @@ def normalize_extra_link(value: object) -> str | None:
     if (parsed.hostname or "").lower() in _TELEGRAM_HOSTS:
         if (not _TELEGRAM_PATH.fullmatch(parsed.path) or parsed.port not in (None, 443)
                 or parsed.fragment or any(ch.isspace() for ch in url)
-                or "\\\\" in url):
+                or "\\" in url):
             raise ValidationError("Telegram link must point to a valid channel, invite or message")
     if len(url) > EXTERNAL_URL_MAX:
         raise ValidationError("extra_links URL exceeds maximum length")
