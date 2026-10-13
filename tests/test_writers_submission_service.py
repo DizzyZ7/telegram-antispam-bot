@@ -278,19 +278,37 @@ class WritersSubmissionServiceTests(unittest.IsolatedAsyncioTestCase):
             self.eligibility,
         )
 
-    async def test_create_requires_current_writers_eligibility(self):
+    async def test_create_saves_a_draft_even_when_membership_is_unavailable(self):
+        # A draft is private and requires the signed Telegram session in web;
+        # live membership must be enforced at submit, not on each keystroke.
         self.eligibility.return_value = False
+        created = await self.service.create(
+            author_user_id=77,
+            fields=fields(),
+            idempotency_key="create-1",
+            now=100,
+        )
+        self.assertIsNotNone(created)
+        self.assertEqual(self.storage.create_calls, 1)
+        self.eligibility.assert_not_awaited()
 
+        updated = await self.service.autosave(
+            author_user_id=77,
+            submission_id=created.id,
+            expected_version=1,
+            fields=fields("Сохранено без членства"),
+            now=101,
+        )
+        self.assertEqual(updated.revision.title, "Сохранено без членства")
         with self.assertRaisesRegex(PermissionError, "writers community"):
-            await self.service.create(
+            await self.service.submit(
                 author_user_id=77,
-                fields=fields(),
-                idempotency_key="create-1",
-                now=100,
+                submission_id=created.id,
+                expected_version=2,
+                idempotency_key="cannot-submit-nonmember",
+                now=102,
             )
-
-        self.assertEqual(self.storage.create_calls, 0)
-        self.eligibility.assert_awaited_once_with(77)
+        self.assertEqual(self.storage.submit_calls, 0)
 
     async def test_create_is_idempotent_through_storage_key(self):
         first = await self.service.create(
