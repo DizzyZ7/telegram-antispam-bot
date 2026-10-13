@@ -14,6 +14,7 @@ from uuid import uuid4
 from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
+from writers_submission.files import FileStagingUnavailableError
 from writers_submission.models import ConflictError, NotFoundError, ValidationError
 from writers_submission.service import EligibilityUnavailableError
 from writers_submission.security import SESSION_COOKIE_NAME, SessionSigner
@@ -567,6 +568,35 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(captured["path"].exists())
 
 
+
+    async def test_telegram_staging_error_is_specific_without_exposing_trace(self):
+        self.file_service.attach_from_temp.side_effect = FileStagingUnavailableError(
+            "Telegram не принял файл в закрытое хранилище."
+        )
+        form = FormData()
+        form.add_field("file", b"hello", filename="story.txt", content_type="text/plain")
+        response = await self.client.post(
+            f"/api/writers/submissions/{self.item.id}/files",
+            data=form,
+            headers=self.auth_headers(),
+        )
+        self.assertEqual(response.status, 503)
+        payload = await response.json()
+        self.assertEqual(payload["error"], "telegram_file_staging_unavailable")
+        self.assertIn("Telegram", payload["message"])
+
+    async def test_unhandled_submit_error_returns_support_reference_not_trace(self):
+        self.service.submit.side_effect = RuntimeError("private database traceback")
+        response = await self.client.post(
+            f"/api/writers/submissions/{self.item.id}/submit",
+            json={"expected_version": 1},
+            headers={**self.auth_headers(), "Idempotency-Key": "test-submit-42"},
+        )
+        self.assertEqual(response.status, 500)
+        payload = await response.json()
+        self.assertEqual(payload["error"], "internal_error")
+        self.assertEqual(len(payload["reference"]), 12)
+        self.assertNotIn("private database traceback", str(payload))
 
     async def test_detail_restores_persisted_files_after_reload(self):
         response = await self.client.get(
