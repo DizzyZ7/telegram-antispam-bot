@@ -224,3 +224,164 @@ test("submit retry reuses the same key and never declares an unconfirmed result 
   assert.equal(accepted, true);
   assert.deepEqual(keys, ["stable-key", "stable-key"]);
 });
+
+
+const draftRecoveryCode = section(
+  "  function draftMatchesSavedRequest(", "  async function autosave("
+);
+const autosaveCode = section(
+  "  async function autosave(", "  async function showAcceptedSubmission("
+);
+const reloadGuardCode = section(
+  "  async function reloadDraftSafely(", "  function bindEvents("
+);
+const inputLockCode = section(
+  "  function lockFormDuringSubmission(", "  async function submitCurrent("
+);
+
+function exampleDraftFields() {
+  return {
+    title: "Мой фанфик",
+    work_type: "ФФ",
+    genre: "Романтика",
+    description: "Начало. Продолжение. Финал.",
+    body_text: "Первая глава.",
+    external_url: "https://ficbook.net/readfic/123",
+    details: {
+      form_version: 3,
+      fandom: "Мой фандом",
+      rating: "PG-13",
+      main_genres: ["Приключения", "Романтика"],
+      warnings_present: "no",
+      warnings: [],
+      size_category: "мини",
+      completion: "в процессе",
+      visual_mode: "palette",
+      palette_colors: ["#5b67f1", "#ef86ac", "#78cfbc", "#ffc777"],
+      cover_file_id: null,
+      extra_links: [],
+      size_words: null,
+      pages: null,
+      parts: null,
+    },
+  };
+}
+
+function draftRecoveryHarness(fields, serverRevision) {
+  const state = {
+    current: { id: "draft-a", version: 1, revision: { id: "revision-a" } },
+    editSequence: 1,
+    savedSequence: 0,
+    reloadRequired: false,
+    uploadPending: false,
+    autosavePending: false,
+    savePromise: null,
+    autosaveTimer: null,
+  };
+  const events = [];
+  let patchCalls = 0;
+  const ctx = vm.createContext({
+    state,
+    clearTimeout: () => {},
+    currentFields: () => structuredClone(fields),
+    setSaveState: (message) => events.push(["state", message]),
+    setEditorError: (message) => events.push(["error", message]),
+    setReloadRequired: (value) => { state.reloadRequired = value; },
+    updateActionAvailability: () => {},
+    api: async (path) => {
+      if (path.endsWith("/draft-a")) {
+        // PATCH and GET use the same URL; distinguish by the options method.
+        throw new Error("Test must provide an API stub with methods.");
+      }
+      throw new Error("Unexpected API endpoint");
+    },
+    window: { setTimeout: () => 1 },
+  });
+  ctx.api = async (_path, options) => {
+    if (options && options.method === "PATCH") {
+      patchCalls += 1;
+      const error = new Error("Request timed out after commit");
+      error.code = "request_timeout";
+      throw error;
+    }
+    return {
+      submission: {
+        id: "draft-a", status: "DRAFT", version: 2,
+        revision: { ...structuredClone(serverRevision), id: "revision-a" },
+      },
+    };
+  };
+  vm.runInContext(draftRecoveryCode + autosaveCode +
+    ";this.save = autosave;this.matches = draftMatchesSavedRequest;", ctx);
+  return { ctx, state, events, getPatchCalls: () => patchCalls };
+}
+
+test("lost PATCH response is recovered only when entire server draft matches", async () => {
+  const fields = exampleDraftFields();
+  const server = {
+    ...structuredClone(fields),
+    details: {
+      ...structuredClone(fields.details),
+      palette_colors: fields.details.palette_colors.map((color) => color.toUpperCase()),
+    },
+  };
+  const h = draftRecoveryHarness(fields, server);
+  assert.equal(await h.ctx.save({ immediate: true }), true);
+  assert.equal(h.state.current.version, 2);
+  assert.equal(h.state.savedSequence, 1);
+  assert.equal(h.state.reloadRequired, false);
+  assert.equal(h.getPatchCalls(), 1);
+});
+
+test("changes from another editor are not mistakenly adopted as own saved PATCH", async () => {
+  const fields = exampleDraftFields();
+  const server = structuredClone(fields);
+  server.details.rating = "NC-17";
+  const h = draftRecoveryHarness(fields, server);
+  assert.equal(await h.ctx.save({ immediate: true }), false);
+  assert.equal(h.state.savedSequence, 0);
+  assert.equal(h.state.current.version, 1);
+  assert.match(h.events.find((event) => event[0] === "error")[1], /Не удалось сохранить/);
+});
+
+test("reload does not discard dirty text or chosen files without confirmation", async () => {
+  const events = [];
+  const state = {
+    current: { id: "draft-a" },
+    editSequence: 3, savedSequence: 2,
+    pendingFiles: [{ name: "cover.jpg" }],
+    autosavePending: false, savePromise: null,
+    uploadPending: false, uploadPreparing: false, submitting: false,
+  };
+  let approved = false;
+  const ctx = vm.createContext({
+    state,
+    window: { confirm: () => approved },
+    openSubmission: async (id) => { events.push(id); },
+    setEditorError: () => {},
+  });
+  vm.runInContext(reloadGuardCode + ";this.reload = reloadDraftSafely;", ctx);
+  assert.equal(await ctx.reload(), false);
+  assert.deepEqual(events, []);
+  approved = true;
+  assert.equal(await ctx.reload(), true);
+  assert.deepEqual(events, ["draft-a"]);
+  state.uploadPending = true;
+  assert.equal(await ctx.reload(), false);
+  assert.deepEqual(events, ["draft-a"]);
+});
+
+test("submit editing lock toggles all form inputs during request", () => {
+  const controls = [{ disabled: false }, { disabled: false }, { disabled: false }];
+  const ctx = vm.createContext({
+    document: { querySelectorAll: (selector) => {
+      assert.match(selector, /#editorView/);
+      return controls;
+    }},
+  });
+  vm.runInContext(inputLockCode + ";this.lock=lockFormDuringSubmission;", ctx);
+  ctx.lock(true);
+  assert.ok(controls.every((control) => control.disabled));
+  ctx.lock(false);
+  assert.ok(controls.every((control) => !control.disabled));
+});
