@@ -7,6 +7,7 @@ import re
 import time
 from contextlib import suppress
 from io import BytesIO
+from uuid import uuid4
 
 from aiogram.types import BufferedInputFile, ReplyParameters
 from typing import Any
@@ -216,9 +217,20 @@ class WritersDeliveryWorker:
         self.storage = storage
         self.config = config
         self.poll_seconds = max(1, int(poll_seconds))
-        self.lease_seconds = max(1, int(lease_seconds))
+        # Multi-instance bots must not share a lease identity, even after
+        # restart. A longer default lease protects multi-file packets.
+        self.lease_seconds = max(
+            900 if str(worker_id) == "writers-delivery" else 1,
+            int(lease_seconds),
+        )
         self.batch_size = max(1, int(batch_size))
-        self.worker_id = str(worker_id)
+        self.worker_id = (
+            f"writers-delivery:{uuid4().hex[:12]}"
+            if str(worker_id) == "writers-delivery"
+            else str(worker_id)
+        )
+        self._last_health_check_at = 0
+        self._last_alert_at = 0
         self.now_fn = now_fn
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -383,6 +395,21 @@ class WritersDeliveryWorker:
             LOGGER.info("WRITERS_AUTHOR_CONTACT_LOOKUP_UNAVAILABLE user_id=%s", uid)
         return fallback
 
+    async def _checkpoint_moderation_message(
+        self, item: Any, *, key: str, message_id: int, now: int,
+        chat_id: int,
+    ) -> None:
+        method = getattr(self.storage, "record_outbox_progress", None)
+        if callable(method):
+            await method(
+                outbox_id=item.id,
+                worker_id=self.worker_id,
+                now=int(now),
+                key=str(key),
+                message_id=int(message_id),
+                delivery_chat_id=int(chat_id),
+            )
+
     async def _deliver_moderation_card(
         self,
         item: Any,
@@ -403,31 +430,38 @@ class WritersDeliveryWorker:
         # Every file and the palette mockup are direct replies to that card;
         # no unattributed attachments are sent into an owner's message stream.
         packet_id = str(item.submission_id)
-        card = await self.bot.send_message(
-            chat_id=moderation_chat_id,
-            text=(
-                "<b>📦 Комплект заявки</b> <code>" + packet_id + "</code>\n"
-                + _moderation_text(
-                    context,
-                    author_contact=await self._author_contact(
-                        context.author_user_id,
-                        saved_username=getattr(context, "author_username", None),
-                        saved_first_name=getattr(context, "author_first_name", None),
-                    ),
-                )
-                + "\n\nВсе вложения и цветовой макет — ответами на эту карточку."
-            ),
-            parse_mode="HTML",
-            reply_markup=build_moderation_keyboard(
-                token,
-                paid_cover=(
-                    (getattr(context, "details", None) or {}).get("visual_mode") == "image"
+        progress = dict(getattr(item, "progress", {}) or {})
+        card_message_id = progress.get("card")
+        if not card_message_id:
+            card = await self.bot.send_message(
+                chat_id=moderation_chat_id,
+                text=(
+                    "<b>📦 Комплект заявки</b> <code>" + packet_id + "</code>\n"
+                    + _moderation_text(
+                        context,
+                        author_contact=await self._author_contact(
+                            context.author_user_id,
+                            saved_username=getattr(context, "author_username", None),
+                            saved_first_name=getattr(context, "author_first_name", None),
+                        ),
+                    )
+                    + "\n\nВсе вложения и цветовой макет — ответами на эту карточку."
                 ),
-            ),
-        )
-        card_message_id = getattr(card, "message_id", None)
-        if card_message_id is None:
-            raise RuntimeError("Telegram moderation card has no message_id")
+                parse_mode="HTML",
+                reply_markup=build_moderation_keyboard(
+                    token,
+                    paid_cover=(
+                        (getattr(context, "details", None) or {}).get("visual_mode") == "image"
+                    ),
+                ),
+            )
+            card_message_id = getattr(card, "message_id", None)
+            if card_message_id is None:
+                raise RuntimeError("Telegram moderation card has no message_id")
+            await self._checkpoint_moderation_message(
+                item, key="card", message_id=int(card_message_id),
+                chat_id=moderation_chat_id, now=now,
+            )
         message_ids: list[int] = [int(card_message_id)]
         reply_kwargs = {
             "chat_id": moderation_chat_id,
@@ -435,27 +469,37 @@ class WritersDeliveryWorker:
         }
         details = getattr(context, "details", None) or {}
         if details.get("visual_mode") == "palette":
-            try:
-                palette = _robust_palette_png(
-                    details.get("palette_colors", []),
-                    title=context.title, submission_id=item.submission_id,
-                )
-                mockup = await self.bot.send_photo(
-                    **reply_kwargs,
-                    photo=BufferedInputFile(palette, filename="ikf-palette-mockup.png"),
-                    caption=(
-                        "🎨 Черновой макет сочетания 4 цветов\n"
-                        "Комплект: " + packet_id
-                    ),
-                )
-                if getattr(mockup, "message_id", None) is not None:
-                    message_ids.append(int(mockup.message_id))
-            except Exception:
-                LOGGER.exception(
-                    "WRITERS_MODERATION_PALETTE_MOCKUP_FAILED submission_id=%s",
-                    item.submission_id,
-                )
-                # A broken preview must not hide the actual submitted form.
+            palette_message_id = progress.get("palette")
+            if palette_message_id:
+                message_ids.append(int(palette_message_id))
+            else:
+                mockup = None
+                try:
+                    palette = _robust_palette_png(
+                        details.get("palette_colors", []),
+                        title=context.title, submission_id=item.submission_id,
+                    )
+                    mockup = await self.bot.send_photo(
+                        **reply_kwargs,
+                        photo=BufferedInputFile(palette, filename="ikf-palette-mockup.png"),
+                        caption=(
+                            "🎨 Черновой макет сочетания 4 цветов\n"
+                            "Комплект: " + packet_id
+                        ),
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "WRITERS_MODERATION_PALETTE_MOCKUP_FAILED submission_id=%s",
+                        item.submission_id,
+                    )
+                    # A failed preview must not block the moderation card.
+                if mockup is not None and getattr(mockup, "message_id", None) is not None:
+                    palette_message_id = int(mockup.message_id)
+                    await self._checkpoint_moderation_message(
+                        item, key="palette", message_id=palette_message_id,
+                        chat_id=moderation_chat_id, now=now,
+                    )
+                    message_ids.append(palette_message_id)
         for index, attachment in enumerate(context.files, 1):
             label = "📁 Вложение"
             cover_id = str(details.get("cover_file_id") or "")
@@ -479,14 +523,25 @@ class WritersDeliveryWorker:
                 + "\nЗаявка: " + packet_id
                 + "\n" + _escape(attachment.safe_filename)
             )
+            part_key = "file:" + str(getattr(attachment, "id", index))
+            checkpoint = progress.get(part_key)
+            if checkpoint:
+                message_ids.append(int(checkpoint))
+                continue
             sent = await self.bot.send_document(
                 **reply_kwargs,
                 document=attachment.telegram_file_id,
                 caption=caption,
                 parse_mode="HTML",
             )
-            if getattr(sent, "message_id", None) is not None:
-                message_ids.append(int(sent.message_id))
+            if getattr(sent, "message_id", None) is None:
+                raise RuntimeError("Telegram document has no message_id")
+            sent_id = int(sent.message_id)
+            await self._checkpoint_moderation_message(
+                item, key=part_key, message_id=sent_id,
+                chat_id=moderation_chat_id, now=now,
+            )
+            message_ids.append(sent_id)
         return moderation_chat_id, tuple(message_ids)
 
     async def _deliver_author_notification(
