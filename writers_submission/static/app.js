@@ -362,7 +362,7 @@
       ["png", "jpeg"].includes(file.file_class)
     );
     $("imageUploadStatus").textContent = pending.length
-      ? `Выбрана своя фотография: ${pending.map((entry) => entry.file.name).join(", ")}. Файл еще не отправлен. Передадим только после отправки анкеты.`
+      ? `Выбрана фотография: ${pending.map((entry) => entry.file.name).join(", ")}. Загружаем в черновик; при ошибке повтори выбор файла.`
       : uploaded.length
         ? `Изображение уже прикреплено к этой заявке: ${uploaded.map((file) => file.filename).join(", ")}`
         : "Выбери фото. До отправки анкеты оно останется только на устройстве. Своя обложка — платная опция.";
@@ -1258,7 +1258,7 @@
       renderAttachments();
       updateImageStatus();
       setEditorError("");
-      updateUploadProgress(source, "Выбрано, не отправлено. Передадим вместе с заполненной анкетой.", null, "waiting");
+      updateUploadProgress(source, "Файл выбран. Загружаем его в черновик…", null, "waiting");
       return true;
     } catch (error) {
       setEditorError(error.message || "Не удалось подготовить файл.");
@@ -1268,6 +1268,18 @@
       state.uploadPreparing = false;
       updateActionAvailability();
     }
+  }
+
+  async function persistSelectedFiles(files, source) {
+    // Telegram users expect a chosen photo to be attached immediately, not
+    // silently left only in WebView RAM until the final submission.
+    if (!await queueFilesLocally(files, source)) return;
+    updateUploadProgress(source, "Сохраняю черновик перед загрузкой…", null, "processing");
+    if (!await autosave({ immediate: true })) {
+      updateUploadProgress(source, "Черновик не сохранился — файл пока на устройстве", null, "error");
+      return;
+    }
+    await uploadQueuedFiles();
   }
 
   async function uploadQueuedFiles() {
@@ -1460,14 +1472,14 @@
     $("saveButton").addEventListener("click", () => autosave({ immediate: true }));
     $("submitButton").addEventListener("click", submitCurrent);
     $("fileInput").addEventListener("change", (event) => {
-      void queueFilesLocally(event.target.files, "file");
-      $("fileInput").value = "";
+      const chosen = Array.from(event.target.files || []);
+      event.target.value = "";
+      if (chosen.length) void persistSelectedFiles(chosen, "file");
     });
-    $("imageInput").addEventListener("change", async (event) => {
-      const file = (event.target.files || [])[0];
-      if (!file) { return; }
-      await queueFilesLocally([file], "image");
-      $("imageInput").value = "";
+    $("imageInput").addEventListener("change", (event) => {
+      const chosen = Array.from(event.target.files || []).slice(0, 1);
+      event.target.value = "";
+      if (chosen.length) void persistSelectedFiles(chosen, "image");
     });
     $("withdrawButton").addEventListener("click", withdrawCurrent);
     $("revisionButton").addEventListener("click", createRevision);
