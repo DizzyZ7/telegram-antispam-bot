@@ -300,7 +300,7 @@ def normalize_submission_details(value: object, *, complete: bool = False,
 def validate_description_for_format(description: str, work_type: str) -> None:
     """Short sketches fit roughly three Telegram lines; long work is balanced."""
     text = " ".join(str(description or "").split()).strip()
-    words = re.findall(r"[^\\W_]+(?:[-’'][^\\W_]+)*", text, re.UNICODE)
+    words = re.findall(r"[^\W_]+(?:[-’'][^\W_]+)*", text, re.UNICODE)
     if work_type == "Зарисовка":
         if len(words) > SKETCH_DESCRIPTION_WORDS_MAX or len(text) > SKETCH_DESCRIPTION_CHARS_MAX:
             raise ValidationError("sketch description: max 35 words and 230 characters")
