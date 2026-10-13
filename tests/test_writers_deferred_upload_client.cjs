@@ -11,6 +11,7 @@ function section(start, end) {
   return source.slice(a, b);
 }
 const logic =
+  section("  async function showAcceptedSubmission(", "  async function submitCurrent() {") +
   section("  async function submitCurrent() {", "  const MAX_PHOTO_BYTES") +
   section("  async function queueFilesLocally(", "  async function deleteAttachment(");
 function harness() {
@@ -41,6 +42,7 @@ function harness() {
     clearPendingFiles: () => { state.pendingFiles = []; state.coverFileId = null; },
     setReloadRequired: v => { state.reloadRequired = v; },
     setBusy: () => {},
+    setBanner: () => {},
     loadHistory: async () => {},
     loadWorkspace: async () => {},
     renderDetail: () => {},
