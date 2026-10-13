@@ -67,7 +67,7 @@ class TelegramShorthandLinksTests(unittest.TestCase):
         final = normalize_submission_details(raw, complete=True, work_type="ФФ")
         self.assertEqual(
             final["extra_links"],
-            ["https://t.me/ff_info_ru", "https://t.me/ff_info_ru", "https://example.com/post"],
+            ["https://t.me/ff_info_ru", "https://example.com/post"],
         )
 
     def test_published_post_links_raw_shorthand_saved_in_sealed_revision(self):
