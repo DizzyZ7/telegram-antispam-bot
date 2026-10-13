@@ -214,7 +214,7 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(sent.status, SubmissionStatus.SUBMITTED)
 
-    async def test_incomplete_draft_cannot_stage_files_until_form_complete(self):
+    async def test_incomplete_draft_can_stage_files_before_form_complete(self):
         partial = validate_submission_fields(
             title="Наполовину", work_type="", genre="", description="",
             body_text="", external_url="https:",
@@ -228,7 +228,7 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         context = await self.storage.get_draft_file_context(
             submission_id=draft.id, author_user_id=77,
         )
-        self.assertFalse(context.fields_ready_for_upload)
+        self.assertTrue(context.fields_ready_for_upload)
         finished = validate_submission_fields(
             title="Работа", work_type="Оридж", genre="Джен",
             description="Все заполнено", body_text="",
