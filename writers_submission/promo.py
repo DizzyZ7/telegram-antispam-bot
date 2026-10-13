@@ -44,6 +44,13 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
         _tag(details.get("rating")) if is_ficbook else "",
         _tag("Завершен" if details.get("completion") == "завершен" else "ВПроцессе") if details.get("completion") else "",
     ]
+    if is_sketch:
+        tags = [
+            _tag("Ориджинал" if details.get("sketch_origin") == "Ориджинал" else "Фандом"),
+            _tag(details.get("fandom")) if details.get("sketch_origin") == "Фандом" else "",
+            _tag(details.get("rating")),
+            _tag(context.genre),
+        ]
     lines = [
         f"🎩 <b>{_preview(context.title, 250)}</b> 🎩",
         "",
