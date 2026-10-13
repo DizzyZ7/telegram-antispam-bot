@@ -341,7 +341,7 @@ test("changes from another editor are not mistakenly adopted as own saved PATCH"
   assert.equal(await h.ctx.save({ immediate: true }), false);
   assert.equal(h.state.savedSequence, 0);
   assert.equal(h.state.current.version, 1);
-  assert.match(h.events.find((event) => event[0] === "error")[1], /Не удалось сохранить/);
+  assert.match(h.events.filter((event) => event[0] === "error").at(-1)[1], /Не удалось сохранить/);
 });
 
 test("reload does not discard dirty text or chosen files without confirmation", async () => {
