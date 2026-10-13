@@ -522,25 +522,79 @@
     });
   }
 
+  function countWords(text) {
+    return (String(text || "").match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu) || []).length;
+  }
+
+  function validDomain(value, host) {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && !url.username && !url.password &&
+        [host, "www." + host].includes(url.hostname.toLowerCase());
+    } catch (_) {
+      return false;
+    }
+  }
+
   function validateReadyForm() {
     const values = currentFields();
-    if (!values.title || !values.work_type || !values.details.size_category ||
-        !values.genre || !values.details.rating || !values.details.completion ||
-        !values.description.trim() || !values.external_url || !values.external_url.startsWith("https://") ||
-        !values.details.visual_mode) {
-      throw new Error("Заполни все обязательные строки анкеты и выбери варианты галочками.");
+    const sketch = values.work_type === "Зарисовка";
+    const details = values.details;
+    if (!values.title || !["ФФ", "Оридж", "Зарисовка"].includes(values.work_type) ||
+        !values.genre || !details.rating || !values.description.trim()) {
+      throw new Error("Заполни название, формат, направление, рейтинг и описание.");
     }
-    if (values.work_type === "ФФ" && !values.details.fandom) {
-      throw new Error("Для фанфика укажи фандом.");
+    if (!sketch && (!details.size_category || !details.completion || !details.visual_mode)) {
+      throw new Error("Для большой работы выбери размер, статус и оформление.");
     }
-    if (values.details.completion === "завершен" &&
-        [values.details.size_words, values.details.pages, values.details.parts].some((n) => !n)) {
-      throw new Error("Для завершенной работы укажи размер в словах, страницы и части.");
+    if (sketch) {
+      if (!details.sketch_origin || (details.sketch_origin === "Фандом" && !details.fandom)) {
+        throw new Error("Для зарисовки укажи фандом или ориджинал.");
+      }
+      if (!validDomain(details.sketch_profile_url, "ficbook.net") ||
+          !validDomain(details.sketch_article_url, "telegra.ph")) {
+        throw new Error("Нужны HTTPS-ссылки на профиль Фикбука и статью telegra.ph.");
+      }
+    } else {
+      if (!values.external_url || !values.external_url.startsWith("https://")) {
+        throw new Error("Укажи HTTPS-ссылку на произведение на Фикбуке.");
+      }
+      if (values.work_type === "ФФ" && !details.fandom) {
+        throw new Error("Для фанфика укажи фандом.");
+      }
+      if (details.completion === "завершен" &&
+          [details.size_words, details.pages, details.parts].some((n) => !n)) {
+        throw new Error("Для завершенной работы укажи размер, страницы и части.");
+      }
     }
-    if (values.details.extra_links.length > 5) {
+    if (!details.main_genres.length || details.main_genres.length > 3 ||
+        new Set(details.main_genres.map((value) => value.toLocaleLowerCase("ru"))).size !== details.main_genres.length) {
+      throw new Error("Укажи от одного до трех разных основных жанров.");
+    }
+    if (!["yes", "no"].includes(details.warnings_present)) {
+      throw new Error("Обязательно ответь на вопрос о предупреждениях: Да или Нет.");
+    }
+    if (details.warnings_present === "yes" && (!details.warnings.length || details.warnings.length > 10)) {
+      throw new Error("При выборе «Да» перечисли от 1 до 10 предупреждений.");
+    }
+    const wordCount = countWords(values.description);
+    if (sketch) {
+      if (wordCount > 35 || values.description.length > 230) {
+        throw new Error("Описание зарисовки: не больше 35 слов и 230 символов.");
+      }
+    } else {
+      const sentenceCount = (values.description.match(/[^.!?]+[.!?]+/gu) || []).length;
+      if (sentenceCount < 3 || !/[.!?]\s*$/u.test(values.description)) {
+        throw new Error("Описание большой работы должно содержать не меньше трех предложений.");
+      }
+      if (wordCount > 110) {
+        throw new Error("Описание большой работы: максимум 110 слов.");
+      }
+    }
+    if (!sketch && details.extra_links.length > 5) {
       throw new Error("Дополнительных ссылок может быть не больше пяти.");
     }
-    if (values.details.visual_mode === "image" &&
+    if (!sketch && details.visual_mode === "image" &&
         !state.pendingFiles.some((entry) => entry.source === "image") &&
         !state.attachments.some((file) => ["png", "jpeg"].includes(file.file_class))) {
       throw new Error("Выбери свою фотографию для платной обложки.");
@@ -550,7 +604,19 @@
 
   function refreshCounters() {
     $("titleCounter").textContent = String(form.title.value.length);
-    $("descriptionCounter").textContent = String(form.description.value.length);
+    const wordCount = countWords(form.description.value);
+    const sketch = selectedChoice("workType") === "Зарисовка";
+    $("descriptionCounter").textContent = sketch
+      ? wordCount + "/35 слов · " + form.description.value.length + "/230 символов"
+      : wordCount + "/110 слов";
+    const slots = [form.mainGenre1, form.mainGenre2, form.mainGenre3];
+    const amount = slots.filter((field) => field.value.trim()).length;
+    const progress = $("genreProgress");
+    progress.setAttribute("aria-label", "Заполнено жанров: " + amount + " из 3");
+    Array.from(progress.children).forEach((segment, index) => {
+      segment.classList.toggle("filled", index < amount);
+    });
+    $("genreProgressLabel").textContent = "Заполнено: " + amount + " из 3";
     $("bodyCounter").textContent = String(form.body.value.length);
   }
 
