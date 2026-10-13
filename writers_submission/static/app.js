@@ -49,6 +49,12 @@
     rating: $("ratingInput"),
     fandom: $("fandomInput"),
     description: $("descriptionInput"),
+    mainGenre1: $("mainGenre1Input"),
+    mainGenre2: $("mainGenre2Input"),
+    mainGenre3: $("mainGenre3Input"),
+    warnings: $("warningsInput"),
+    sketchProfile: $("sketchProfileUrlInput"),
+    sketchArticle: $("sketchArticleUrlInput"),
     body: $("bodyInput"),
     url: $("urlInput"),
     extraLinks: $("extraLinksInput"),
@@ -228,29 +234,40 @@
   }
 
   function currentFields() {
+    const sketch = selectedChoice("workType") === "Зарисовка";
+    const genres = [form.mainGenre1, form.mainGenre2, form.mainGenre3]
+      .map((field) => field.value.trim()).filter(Boolean);
+    const warningList = form.warnings.value.split(/[,;\n]+/).map((value) => value.trim()).filter(Boolean);
     return {
       title: form.title.value.trim(),
       work_type: selectedChoice("workType"),
       genre: form.direction.value.trim(),
       description: form.description.value,
       body_text: form.body.value,
-      external_url: form.url.value.trim() || null,
+      external_url: sketch ? (form.sketchArticle.value.trim() || null) : (form.url.value.trim() || null),
       has_ready_file: state.attachments.length > 0,
       details: {
-        form_version: 2,
-        fandom: selectedChoice("workType") === "ФФ" ? form.fandom.value.trim() : "",
-        size_category: selectedChoice("sizeCategory"),
+        form_version: 3,
+        fandom: (selectedChoice("workType") === "ФФ" || (sketch && selectedChoice("sketchOrigin") === "Фандом"))
+          ? form.fandom.value.trim() : "",
+        sketch_origin: sketch ? selectedChoice("sketchOrigin") : "",
+        sketch_profile_url: sketch ? form.sketchProfile.value.trim() : "",
+        sketch_article_url: sketch ? form.sketchArticle.value.trim() : "",
+        main_genres: genres,
+        warnings_present: selectedChoice("warningsPresent"),
+        warnings: selectedChoice("warningsPresent") === "yes" ? warningList : [],
+        size_category: sketch ? "" : selectedChoice("sizeCategory"),
         rating: form.rating.value.trim(),
-        completion: selectedChoice("completion"),
-        size_words: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.sizeWords) : null,
-        pages: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.pages) : null,
-        parts: selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.parts) : null,
-        extra_links: form.extraLinks.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean),
-        characters: form.characters.value,
-        notes: form.notes.value,
-        visual_mode: selectedChoice("visualMode"),
-        cover_file_id: selectedChoice("visualMode") === "image" ? state.coverFileId : null,
-        palette_colors: selectedChoice("visualMode") === "palette" ? state.paletteColors.slice() : [],
+        completion: sketch ? "" : selectedChoice("completion"),
+        size_words: !sketch && selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.sizeWords) : null,
+        pages: !sketch && selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.pages) : null,
+        parts: !sketch && selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.parts) : null,
+        extra_links: sketch ? [] : form.extraLinks.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean),
+        characters: sketch ? "" : form.characters.value,
+        notes: sketch ? "" : form.notes.value,
+        visual_mode: sketch ? "editorial" : selectedChoice("visualMode"),
+        cover_file_id: !sketch && selectedChoice("visualMode") === "image" ? state.coverFileId : null,
+        palette_colors: !sketch && selectedChoice("visualMode") === "palette" ? state.paletteColors.slice() : [],
       },
     };
   }
