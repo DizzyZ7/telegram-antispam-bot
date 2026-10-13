@@ -155,6 +155,75 @@ class WritersSubmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ["worker.stop", "web.stop", "storage.close"],
         )
 
+    async def test_nonmember_receives_private_kind_invitation_with_channel_button(self):
+        storage = SimpleNamespace(initialize=AsyncMock(), close=AsyncMock())
+        web_server = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        worker = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        bot = SimpleNamespace(send_message=AsyncMock(), get_chat=AsyncMock())
+        app = SimpleNamespace(bot=bot, dp=object())
+        config = self.config()
+        config.membership_chat_id = -100222333444
+        config.community_url = "https://t.me/+IKFInvite"
+
+        with (
+            patch("writers_submission.runtime.PostgresWritersSubmissionStorage", return_value=storage),
+            patch("writers_submission.runtime.WritersSubmissionService") as service_factory,
+            patch("writers_submission.runtime.WritersFileService"),
+            patch("writers_submission.runtime.SessionSigner"),
+            patch("writers_submission.runtime.create_writers_web_app"),
+            patch("writers_submission.runtime.WritersWebServer", return_value=web_server),
+            patch("writers_submission.runtime.WritersDeliveryWorker", return_value=worker),
+            patch("writers_submission.runtime.register_writers_submission_handlers"),
+            patch("writers_submission.runtime.install_writers_submission_menu", new=AsyncMock()),
+        ):
+            runtime = await start_writers_submission_runtime(
+                app, config, database_url="postgresql://user:pass@db/name",
+                bot_token="token",
+            )
+            notifier = service_factory.call_args.kwargs["nonmember_notifier"]
+            await notifier(77)
+            bot.send_message.assert_awaited_once()
+            message = bot.send_message.await_args.kwargs
+            self.assertEqual(message["chat_id"], 77)
+            self.assertIn("ничего переписывать не нужно", message["text"])
+            self.assertIn("вступи", message["text"])
+            markup = message["reply_markup"]
+            self.assertEqual(markup.inline_keyboard[0][0].url, "https://t.me/+IKFInvite")
+            await notifier(77)
+            bot.send_message.assert_awaited_once()  # anti-spam cooldown
+            await runtime.stop()
+
+    async def test_notifier_handles_blocked_private_chat_without_raising(self):
+        storage = SimpleNamespace(initialize=AsyncMock(), close=AsyncMock())
+        web_server = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        worker = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        bot = SimpleNamespace(
+            send_message=AsyncMock(side_effect=RuntimeError("Forbidden")),
+            get_chat=AsyncMock(return_value=SimpleNamespace(username="ikf")),
+        )
+        app = SimpleNamespace(bot=bot, dp=object())
+        with (
+            patch("writers_submission.runtime.PostgresWritersSubmissionStorage", return_value=storage),
+            patch("writers_submission.runtime.WritersSubmissionService") as factory,
+            patch("writers_submission.runtime.WritersFileService"),
+            patch("writers_submission.runtime.SessionSigner"),
+            patch("writers_submission.runtime.create_writers_web_app"),
+            patch("writers_submission.runtime.WritersWebServer", return_value=web_server),
+            patch("writers_submission.runtime.WritersDeliveryWorker", return_value=worker),
+            patch("writers_submission.runtime.register_writers_submission_handlers"),
+            patch("writers_submission.runtime.install_writers_submission_menu", new=AsyncMock()),
+        ):
+            runtime = await start_writers_submission_runtime(
+                app, self.config(), database_url="postgresql://user:pass@db/name",
+                bot_token="token",
+            )
+            notifier = factory.call_args.kwargs["nonmember_notifier"]
+            await notifier(77)
+            sent = bot.send_message.await_args.kwargs
+            self.assertEqual(sent["reply_markup"].inline_keyboard[0][0].url,
+                             "https://t.me/ikf")
+            await runtime.stop()
+
     async def test_web_bind_failure_cleans_storage_and_never_registers_handlers_or_worker(self):
         storage = SimpleNamespace(
             initialize=AsyncMock(),
