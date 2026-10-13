@@ -82,7 +82,7 @@ test("Telegram failure explains a retryable access check instead of blaming desc
   await assert.rejects(h.api("/api/writers/submissions", {method:"POST"}), (err) => {
     assert.equal(err.status, 503);
     assert.equal(err.code, "eligibility_unavailable");
-    assert.match(err.message, /недоступна проверка/);
+    assert.match(err.message, /не могу проверить участие/);
     assert.doesNotMatch(err.message, /описание слишком/);
     return true;
   });
