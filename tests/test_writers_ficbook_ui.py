@@ -36,6 +36,7 @@ class FicbookFormUiTests(unittest.TestCase):
         } <= parser.ids)
         self.assertEqual(parser.groups, {
             "workType", "sizeCategory", "completion", "visualMode",
+            "sketchOrigin", "warningsPresent",
         })
 
     def test_photo_upload_picker_supports_mobile_photos_and_cache_busting(self):
