@@ -2791,6 +2791,65 @@ class PostgresWritersSubmissionStorage:
             for row in rows
         ]
 
+    async def list_moderation_delivery_admin(
+        self, *, limit: int = 20,
+    ) -> list[dict[str, object]]:
+        rows = await self._require_pool().fetch(
+            """
+            SELECT o.submission_id, o.state, o.attempt_count,
+                   o.last_error_code, o.created_at, o.updated_at
+            FROM writers_submission_outbox AS o
+            JOIN writers_submissions AS s ON s.id = o.submission_id
+            WHERE o.event_type = 'MODERATION_CARD'
+              AND o.revision_id = s.current_submitted_revision_id
+            ORDER BY
+                CASE WHEN o.state = 'PERMANENT_FAILED' THEN 0
+                     WHEN o.state = 'RETRYABLE_FAILED' THEN 1
+                     WHEN o.state = 'IN_FLIGHT' THEN 2
+                     WHEN o.state = 'PENDING' THEN 3
+                     ELSE 4 END,
+                o.updated_at DESC, o.id DESC
+            LIMIT $1
+            """,
+            max(1, min(50, int(limit))),
+        )
+        return [
+            {
+                "submission_id": str(row["submission_id"]),
+                "state": str(row["state"]),
+                "attempt_count": int(row["attempt_count"]),
+                "last_error_code": row["last_error_code"],
+                "created_at": int(row["created_at"]),
+                "updated_at": int(row["updated_at"]),
+            }
+            for row in rows
+        ]
+
+    async def retry_failed_moderation_delivery(
+        self, *, submission_id: UUID, now: int,
+    ) -> UUID | None:
+        """Owner-only caller requeues failures, never a delivered packet.
+
+        Preserve delivery_progress_json to avoid resending parts already
+        checkpointed during prior attempts.
+        """
+        return await self._require_pool().fetchval(
+            """
+            UPDATE writers_submission_outbox AS o
+            SET state = 'PENDING', attempt_count = 0,
+                next_attempt_at = $2, lease_until = NULL,
+                worker_id = NULL, last_error_code = NULL,
+                updated_at = $2
+            FROM writers_submissions AS s
+            WHERE s.id = $1 AND o.submission_id = s.id
+              AND o.revision_id = s.current_submitted_revision_id
+              AND o.event_type = 'MODERATION_CARD'
+              AND o.state IN ('RETRYABLE_FAILED', 'PERMANENT_FAILED')
+            RETURNING o.submission_id
+            """,
+            submission_id, int(now),
+        )
+
     async def get_moderation_delivery_health(
         self, *, now: int, stale_seconds: int = 300,
     ) -> dict[str, object]:
