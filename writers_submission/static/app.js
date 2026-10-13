@@ -1005,6 +1005,22 @@
     form.title.focus();
   }
 
+  function verifiedDraftResponse(payload, expectedId = null, previousVersion = null) {
+    const item = payload && payload.submission;
+    if (!item || typeof item.id !== "string" || !item.id ||
+        item.status !== "DRAFT" || !Number.isSafeInteger(Number(item.version)) ||
+        Number(item.version) < 1 ||
+        (expectedId !== null && String(item.id) !== String(expectedId)) ||
+        (previousVersion !== null && Number(item.version) <= Number(previousVersion))) {
+      const error = new Error(
+        "Сервер вернул неполное подтверждение черновика. Не создавай новую заявку: проверь список работ."
+      );
+      error.code = "invalid_response";
+      throw error;
+    }
+    return item;
+  }
+
   async function createDraft(fields) {
     // If POST succeeded but the network response was lost, reusing the same
     // key on retry prevents a duplicate draft in PostgreSQL.
@@ -1014,7 +1030,9 @@
       headers: { "Idempotency-Key": state.createKey },
       json: fields,
     });
-    state.current = payload.submission;
+    // A 2xx without a valid draft must never consume the idempotency key.
+    const created = verifiedDraftResponse(payload);
+    state.current = created;
     state.createKey = null;
     state.submitKey = null;
     return state.current;
@@ -1119,12 +1137,9 @@
                   json: { ...fields, expected_version: expectedVersion },
                 }
               );
-              if (!payload || !payload.submission) {
-                const missing = new Error("Сервер не подтвердил сохранение черновика.");
-                missing.code = "invalid_response";
-                throw missing;
-              }
-              state.current = payload.submission;
+              state.current = verifiedDraftResponse(
+                payload, state.current.id, expectedVersion
+              );
             } catch (error) {
               if (!await reconcileDraftSave(fields, expectedVersion, revisionId, error)) {
                 throw error;
@@ -1267,12 +1282,14 @@
             json: { expected_version: state.current.version },
           }
         );
-        if (!payload || !payload.submission) {
-          const error = new Error("Сервер не подтвердил прием заявки.");
+        const accepted = payload && payload.submission;
+        if (!accepted || String(accepted.id) !== String(state.current.id) ||
+            !["SUBMITTED", "IN_REVIEW", "APPROVED", "CHANGES_REQUESTED", "REJECTED"].includes(accepted.status)) {
+          const error = new Error("Сервер не подтвердил изменение статуса заявки.");
           error.code = "invalid_response";
           throw error;
         }
-        await showAcceptedSubmission(payload.submission);
+        await showAcceptedSubmission(accepted);
       } catch (error) {
         if (await confirmSubmissionAfterFailure(error)) return;
         setEditorError(
