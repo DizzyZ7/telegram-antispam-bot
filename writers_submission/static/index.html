@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Writers Submission</title>
-  <link rel="stylesheet" href="/writers/app.css?v=defer-upload-v1">
+  <link rel="stylesheet" href="/writers/app.css?v=genres-warnings-sketch-v3">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/writers/app.js?v=defer-upload-v1" defer></script>
+  <script src="/writers/app.js?v=genres-warnings-sketch-v3" defer></script>
 </head>
 <body>
   <main class="shell" aria-live="polite">
@@ -56,9 +56,17 @@
 
           <fieldset class="choice-field">
             <legend>2. Формат</legend>
-            <div class="choice-row" data-choice-group="workType" aria-label="Фанфик или ориджинал">
+            <div class="choice-row" data-choice-group="workType" aria-label="Выберите формат произведения">
               <label class="choice"><input type="checkbox" value="ФФ"> ФФ · фанфик</label>
               <label class="choice"><input type="checkbox" value="Оридж"> Оридж · оригинальная работа</label>
+              <label class="choice"><input type="checkbox" value="Зарисовка"> Зарисовка · короткая работа</label>
+            </div>
+          </fieldset>
+          <fieldset class="choice-field conditional hidden" id="sketchOriginField">
+            <legend>Происхождение зарисовки</legend>
+            <div class="choice-row" data-choice-group="sketchOrigin">
+              <label class="choice"><input type="checkbox" value="Фандом"> Фандом</label>
+              <label class="choice"><input type="checkbox" value="Ориджинал"> Ориджинал</label>
             </div>
           </fieldset>
           <label class="field conditional hidden" id="fandomField">
@@ -66,7 +74,7 @@
             <input id="fandomInput" maxlength="160" placeholder="Название фандома">
           </label>
 
-          <fieldset class="choice-field">
+          <fieldset class="choice-field" id="sizeCategorySection">
             <legend>3. Размер</legend>
             <div class="choice-row" data-choice-group="sizeCategory">
               <label class="choice"><input type="checkbox" value="мини"> Мини</label>
@@ -94,7 +102,7 @@
             </label>
           </div>
 
-          <fieldset class="choice-field">
+          <fieldset class="choice-field" id="completionSection">
             <legend>6. Статус</legend>
             <div class="choice-row" data-choice-group="completion">
               <label class="choice"><input type="checkbox" value="завершен"> Завершен</label>
@@ -107,11 +115,21 @@
             <label class="field"><span>Частей</span><input id="partsInput" type="number" min="1" max="10000000" step="1" inputmode="numeric"></label>
           </div>
 
-          <label class="field">
+          <label class="field" id="regularWorkUrlField">
             <span>7. Ссылка на Фикбук</span>
             <input id="urlInput" name="external_url" type="url" maxlength="2048" placeholder="https://ficbook.net/readfic/..." required>
           </label>
-          <label class="field">
+          <div class="sketch-links hidden" id="sketchLinksFields">
+            <label class="field">
+              <span>Профиль автора на Фикбуке</span>
+              <input id="sketchProfileUrlInput" type="url" maxlength="2048" placeholder="https://ficbook.net/authors/...">
+            </label>
+            <label class="field">
+              <span>Статья с текстом зарисовки в Telegraph</span>
+              <input id="sketchArticleUrlInput" type="url" maxlength="2048" placeholder="https://telegra.ph/...">
+            </label>
+          </div>
+          <label class="field" id="extraLinksField">
             <span>Дополнительные ссылки <em>необязательно</em></span>
             <textarea id="extraLinksInput" rows="2" placeholder="Ссылка на Telegram, сайт и другое — по одной в строке"></textarea>
             <small>До 5 HTTPS-ссылок</small>
@@ -120,19 +138,45 @@
           <label class="field">
             <span>8. Описание</span>
             <textarea id="descriptionInput" name="description" maxlength="2000" rows="5" required placeholder="О чем эта работа?"></textarea>
-            <small><span id="descriptionCounter">0</span>/2000</small>
+            <small id="descriptionHint">Для больших работ: минимум 3 предложения, до 110 слов.</small>
+            <small id="descriptionCounter">0 слов</small>
           </label>
 
-          <label class="field">
+          <fieldset class="choice-field" id="mainGenresField">
+            <legend>Основные жанры <em>от 1 до 3, обязательны</em></legend>
+            <div class="genre-slots">
+              <input id="mainGenre1Input" maxlength="70" placeholder="1. Романтика" autocomplete="off">
+              <input id="mainGenre2Input" maxlength="70" placeholder="2. Детектив" autocomplete="off">
+              <input id="mainGenre3Input" maxlength="70" placeholder="3. Путешествие во времени" autocomplete="off">
+            </div>
+            <div id="genreProgress" class="genre-progress" aria-label="Заполнено жанров: 0 из 3">
+              <span></span><span></span><span></span>
+            </div>
+            <small id="genreProgressLabel">Заполнено: 0 из 3</small>
+          </fieldset>
+          <fieldset class="choice-field">
+            <legend>Предупреждения (секс, насилие, убийство, психологические травмы и т.п.) <em>обязательно</em></legend>
+            <div class="choice-row" data-choice-group="warningsPresent">
+              <label class="choice"><input type="checkbox" value="no"> Нет</label>
+              <label class="choice"><input type="checkbox" value="yes"> Да, есть предупреждения</label>
+            </div>
+            <label class="field conditional hidden" id="warningsField">
+              <span>Укажи предупреждения (до 10, через запятую или с новой строки)</span>
+              <textarea id="warningsInput" maxlength="900" rows="3" placeholder="Самоубийство, Насилие, Психологические травмы"></textarea>
+              <small>Будут опубликованы под пометкой 18+.</small>
+            </label>
+          </fieldset>
+          <label class="field" id="charactersField">
             <span>Основные персонажи / пейринг <em>необязательно</em></span>
             <textarea id="charactersInput" maxlength="600" rows="2" placeholder="Например: Джонатан Кросс/Лиам Миллер"></textarea>
           </label>
-          <label class="field">
+          <label class="field" id="notesField">
             <span>Примечания автора <em>необязательно</em></span>
             <textarea id="notesInput" maxlength="1500" rows="3" placeholder="Дополнительный текст для рекламного поста"></textarea>
           </label>
 
-          <fieldset class="choice-field">
+          <p class="muted hidden" id="sketchCoverNotice">🎨 Обложку зарисовки оформляет команда ИКФ для рубрики. Загружать или выбирать цвета не нужно.</p>
+          <fieldset class="choice-field" id="visualModeSection">
             <legend>9. Оформление обложки ИКФ</legend>
             <div class="choice-row" data-choice-group="visualMode">
               <label class="choice"><input type="checkbox" value="palette"> Обычная · бесплатно (4 цвета)</label>
@@ -164,7 +208,7 @@
             </section>
           </div>
 
-          <details class="optional-text">
+          <details class="optional-text" id="bodySection">
             <summary>Дополнительно: полный текст произведения (необязательно)</summary>
             <label class="field">
               <span>Текст работы</span>
@@ -174,7 +218,7 @@
           </details>
         </div>
 
-        <div class="card attachments-card">
+        <div class="card attachments-card" id="attachmentsSection">
           <div class="section-title">
             <div>
               <h2>Файлы</h2>
