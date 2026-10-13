@@ -942,9 +942,16 @@
       if (state.pendingFiles.length) {
         setBanner("Локальные файлы не сохраняются в черновике. После повторного открытия их нужно выбрать заново.", "warning");
       }
+      const preserveSubmitKey = Boolean(
+        state.current && payload.submission &&
+        String(state.current.id) === String(payload.submission.id) &&
+        state.current.revision && payload.submission.revision &&
+        String(state.current.revision.id) === String(payload.submission.revision.id)
+      );
       state.pendingFiles = [];
       clearImagePreview();
       state.current = payload.submission;
+      if (!preserveSubmitKey) state.submitKey = null;
       state.attachments = Array.isArray(payload.files) ? payload.files : [];
       await loadHistory(submissionId);
 
@@ -953,7 +960,6 @@
         state.editSequence = 0;
         state.savedSequence = 0;
         state.createKey = null;
-        state.submitKey = null;
         setReloadRequired(false);
         renderAttachments();
         show("editor");
