@@ -7,7 +7,7 @@ from typing import Any
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from .config import WritersSubmissionConfig
+from .config import IKF_SUBSCRIPTION_URL, IKF_SUBSCRIPTION_USERNAME, WritersSubmissionConfig
 from .delivery import WritersDeliveryWorker
 from .files import WritersFileService
 from .handlers import register_writers_submission_handlers
@@ -30,7 +30,7 @@ class TelegramWritersEligibilityChecker:
         community_join_url: str | None = None,
     ) -> None:
         self.bot = bot
-        self.writers_chat_id = int(writers_chat_id)
+        self.writers_chat_id = writers_chat_id
         self.registry = registry
         self.community_join_url = community_join_url
         self._cached_join_url: str | None = community_join_url
@@ -61,7 +61,7 @@ class TelegramWritersEligibilityChecker:
         if self.registry is not None:
             try:
                 if not await self.registry.claim_join_notice(
-                    self.writers_chat_id, user_id, at=int(now),
+                    int(self.writers_chat_id), user_id, at=int(now),
                 ):
                     return
             except Exception:
@@ -86,8 +86,8 @@ class TelegramWritersEligibilityChecker:
                     "Привет! 💛 Спасибо, что хочешь поделиться своей работой с ИКФ.\n\n"
                     "Заполнять анкету и сохранять ее как черновик можно уже сейчас — "
                     "все останется на месте.\n\n"
-                    "Для отправки работы на проверку нужно быть участником "
-                    "сообщества ИКФ. Вступи, пожалуйста, и затем снова нажми "
+                    "Для отправки работы на проверку нужно быть подписчиком канала "
+                    "ИКФ. Подпишись, пожалуйста, на @ff_info_ru и затем снова нажми "
                     "«Отправить на проверку» в своей анкете. ✨"
                 ),
                 reply_markup=keyboard,
@@ -110,7 +110,7 @@ class TelegramWritersEligibilityChecker:
                 "Повторите отправку позже; черновик сохранен."
             ) from exc
 
-        if self.registry is not None:
+        if self.registry is not None and isinstance(self.writers_chat_id, int):
             try:
                 await self.registry.observe(
                     chat_id=self.writers_chat_id,
@@ -190,16 +190,41 @@ async def start_writers_submission_runtime(
     try:
         await storage.initialize()
 
-        community_chat_id = int(
-            getattr(config, "membership_chat_id", None) or config.writers_chat_id
-        )
+        # Resolve the exact public IKF channel. Never fall back to the
+        # discussion-group WRITERS_CHAT_ID: it belongs to Zero Trust, not
+        # the publication subscription gate. If Telegram is temporarily
+        # unavailable, direct @username membership checks still fail closed.
+        community_chat_id: int | str = IKF_SUBSCRIPTION_USERNAME
+        verified_channel_id: int | None = None
+        try:
+            channel = await app.bot.get_chat(IKF_SUBSCRIPTION_USERNAME)
+            channel_type = getattr(channel, "type", "")
+            channel_type = str(getattr(channel_type, "value", channel_type)).casefold()
+            channel_username = str(getattr(channel, "username", "") or "").lstrip("@").casefold()
+            resolved_id = int(channel.id)
+            if channel_type == "channel" and channel_username == "ff_info_ru" and resolved_id < 0:
+                verified_channel_id = resolved_id
+                community_chat_id = resolved_id
+                hint = getattr(config, "membership_chat_id", None)
+                if hint is not None and int(hint) != resolved_id:
+                    LOGGER.warning(
+                        "WRITERS_CHANNEL_ID_HINT_IGNORED configured=%s actual=%s",
+                        hint, resolved_id,
+                    )
+            else:
+                LOGGER.error(
+                    "WRITERS_IKF_CHANNEL_UNVERIFIED username=%s type=%s",
+                    channel_username, channel_type,
+                )
+        except Exception:
+            LOGGER.warning("WRITERS_IKF_CHANNEL_RESOLVE_FAILED", exc_info=True)
         registry = WritersCommunityMembershipRegistry(storage)
         await registry.initialize()
         eligibility = TelegramWritersEligibilityChecker(
             app.bot,
             community_chat_id,
-            registry=registry,
-            community_join_url=getattr(config, "community_join_url", None),
+            registry=registry if verified_channel_id is not None else None,
+            community_join_url=IKF_SUBSCRIPTION_URL,
         )
         service = WritersSubmissionService(
             storage,
@@ -242,7 +267,7 @@ async def start_writers_submission_runtime(
             service,
             config,
             membership_registry=registry,
-            membership_chat_id=community_chat_id,
+            membership_chat_id=verified_channel_id,
         )
 
         worker_start_attempted = True

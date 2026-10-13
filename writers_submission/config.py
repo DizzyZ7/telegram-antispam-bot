@@ -14,6 +14,9 @@ DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 DEFAULT_OWNER_USER_ID = 2039781854
 DEFAULT_MODERATION_MODE = "owner"
 
+IKF_SUBSCRIPTION_USERNAME = "@ff_info_ru"
+IKF_SUBSCRIPTION_URL = "https://t.me/ff_info_ru"
+
 
 def _enabled(raw: str | None) -> bool:
     return (raw or "").strip().casefold() in {"1", "true", "yes", "on"}
@@ -174,22 +177,15 @@ class WritersSubmissionConfig:
                 )
             moderator_ids = _moderator_ids()
 
-        # Optional: check subscription in a separate ИКФ channel instead
-        # of the writers chat. Without an override retain the existing gate.
+        # The numeric ID is an optional hint for the event ledger, never a
+        # substitute for a verified @ff_info_ru channel identity.
         membership_raw = os.getenv("WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID", "").strip()
         try:
-            membership_chat_id = int(membership_raw) if membership_raw else int(writers_chat_id)
+            membership_chat_id = int(membership_raw) if membership_raw else None
         except ValueError as exc:
             raise ValueError("WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID must be an integer") from exc
-        if membership_chat_id >= 0:
-            raise ValueError("WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID must be a Telegram group/channel id")
-        join_url = os.getenv("WRITERS_SUBMISSION_JOIN_URL", "").strip()
-        if join_url:
-            parsed_join = urlparse(join_url)
-            if (parsed_join.scheme != "https"
-                    or parsed_join.hostname not in {"t.me", "telegram.me", "www.t.me"}
-                    or not parsed_join.path.strip("/")):
-                raise ValueError("WRITERS_SUBMISSION_JOIN_URL must be a valid HTTPS t.me link")
+        if membership_chat_id is not None and membership_chat_id >= 0:
+            raise ValueError("WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID must be a channel id")
 
         file_chat_id = _required_int("WRITERS_SUBMISSION_FILE_CHAT_ID")
         if file_chat_id >= 0 or file_chat_id in {int(writers_chat_id), int(moderation_chat_id)}:
@@ -230,5 +226,5 @@ class WritersSubmissionConfig:
             owner_user_id=owner_user_id,
             moderation_mode=mode,
             membership_chat_id=membership_chat_id,
-            community_join_url=join_url or None,
+            community_join_url=IKF_SUBSCRIPTION_URL,
         )

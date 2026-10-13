@@ -154,6 +154,114 @@ class WritersSubmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ["worker.stop", "web.stop", "storage.close"],
         )
 
+    async def test_exact_ikf_channel_is_used_not_group_for_publishing(self):
+        resolved_id = -1009876543210
+        bot = SimpleNamespace(
+            get_chat=AsyncMock(return_value=SimpleNamespace(
+                id=resolved_id, type="channel", username="ff_info_ru",
+            )),
+            get_chat_member=AsyncMock(return_value=SimpleNamespace(status="member")),
+        )
+        app = SimpleNamespace(bot=bot, dp=object())
+        storage = SimpleNamespace(initialize=AsyncMock(), close=AsyncMock())
+        web_server = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        worker = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        config = self.config()
+        config.membership_chat_id = -1002619489118  # stale group ID
+        config.community_join_url = "https://t.me/some_other_chat"
+
+        with (
+            patch("writers_submission.runtime.PostgresWritersSubmissionStorage", return_value=storage),
+            patch("writers_submission.runtime.WritersCommunityMembershipRegistry", autospec=True) as registry,
+            patch("writers_submission.runtime.WritersSubmissionService") as service,
+            patch("writers_submission.runtime.WritersFileService"),
+            patch("writers_submission.runtime.SessionSigner"),
+            patch("writers_submission.runtime.create_writers_web_app"),
+            patch("writers_submission.runtime.WritersWebServer", return_value=web_server),
+            patch("writers_submission.runtime.WritersDeliveryWorker", return_value=worker),
+            patch("writers_submission.runtime.register_writers_submission_handlers") as handlers,
+            patch("writers_submission.runtime.install_writers_submission_menu", new=AsyncMock()),
+        ):
+            runtime = await start_writers_submission_runtime(
+                app, config, database_url="postgresql://u:p@db/test", bot_token="token",
+            )
+            bot.get_chat.assert_awaited_once_with("@ff_info_ru")
+            checker = service.call_args.args[2]
+            self.assertTrue(await checker(88))
+            bot.get_chat_member.assert_awaited_once_with(resolved_id, 88)
+            self.assertEqual(checker.community_join_url, "https://t.me/ff_info_ru")
+            self.assertEqual(handlers.call_args.kwargs["membership_chat_id"], resolved_id)
+            registry.return_value.observe.assert_awaited_once()
+            await runtime.stop()
+
+    async def test_unresolvable_channel_fails_closed_not_to_writers_group(self):
+        bot = SimpleNamespace(
+            get_chat=AsyncMock(side_effect=RuntimeError("Telegram unavailable")),
+            get_chat_member=AsyncMock(side_effect=RuntimeError("cannot verify")),
+        )
+        app = SimpleNamespace(bot=bot, dp=object())
+        storage = SimpleNamespace(initialize=AsyncMock(), close=AsyncMock())
+        web_server = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        worker = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        with (
+            patch("writers_submission.runtime.PostgresWritersSubmissionStorage", return_value=storage),
+            patch("writers_submission.runtime.WritersCommunityMembershipRegistry", autospec=True),
+            patch("writers_submission.runtime.WritersSubmissionService") as service,
+            patch("writers_submission.runtime.WritersFileService"),
+            patch("writers_submission.runtime.SessionSigner"),
+            patch("writers_submission.runtime.create_writers_web_app"),
+            patch("writers_submission.runtime.WritersWebServer", return_value=web_server),
+            patch("writers_submission.runtime.WritersDeliveryWorker", return_value=worker),
+            patch("writers_submission.runtime.register_writers_submission_handlers") as handlers,
+            patch("writers_submission.runtime.install_writers_submission_menu", new=AsyncMock()),
+        ):
+            runtime = await start_writers_submission_runtime(
+                app, self.config(), database_url="postgresql://u:p@db/test", bot_token="token",
+            )
+            checker = service.call_args.args[2]
+            with self.assertRaises(EligibilityUnavailableError):
+                await checker(88)
+            bot.get_chat_member.assert_awaited_once_with("@ff_info_ru", 88)
+            self.assertIsNone(handlers.call_args.kwargs["membership_chat_id"])
+            await runtime.stop()
+
+    async def test_invalid_channel_identity_is_not_replaced_by_group(self):
+        bot = SimpleNamespace(
+            get_chat=AsyncMock(return_value=SimpleNamespace(
+                id=-10012345, type="supergroup", username="ff_info_ru",
+            )),
+            get_chat_member=AsyncMock(return_value=SimpleNamespace(status="left")),
+            send_message=AsyncMock(),
+        )
+        app = SimpleNamespace(bot=bot, dp=object())
+        storage = SimpleNamespace(initialize=AsyncMock(), close=AsyncMock())
+        web_server = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        worker = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        with (
+            patch("writers_submission.runtime.PostgresWritersSubmissionStorage", return_value=storage),
+            patch("writers_submission.runtime.WritersCommunityMembershipRegistry", autospec=True),
+            patch("writers_submission.runtime.WritersSubmissionService") as service,
+            patch("writers_submission.runtime.WritersFileService"),
+            patch("writers_submission.runtime.SessionSigner"),
+            patch("writers_submission.runtime.create_writers_web_app"),
+            patch("writers_submission.runtime.WritersWebServer", return_value=web_server),
+            patch("writers_submission.runtime.WritersDeliveryWorker", return_value=worker),
+            patch("writers_submission.runtime.register_writers_submission_handlers") as handlers,
+            patch("writers_submission.runtime.install_writers_submission_menu", new=AsyncMock()),
+        ):
+            runtime = await start_writers_submission_runtime(
+                app, self.config(), database_url="postgresql://u:p@db/test", bot_token="token",
+            )
+            checker = service.call_args.args[2]
+            self.assertFalse(await checker(88))
+            bot.get_chat_member.assert_awaited_once_with("@ff_info_ru", 88)
+            self.assertIsNone(handlers.call_args.kwargs["membership_chat_id"])
+            self.assertEqual(
+                bot.send_message.await_args.kwargs["reply_markup"].inline_keyboard[0][0].url,
+                "https://t.me/ff_info_ru",
+            )
+            await runtime.stop()
+
     async def test_web_bind_failure_cleans_storage_and_never_registers_handlers_or_worker(self):
         storage = SimpleNamespace(
             initialize=AsyncMock(),

@@ -63,19 +63,21 @@ class WritersSubmissionConfigTests(unittest.TestCase):
                         writers_chat_id=-1002619489118,
                     )
 
-    def test_optional_community_channel_and_join_url(self):
+    def test_form_publishing_requires_ikf_channel_not_the_writers_group(self):
         with patch.dict(os.environ, self._enabled_env(), clear=True):
             config = WritersSubmissionConfig.from_env(
                 bot_token="token", database_url="postgresql://db",
                 writers_chat_id=-1002619489118,
             )
-        self.assertEqual(config.membership_chat_id, -1002619489118)
-        self.assertIsNone(config.community_join_url)
+        # Runtime resolves @ff_info_ru and never falls back to writers_chat_id.
+        self.assertIsNone(config.membership_chat_id)
+        self.assertEqual(config.community_join_url, "https://t.me/ff_info_ru")
+        self.assertEqual(config.writers_chat_id, -1002619489118)
 
         env = {
             **self._enabled_env(),
             "WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID": "-1001234567890",
-            "WRITERS_SUBMISSION_JOIN_URL": "https://t.me/ikf_community",
+            "WRITERS_SUBMISSION_JOIN_URL": "https://t.me/unrelated_group",
         }
         with patch.dict(os.environ, env, clear=True):
             config = WritersSubmissionConfig.from_env(
@@ -83,11 +85,11 @@ class WritersSubmissionConfigTests(unittest.TestCase):
                 writers_chat_id=-1002619489118,
             )
         self.assertEqual(config.membership_chat_id, -1001234567890)
-        self.assertEqual(config.community_join_url, "https://t.me/ikf_community")
+        self.assertEqual(config.community_join_url, "https://t.me/ff_info_ru")
 
-        env["WRITERS_SUBMISSION_JOIN_URL"] = "https://example.org/other"
+        env["WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID"] = "not-an-id"
         with patch.dict(os.environ, env, clear=True):
-            with self.assertRaisesRegex(ValueError, "JOIN_URL"):
+            with self.assertRaisesRegex(ValueError, "MEMBERSHIP_CHAT_ID"):
                 WritersSubmissionConfig.from_env(
                     bot_token="token", database_url="postgresql://db",
                     writers_chat_id=-1002619489118,
