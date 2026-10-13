@@ -59,7 +59,7 @@ test("first edit creates a real server draft automatically", async () => {
   const h = createHarness(async (url, opts) => {
     calls.push({ url, opts });
     assert.equal(opts.method, "POST");
-    return { submission: { id: "draft-one", version: 1 } };
+    return { submission: { id: "draft-one", status: "DRAFT", version: 1 } };
   });
   await h.newDraft();
   h.context.textValue = "Начатая история";
@@ -82,9 +82,9 @@ test("edits made during in-flight PATCH are never lost", async () => {
     if (writes.length === 1) {
       return new Promise(resolve => { resolveFirst = resolve; });
     }
-    return Promise.resolve({ submission: { id: "draft-one", version: 3 } });
+    return Promise.resolve({ submission: { id: "draft-one", status: "DRAFT", version: 3 } });
   });
-  h.state.current = { id: "draft-one", version: 1 };
+  h.state.current = { id: "draft-one", status: "DRAFT", version: 1 };
   h.context.textValue = "Версия первая";
   h.markChanged();
   const pending = h.autosave({ immediate: true });
@@ -92,7 +92,7 @@ test("edits made during in-flight PATCH are never lost", async () => {
   assert.deepEqual(writes, ["Версия первая"]);
   h.context.textValue = "Версия вторая";
   h.markChanged();
-  resolveFirst({ submission: { id: "draft-one", version: 2 } });
+  resolveFirst({ submission: { id: "draft-one", status: "DRAFT", version: 2 } });
   assert.equal(await pending, true);
   assert.deepEqual(writes, ["Версия первая", "Версия вторая"]);
   assert.equal(h.state.current.version, 3);
@@ -106,7 +106,7 @@ test("failed POST retains dirty edits and idempotency key on retry", async () =>
     keys.push(opts.headers["Idempotency-Key"]);
     attempt += 1;
     if (attempt === 1) { throw Error("Internet disconnected"); }
-    return { submission: { id: "resumed", version: 1 } };
+    return { submission: { id: "resumed", status: "DRAFT", version: 1 } };
   });
   h.context.textValue = "Мой будущий фанфик";
   h.markChanged();
@@ -122,11 +122,28 @@ test("failed POST retains dirty edits and idempotency key on retry", async () =>
 test("a failed draft-save prevents switching to another blank form", async () => {
   const h = createHarness(async () => { throw Error("No network"); });
   h.context.views.editor.classList.contains = () => false;
-  h.state.current = { id: "draft-one", version: 1 };
+  h.state.current = { id: "draft-one", status: "DRAFT", version: 1 };
   h.context.textValue = "Очень важный текст";
   h.markChanged();
   await h.newDraft();
   assert.equal(h.state.current.id, "draft-one");
   assert.match(h.errors.at(-1), /не сохранился/);
   assert.equal(h.context.textValue, "Очень важный текст");
+});
+test("malformed HTTP 201 retains original draft key instead of creating duplicates", async () => {
+  const keys = [];
+  const h = createHarness(async (_url, options) => {
+    keys.push(options.headers["Idempotency-Key"]);
+    if (keys.length === 1) return { submission: { status: "DRAFT", version: 1 } };
+    return { submission: { id: "draft-safe", status: "DRAFT", version: 1 } };
+  });
+  h.context.textValue = "Важный сюжет";
+  h.markChanged();
+  assert.equal(await h.autosave({ immediate: true }), false);
+  assert.equal(h.state.current, null);
+  assert.equal(h.state.savedSequence, 0);
+  assert.equal(h.state.createKey, "create-retry-stable");
+  assert.equal(await h.autosave({ immediate: true }), true);
+  assert.equal(h.state.current.id, "draft-safe");
+  assert.deepEqual(keys, ["create-retry-stable", "create-retry-stable"]);
 });
