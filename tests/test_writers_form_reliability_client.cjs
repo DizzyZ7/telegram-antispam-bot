@@ -385,3 +385,38 @@ test("submit editing lock toggles all form inputs during request", () => {
   ctx.lock(false);
   assert.ok(controls.every((control) => !control.disabled));
 });
+
+
+test("reopening the same draft preserves uncertain submit key; a new revision resets it", async () => {
+  const code = section("  async function openSubmission(", "  async function newDraft(");
+  const state = {
+    current: { id: "draft-a", revision: { id: "rev-a" } },
+    submitKey: "original-submit-key",
+    pendingFiles: [],
+    editSequence: 5,
+    savedSequence: 4,
+  };
+  let remoteRevision = "rev-a";
+  const ctx = vm.createContext({
+    state,
+    api: async () => ({
+      submission: { id: "draft-a", version: 3, status: "DRAFT", revision: { id: remoteRevision } },
+      files: [],
+    }),
+    setBusy: () => {},
+    clearImagePreview: () => {},
+    loadHistory: async () => {},
+    fillForm: () => {},
+    setReloadRequired: () => {},
+    renderAttachments: () => {},
+    show: () => {},
+    renderDetail: () => {},
+    setBanner: () => {},
+  });
+  vm.runInContext(code + ";this.open=openSubmission;", ctx);
+  await ctx.open("draft-a");
+  assert.equal(state.submitKey, "original-submit-key");
+  remoteRevision = "rev-b";
+  await ctx.open("draft-a");
+  assert.equal(state.submitKey, null);
+});
