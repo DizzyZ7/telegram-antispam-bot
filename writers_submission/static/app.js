@@ -143,6 +143,32 @@
       idempotency_key_required: "Не передан идентификатор операции. Переоткрой Mini App.",
     };
     let explanation = lookup[code];
+    // Back-end validators use stable technical messages. Translate the most
+    // frequent ones so authors know exactly which field to correct.
+    if (status === 422 && details) {
+      const validationHints = [
+        [/work description needs at least three sentences/i, "Описание: нужно не менее трех законченных предложений с точкой, ! или ?."],
+        [/work description: max 110 words/i, "Описание: допускается максимум 110 слов."],
+        [/sketch description: max 35 words and 230 characters/i, "Описание зарисовки: максимум 35 слов и 230 символов."],
+        [/maximum file count reached/i, "К этой работе уже прикреплено максимальное число файлов (3). Удали лишний файл."],
+        [/file size exceeds maximum/i, "Размер вложения превышает лимит 20 МБ. Уменьши файл."],
+        [/file is empty/i, "Выбранный файл пустой. Выбери другой."],
+        [/unsupported file extension/i, "Формат файла не поддерживается. Допустимы PNG, JPG, PDF, DOCX и TXT."],
+        [/file extension and MIME type do not match|file extension, MIME type and detected file class do not match/i,
+          "Расширение файла не соответствует его содержимому. Сохрани файл в исходном формате и выбери заново."],
+        [/PNG header is invalid|JPEG ending is invalid/i, "Изображение повреждено или не соответствует формату. Сохрани его заново как PNG или JPG."],
+        [/TXT must be valid UTF-8 text/i, "Текстовый файл должен быть сохранен в кодировке UTF-8."],
+        [/DOCX (structure|container) is invalid/i, "Документ DOCX поврежден. Пересохрани документ и прикрепи заново."],
+        [/submission payload requires an HTTPS link, body text or a ready file/i,
+          "Добавь ссылку HTTPS на работу, текст или хотя бы один сохраненный файл."],
+        [/external_url must be an HTTPS URL/i, "Ссылка на произведение должна начинаться с https:// и не содержать логин или пароль."],
+        [/main_genres must have 1–3 entries/i, "Выбери от одного до трех основных жанров."],
+        [/warnings require yes selection|provide at least one content warning/i,
+          "Проверь предупреждения: выбери «Да» и укажи хотя бы одно предупреждение."],
+      ];
+      const hint = validationHints.find(([pattern]) => pattern.test(details));
+      if (hint) explanation = hint[1];
+    }
     if (code === "telegram_file_staging_unavailable") {
       explanation = details || "Не удалось передать файл в закрытое Telegram-хранилище. Повтори загрузку позднее.";
     }
@@ -1115,6 +1141,16 @@
     }
   }
 
+  async function saveDraftAndFiles() {
+    if (state.reloadRequired || state.autosavePending ||
+        state.uploadPending || state.uploadPreparing || state.submitting) return false;
+    if (!await autosave({ immediate: true })) return false;
+    if (!state.pendingFiles.length) return true;
+    // Authors can recover a chosen image even if the initial automatic
+    // upload failed because the draft was incomplete or offline.
+    return uploadQueuedFiles();
+  }
+
   async function submitCurrent() {
     if (state.reloadRequired || state.autosavePending ||
         state.uploadPending || state.uploadPreparing || state.submitting) return;
@@ -1625,7 +1661,7 @@
       await loadWorkspace();
       show("workspace");
     });
-    $("saveButton").addEventListener("click", () => autosave({ immediate: true }));
+    $("saveButton").addEventListener("click", () => { void saveDraftAndFiles(); });
     $("submitButton").addEventListener("click", submitCurrent);
     $("fileInput").addEventListener("change", (event) => {
       const chosen = Array.from(event.target.files || []);
@@ -1639,6 +1675,20 @@
     });
     $("withdrawButton").addEventListener("click", withdrawCurrent);
     $("revisionButton").addEventListener("click", createRevision);
+    window.addEventListener("offline", () => {
+      setBanner("Нет интернета. Не закрывай Mini App: несохраненный текст и выбранные файлы остаются в этой форме.", "warning");
+    });
+    window.addEventListener("online", () => {
+      if (state.reloadRequired) return;
+      if (!views.editor.classList.contains("hidden") &&
+          (state.editSequence > state.savedSequence || state.pendingFiles.length)) {
+        void saveDraftAndFiles().then((saved) => {
+          if (saved) setBanner("");
+        });
+      } else {
+        setBanner("");
+      }
+    });
     $("reloadButton").addEventListener("click", () => {
       if (state.current) {
         openSubmission(state.current.id);
