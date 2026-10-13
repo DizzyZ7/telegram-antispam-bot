@@ -157,7 +157,7 @@ def normalize_extra_link(value: object) -> str | None:
         return None
     parsed = urlparse(url)
     if (parsed.hostname or "").lower() in _TELEGRAM_HOSTS:
-        if (not _TELEGRAM_PATH.fullmatch(parsed.path) or parsed.port not in (None, 443)
+        if (not _TELEGRAM_PATH.fullmatch(parsed.path) or parsed.netloc.lower() not in _TELEGRAM_HOSTS
                 or parsed.fragment or any(ch.isspace() for ch in url)
                 or "\\" in url):
             raise ValidationError("Telegram link must point to a valid channel, invite or message")
