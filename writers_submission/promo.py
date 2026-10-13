@@ -108,13 +108,18 @@ def _foreground_color(hex_color: str) -> str:
     return "#161923" if luminance > 0.24 else "#F5F3ED"
 
 
-def _title_lines(draw: object, title: str, font_path: str, *, max_width: int) -> tuple[list[str], object]:
+def _title_lines(draw: object, title: str, font_path: str | None, *, max_width: int) -> tuple[list[str], object]:
     from PIL import ImageFont
+
+    def chosen_font(size: int):
+        # Pillow bundles a Unicode-capable default font. Bothost deployments
+        # that run Python directly may not have Debian's DejaVu font package.
+        return ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default(size=size)
 
     title = "«" + (" ".join(str(title or "Название произведения").split())[:200]) + "»"
     words = title.split()
     for size in range(66, 23, -2):
-        font = ImageFont.truetype(font_path, size)
+        font = chosen_font(size)
         lines: list[str] = []
         current = ""
         for word in words:
@@ -132,11 +137,52 @@ def _title_lines(draw: object, title: str, font_path: str, *, max_width: int) ->
         ):
             return lines, font
     # Keep a long unbroken word contained, even if font must be small.
-    font = ImageFont.truetype(font_path, 23)
+    font = chosen_font(23)
     content = title
     while content and draw.textbbox((0, 0), content, font=font)[2] > max_width:
         content = content[:-2] + "…"
     return [content], font
+
+
+def render_palette_fallback_png(
+    colors: list[str] | tuple[str, ...],
+) -> bytes:
+    """Minimal, guaranteed four-color preview using only Python stdlib.
+
+    This is intentionally a color board, not a finished branded cover. It
+    stays usable even if Pillow / font packages are missing in the host.
+    """
+    if len(colors) != 4 or any(
+        not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color)
+        for color in colors
+    ):
+        raise ValueError("four RGB colors are required")
+    swatches = [bytes.fromhex(color[1:]) for color in colors]
+    width, height = COVER_SIZE
+    raster = bytearray()
+    for y in range(height):
+        skew = (y - height // 2) // 5
+        cuts = (width // 4 + skew, width // 2 + skew,
+                (width * 3) // 4 + skew)
+        sizes = (cuts[0], cuts[1] - cuts[0], cuts[2] - cuts[1],
+                 width - cuts[2])
+        raster.append(0)  # PNG scanline: no filter.
+        for color, count in zip(swatches, sizes):
+            raster.extend(color * count)
+
+    def chunk(kind: bytes, content: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(content)) + kind + content
+            + struct.pack(">I", zlib.crc32(kind + content) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(raster, 6))
+        + chunk(b"IEND", b"")
+    )
 
 
 def render_palette_png(
@@ -192,8 +238,7 @@ def render_palette_png(
         ) if p.is_file()),
         None,
     )
-    if font_path is None:
-        raise RuntimeError("ICФ Cyrillic serif font is missing from the Docker image")
+    # Use Pillow's bundled font when system DejaVu is unavailable.
 
     max_width = 770
     lines, font = _title_lines(draw, title, font_path, max_width=max_width)
