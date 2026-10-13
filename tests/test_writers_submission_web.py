@@ -181,6 +181,18 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Secure", cookie)
         self.assertIn("SameSite=Strict", cookie)
 
+    async def test_verified_initdata_records_author_contact_without_trusting_form(self):
+        self.service.storage = SimpleNamespace(record_author_identity=AsyncMock())
+        response = await self.client.post(
+            "/api/writers/session",
+            json={"init_data": valid_init_data()},
+            headers={"Origin": PUBLIC_ORIGIN},
+        )
+        self.assertEqual(response.status, 204)
+        self.service.storage.record_author_identity.assert_awaited_once_with(
+            user_id=77, username="author", first_name="Author", now=NOW,
+        )
+
     async def test_invalid_and_expired_init_data_are_denied(self):
         invalid = await self.client.post(
             "/api/writers/session",
