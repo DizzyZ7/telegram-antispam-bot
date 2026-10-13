@@ -147,6 +147,7 @@ class OutboxRecord:
     dedupe_key: str | None
     created_at: int
     updated_at: int
+    progress: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
