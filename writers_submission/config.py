@@ -143,6 +143,8 @@ class WritersSubmissionConfig:
                 file_chat_id=None,
                 moderator_ids=frozenset(),
                 writers_chat_id=writers_chat_id,
+                membership_chat_id=_optional_membership_chat_id(writers_chat_id),
+                community_url=_optional_community_url(),
                 bind_host=(
                     os.getenv("WRITERS_SUBMISSION_BIND_HOST", DEFAULT_BIND_HOST).strip()
                     or DEFAULT_BIND_HOST
@@ -209,6 +211,8 @@ class WritersSubmissionConfig:
             file_chat_id=file_chat_id,
             moderator_ids=moderator_ids,
             writers_chat_id=int(writers_chat_id),
+            membership_chat_id=_optional_membership_chat_id(int(writers_chat_id)),
+            community_url=_optional_community_url(),
             bind_host=(
                 os.getenv("WRITERS_SUBMISSION_BIND_HOST", DEFAULT_BIND_HOST).strip()
                 or DEFAULT_BIND_HOST
