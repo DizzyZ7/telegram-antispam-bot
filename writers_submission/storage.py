@@ -42,6 +42,21 @@ def _outbox_from_row(row: asyncpg.Record) -> OutboxRecord:
         payload = json.loads(str(raw_payload or "{}"))
     except (TypeError, ValueError, json.JSONDecodeError):
         payload = {}
+    try:
+        raw_progress = (
+            row["delivery_progress_json"]
+            if "delivery_progress_json" in row else "{}"
+        )
+        progress = json.loads(str(raw_progress or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        progress = {}
+    if not isinstance(progress, dict):
+        progress = {}
+    progress = {
+        str(key): int(value)
+        for key, value in progress.items()
+        if isinstance(value, int) and value > 0
+    }
     if not isinstance(payload, dict):
         payload = {}
     return OutboxRecord(
@@ -67,6 +82,7 @@ def _outbox_from_row(row: asyncpg.Record) -> OutboxRecord:
         ),
         created_at=int(row["created_at"]),
         updated_at=int(row["updated_at"]),
+        progress=progress,
     )
 
 
@@ -479,6 +495,7 @@ class PostgresWritersSubmissionStorage:
                 last_error_code TEXT,
                 delivery_chat_id BIGINT,
                 delivery_message_ids_json TEXT NOT NULL DEFAULT '[]',
+                delivery_progress_json TEXT NOT NULL DEFAULT '{}',
                 payload_json TEXT NOT NULL DEFAULT '{}',
                 dedupe_key TEXT UNIQUE,
                 created_at BIGINT NOT NULL,
@@ -504,6 +521,12 @@ class PostgresWritersSubmissionStorage:
             """
             ALTER TABLE writers_submission_outbox
             ADD COLUMN IF NOT EXISTS delivery_chat_id BIGINT
+            """
+        )
+        await connection.execute(
+            """
+            ALTER TABLE writers_submission_outbox
+            ADD COLUMN IF NOT EXISTS delivery_progress_json TEXT NOT NULL DEFAULT '{}'
             """
         )
         await connection.execute(
@@ -2847,6 +2870,50 @@ class PostgresWritersSubmissionStorage:
             lease_seconds,
         )
         return [_outbox_from_row(row) for row in rows]
+
+    async def record_outbox_progress(
+        self,
+        *,
+        outbox_id: UUID,
+        worker_id: str,
+        now: int,
+        key: str,
+        message_id: int,
+        delivery_chat_id: int,
+    ) -> None:
+        """Checkpoint one Telegram message before sending the next.
+
+        A retry can resume from the last persisted moderation packet part.
+        The lease owner is checked to prevent stale workers recording progress.
+        """
+        key = str(key)
+        if not key or len(key) > 96 or not int(message_id) > 0:
+            raise ValueError("Invalid message progress checkpoint")
+        record = await self._require_pool().fetchval(
+            """
+            UPDATE writers_submission_outbox
+            SET delivery_progress_json = (
+                    COALESCE(delivery_progress_json::jsonb, '{}'::jsonb)
+                    || jsonb_build_object($4::text, $5::bigint)
+                )::text,
+                delivery_chat_id = $6,
+                updated_at = $3
+            WHERE id = $1
+              AND state = 'IN_FLIGHT'
+              AND worker_id = $2
+              AND lease_until > $3
+              AND event_type = 'MODERATION_CARD'
+            RETURNING id
+            """,
+            outbox_id,
+            str(worker_id),
+            int(now),
+            key,
+            int(message_id),
+            int(delivery_chat_id),
+        )
+        if record is None:
+            raise ConflictError("Outbox progress lease expired or was reassigned")
 
     async def mark_outbox_delivered(
         self,
