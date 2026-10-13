@@ -355,11 +355,11 @@ def count_description_sentences(description: str) -> int:
     value = " ".join(str(description or "").split())
     last = 0
     count = 0
-    for match in re.finditer(r'[.!?]+[»”"’\\)\\]]*(?=\\s|$)', value):
+    for match in re.finditer(r'[.!?]+[»”"’\)\]]*(?=\s|$)', value):
         segment = value[last:match.start()]
         # A bare hashtag / URL at the end is not a completed sentence.
-        segment = re.sub(r"https?://\\S+|(?:^|\\s)#[^\\s]+", " ", segment)
-        if re.search(r"[^\\W_]", segment, re.UNICODE):
+        segment = re.sub(r"https?://\S+|(?:^|\s)#[^\s]+", " ", segment)
+        if re.search(r"[^\W_]", segment, re.UNICODE):
             count += 1
         last = match.end()
     return count
