@@ -453,6 +453,48 @@ class WritersSubmissionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.eligibility.assert_awaited_once_with(77)
         self.assertEqual(self.storage.submit_calls, 0)
 
+    async def test_denied_submission_retains_draft_and_sends_kind_reminder_once(self):
+        self.eligibility.return_value = False
+        notifier = AsyncMock()
+        self.service.nonmember_notifier = notifier
+        draft = await self.service.create(
+            author_user_id=77, fields=fields(),
+            idempotency_key="community-not-member", now=100,
+        )
+        changed = await self.service.autosave(
+            author_user_id=77, submission_id=draft.id,
+            expected_version=1, fields=fields("Заполненная работа"), now=101,
+        )
+        self.assertEqual(changed.revision.title, "Заполненная работа")
+        with self.assertRaises(PermissionError):
+            await self.service.submit(
+                author_user_id=77, submission_id=draft.id,
+                expected_version=changed.version, idempotency_key="not-member",
+                now=102,
+            )
+        notifier.assert_awaited_once_with(77)
+        self.assertEqual(self.storage.submit_calls, 0)
+        recovered = await self.service.get_mine(77, draft.id)
+        self.assertEqual(recovered.revision.title, "Заполненная работа")
+
+    async def test_blocked_private_chat_cannot_destroy_draft_or_bypass_gate(self):
+        self.eligibility.return_value = False
+        self.service.nonmember_notifier = AsyncMock(
+            side_effect=RuntimeError("Forbidden: bot was blocked")
+        )
+        draft = await self.service.create(
+            author_user_id=77, fields=fields(),
+            idempotency_key="blocked-dm-draft", now=100,
+        )
+        with self.assertRaises(PermissionError):
+            await self.service.submit(
+                author_user_id=77, submission_id=draft.id,
+                expected_version=1, idempotency_key="blocked-dm-submit",
+                now=101,
+            )
+        self.assertEqual((await self.service.get_mine(77, draft.id)).status,
+                         SubmissionStatus.DRAFT)
+
     async def test_submit_delegates_exact_actor_version_and_idempotency_key(self):
         created = await self.service.create(
             author_user_id=77,
