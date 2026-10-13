@@ -350,6 +350,21 @@ def normalize_submission_details(value: object, *, complete: bool = False,
     return details
 
 
+def count_description_sentences(description: str) -> int:
+    """Count complete sentences; tolerate trailing tags, URLs and fragments."""
+    value = " ".join(str(description or "").split())
+    last = 0
+    count = 0
+    for match in re.finditer(r'[.!?]+[»”"’\\)\\]]*(?=\\s|$)', value):
+        segment = value[last:match.start()]
+        # A bare hashtag / URL at the end is not a completed sentence.
+        segment = re.sub(r"https?://\\S+|(?:^|\\s)#[^\\s]+", " ", segment)
+        if re.search(r"[^\\W_]", segment, re.UNICODE):
+            count += 1
+        last = match.end()
+    return count
+
+
 def validate_description_for_format(description: str, work_type: str) -> None:
     """Short sketches fit roughly three Telegram lines; long work is balanced."""
     text = " ".join(str(description or "").split()).strip()
@@ -360,11 +375,11 @@ def validate_description_for_format(description: str, work_type: str) -> None:
     else:
         if len(words) > LONG_DESCRIPTION_WORDS_MAX:
             raise ValidationError("work description: max 110 words")
-        # A sentence is a piece ending with terminal punctuation, not an
-        # arbitrary three semicolons or line breaks.
-        sentences = [s.strip() for s in re.findall(r"[^.!?]+[.!?]+", text) if s.strip()]
-        if len(sentences) < 3 or not re.search(r"[.!?]$", text):
-            raise ValidationError("work description needs at least three sentences")
+        # A trailing hashtag, emoji or unfinished fragment is NOT a reason to
+        # reject an otherwise complete description. Count real punctuation-
+        # terminated sentences; ignore dots inside domains and file names.
+        if count_description_sentences(text) < 3:
+            raise ValidationError("work description needs at least three complete sentences")
 
 
 def validate_submission_fields(
