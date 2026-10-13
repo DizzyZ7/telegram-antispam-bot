@@ -1220,6 +1220,12 @@
     return uploadQueuedFiles();
   }
 
+  function lockFormDuringSubmission(locked) {
+    if (typeof document === "undefined") return;
+    document.querySelectorAll("#editorView input, #editorView textarea, #editorView select")
+      .forEach((input) => { input.disabled = Boolean(locked); });
+  }
+
   async function submitCurrent() {
     if (state.reloadRequired || state.autosavePending ||
         state.uploadPending || state.uploadPreparing || state.submitting) return;
@@ -1231,6 +1237,7 @@
       return;
     }
     state.submitting = true;
+    lockFormDuringSubmission(true);
     updateActionAvailability();
     try {
       const saved = await autosave({ immediate: true });
@@ -1271,6 +1278,7 @@
       }
     } finally {
       state.submitting = false;
+      lockFormDuringSubmission(false);
       updateActionAvailability();
     }
   }
@@ -1759,9 +1767,19 @@
       }
     });
     $("reloadButton").addEventListener("click", () => {
-      if (state.current) {
-        openSubmission(state.current.id);
+      if (!state.current) return;
+      if (state.autosavePending || state.savePromise ||
+          state.uploadPending || state.uploadPreparing || state.submitting) {
+        setEditorError("Дождись завершения сохранения или загрузки перед обновлением черновика.");
+        return;
       }
+      const hasUnsaved = state.editSequence > state.savedSequence || state.pendingFiles.length > 0;
+      if (hasUnsaved && !window.confirm(
+        "В черновике есть несохраненный текст или незагруженные файлы. " +
+        "Обновление заменит текущие данные сохраненной версией. " +
+        "Сначала скопируй важный текст. Все равно обновить?"
+      )) return;
+      void openSubmission(state.current.id);
     });
 
     Object.values(form).forEach((field) => {
