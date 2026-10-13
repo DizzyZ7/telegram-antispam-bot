@@ -918,7 +918,14 @@
 
   async function loadWorkspace() {
     const payload = await api("/api/writers/submissions");
-    state.items = Array.isArray(payload.items) ? payload.items : [];
+    if (!payload || !Array.isArray(payload.items)) {
+      const error = new Error(
+        "Сервер вернул неполный список работ. Существующие черновики не удалены, повтори загрузку."
+      );
+      error.code = "invalid_response";
+      throw error;
+    }
+    state.items = payload.items;
     renderWorkspace();
   }
 
@@ -939,6 +946,17 @@
       const payload = await api(
         `/api/writers/submissions/${encodeURIComponent(submissionId)}`
       );
+      const restored = payload && payload.submission;
+      if (!restored || String(restored.id) !== String(submissionId) ||
+          !["DRAFT", "SUBMITTED", "IN_REVIEW", "APPROVED", "CHANGES_REQUESTED", "REJECTED", "WITHDRAWN"].includes(restored.status) ||
+          !restored.revision || typeof restored.revision !== "object" ||
+          !Array.isArray(payload.files)) {
+        const error = new Error(
+          "Сервер вернул неполный черновик. Текст в текущей форме не изменен; повтори открытие."
+        );
+        error.code = "invalid_response";
+        throw error;
+      }
       if (state.pendingFiles.length) {
         setBanner("Локальные файлы не сохраняются в черновике. После повторного открытия их нужно выбрать заново.", "warning");
       }
