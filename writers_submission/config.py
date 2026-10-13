@@ -82,6 +82,30 @@ def _validated_public_url() -> str:
     )
 
 
+def _optional_membership_chat_id(default: int | None) -> int | None:
+    raw = os.getenv("WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID", "").strip()
+    if not raw:
+        return default
+    try:
+        chat_id = int(raw)
+    except ValueError as exc:
+        raise ValueError("WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID must be an integer") from exc
+    if chat_id >= 0:
+        raise ValueError("WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID must identify a Telegram channel or group")
+    return chat_id
+
+
+def _optional_community_url() -> str | None:
+    raw = os.getenv("WRITERS_SUBMISSION_COMMUNITY_URL", "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if (parsed.scheme != "https" or parsed.hostname not in {"t.me", "telegram.me"}
+            or not parsed.path.strip("/") or parsed.username or parsed.password):
+        raise ValueError("WRITERS_SUBMISSION_COMMUNITY_URL must be an HTTPS Telegram link")
+    return raw
+
+
 @dataclass(frozen=True, slots=True)
 class WritersSubmissionConfig:
     enabled: bool
