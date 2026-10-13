@@ -36,6 +36,20 @@
     WITHDRAWN: "Отозвано",
   };
 
+  const deliveryLabels = {
+    QUEUED: "В очереди отправки модератору",
+    SENDING: "Передаем заявку в чат модерации",
+    RETRYING: "Временная ошибка Telegram, бот повторит доставку",
+    DELAYED: "Доставка задерживается, администрация получит предупреждение",
+    NEEDS_ATTENTION: "Ошибка доставки, требуется вмешательство администрации",
+    DELIVERED: "Комплект доставлен в чат модерации (не означает прочтение)",
+  };
+
+  function deliveryLabel(value) {
+    const code = value && value.status;
+    return deliveryLabels[code] || "Статус доставки пока неизвестен";
+  }
+
   const $ = (id) => document.getElementById(id);
 
   const views = {
@@ -753,6 +767,9 @@
         safeTextElement("p", statusLabels[item.status] || item.status, "status-pill"),
         safeTextElement("h2", item.title || "Без названия")
       );
+      if (item.delivery && item.status !== "DRAFT") {
+        body.append(safeTextElement("p", "✉ " + deliveryLabel(item.delivery), "muted"));
+      }
 
       const updated = safeTextElement("span", formatDate(item.updated_at), "muted");
       top.append(body, updated);
@@ -892,6 +909,9 @@
         ? ((revision.details || {}).palette_colors || []).join(" · ")
         : ((revision.details || {}).visual_mode === "image" ? "Картинка во вложениях" : "—")],
       ["Редакция", `№${revision.revision_number || 1}`],
+      ...(state.current.delivery
+        ? [["Доставка модератору", deliveryLabel(state.current.delivery)]]
+        : []),
       ["Обновлено", formatDate(state.current.updated_at) || "—"],
     ].forEach(([name, value]) => {
       meta.append(
@@ -1199,7 +1219,10 @@
   async function showAcceptedSubmission(submission) {
     // Once the submit endpoint or a recovery GET confirms acceptance, no
     // subsequent list-refresh error may be represented as a failed submit.
-    state.current = submission;
+    state.current = {
+      ...submission,
+      delivery: submission.delivery || { status: "QUEUED" },
+    };
     state.submitKey = null;
     setReloadRequired(false);
     clearPendingFiles();
@@ -1793,6 +1816,10 @@
     $("detailBackButton").addEventListener("click", async () => {
       await loadWorkspace();
       show("workspace");
+    });
+    $("refreshDeliveryButton").addEventListener("click", async () => {
+      if (!state.current) return;
+      await openSubmission(state.current.id);
     });
     $("saveButton").addEventListener("click", () => { void saveDraftAndFiles(); });
     $("submitButton").addEventListener("click", submitCurrent);
