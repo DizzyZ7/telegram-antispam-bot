@@ -172,7 +172,7 @@ class WritersSubmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("writers_submission.runtime.PostgresWritersSubmissionStorage", return_value=storage),
-            patch("writers_submission.runtime.WritersCommunityMembershipRegistry") as registry,
+            patch("writers_submission.runtime.WritersCommunityMembershipRegistry", autospec=True) as registry,
             patch("writers_submission.runtime.WritersSubmissionService") as service,
             patch("writers_submission.runtime.WritersFileService"),
             patch("writers_submission.runtime.SessionSigner"),
