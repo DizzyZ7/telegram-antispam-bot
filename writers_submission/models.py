@@ -55,6 +55,10 @@ class ValidationError(WritersSubmissionError):
     """User-controlled input failed a domain validation rule."""
 
 
+class EligibilityUnavailableError(WritersSubmissionError):
+    """Telegram membership could not be checked; retry without granting access."""
+
+
 class NotFoundError(WritersSubmissionError):
     """The requested owned object does not exist or is not visible to the actor."""
 
