@@ -92,7 +92,7 @@ class FicbookFormValidationTests(unittest.TestCase):
             details(size_category="гигант"),
             details(rating=""),
             details(extra_links=["javascript:alert(1)"]),
-            details(extra_links=["http://t.me/test"]),
+            details(extra_links=["http://example.org/test"]),
             details(palette_colors=["#12345Z"] * 4),
             details(pages=0),
             details(size_words="lots"),
@@ -101,6 +101,13 @@ class FicbookFormValidationTests(unittest.TestCase):
         for case in cases:
             with self.subTest(case=case), self.assertRaises(ValidationError):
                 normalize_submission_details(case, complete=True)
+
+    def test_existing_http_telegram_link_gets_secure_https_automatically(self):
+        normalized = normalize_submission_details(
+            details(extra_links=["http://t.me/ff_info_ru"]),
+            complete=True,
+        )
+        self.assertEqual(normalized["extra_links"], ["https://t.me/ff_info_ru"])
 
     def test_paid_cover_file_id_is_normalized_and_invalid_ids_rejected(self):
         cover_id = uuid4()
