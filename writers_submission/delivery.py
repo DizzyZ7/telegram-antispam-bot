@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 import time
 from contextlib import suppress
 from io import BytesIO
@@ -107,17 +108,30 @@ def _author_notification_text(context: Any) -> str:
     return "\n".join(lines)
 
 
-def _moderation_text(context: Any) -> str:
+def _moderation_text(context: Any, *, author_profile: Any = None) -> str:
     details = getattr(context, "details", None) or {}
     is_ficbook_form = details.get("form_version") in (2, 3)
     lines = [
         "✒️ <b>Новая работа на модерацию</b>",
         "",
         f"Автор: <code>{int(context.author_user_id)}</code>",
+        f"Связаться: <a href=\"tg://user?id={int(context.author_user_id)}\">открыть профиль Telegram</a>",
         f"Название: {_escaped_preview(context.title, max_units=300)}",
         f"Тип: {_escaped_preview(context.work_type, max_units=80)}",
         f"{'Направление' if is_ficbook_form else 'Жанр'}: {_escaped_preview(context.genre, max_units=130)}",
     ]
+    # Account identity comes from a fresh Bot API lookup by the signed
+    # Telegram author ID, NEVER from editable form fields.
+    if author_profile is not None:
+        username = str(getattr(author_profile, "username", "") or "").lstrip("@")
+        if re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+            lines.insert(4, f"Telegram: @{_escape(username)}")
+        else:
+            first = str(getattr(author_profile, "first_name", "") or "").strip()
+            last = str(getattr(author_profile, "last_name", "") or "").strip()
+            name = " ".join(part for part in (first, last) if part)
+            if name:
+                lines.insert(4, "Имя в Telegram: " + _escaped_preview(name, max_units=160))
     if is_ficbook_form:
         for label, key in (
             ("Фандом", "fandom"),
@@ -358,11 +372,22 @@ class WritersDeliveryWorker:
         # Every file and the palette mockup are direct replies to that card;
         # no unattributed attachments are sent into an owner's message stream.
         packet_id = str(item.submission_id)
+        author_profile = None
+        try:
+            author_profile = await self.bot.get_chat(int(context.author_user_id))
+        except Exception:
+            # Telegram may refuse lookups for people who blocked the bot.
+            # The tg://user?id=... contact link still provides a stable
+            # account referent, so moderation never fails for this reason.
+            LOGGER.info(
+                "WRITERS_AUTHOR_CONTACT_LOOKUP_UNAVAILABLE user_id=%s",
+                context.author_user_id,
+            )
         card = await self.bot.send_message(
             chat_id=moderation_chat_id,
             text=(
                 "<b>📦 Комплект заявки</b> <code>" + packet_id + "</code>\n"
-                + _moderation_text(context)
+                + _moderation_text(context, author_profile=author_profile)
                 + "\n\nВсе вложения и цветовой макет — ответами на эту карточку."
             ),
             parse_mode="HTML",
