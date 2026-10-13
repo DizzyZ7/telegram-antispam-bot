@@ -522,6 +522,21 @@
     });
   }
 
+  function countDescriptionSentences(text) {
+    const value = String(text || "").replace(/\s+/gu, " ").trim();
+    const endings = /[.!?]+[»”"’)\]]*(?=\s|$)/gu;
+    let found = 0;
+    let last = 0;
+    let match;
+    while ((match = endings.exec(value)) !== null) {
+      const part = value.slice(last, match.index)
+        .replace(/https?:\/\/\S+|(^|\s)#[^\s]+/gu, " ");
+      if (/[\p{L}\p{N}]/u.test(part)) found += 1;
+      last = endings.lastIndex;
+    }
+    return found;
+  }
+
   function countWords(text) {
     return (String(text || "").match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu) || []).length;
   }
@@ -583,9 +598,12 @@
         throw new Error("Описание зарисовки: не больше 35 слов и 230 символов.");
       }
     } else {
-      const sentenceCount = (values.description.match(/[^.!?]+[.!?]+/gu) || []).length;
-      if (sentenceCount < 3 || !/[.!?]\s*$/u.test(values.description)) {
-        throw new Error("Описание большой работы должно содержать не меньше трех предложений.");
+      const sentenceCount = countDescriptionSentences(values.description);
+      if (sentenceCount < 3) {
+        throw new Error(
+          "Нужно минимум 3 законченных предложения (с точкой, ! или ?). " +
+          "Хештеги и незаконченная последняя фраза не считаются предложениями."
+        );
       }
       if (wordCount > 110) {
         throw new Error("Описание большой работы: максимум 110 слов.");
@@ -606,12 +624,11 @@
     $("titleCounter").textContent = String(form.title.value.length);
     const wordCount = countWords(form.description.value);
     const sketch = selectedChoice("workType") === "Зарисовка";
-    const sentences = (form.description.value.match(/[^.!?]+[.!?]+/gu) || []).length;
-    const closedSentence = /[.!?]\s*$/u.test(form.description.value);
+    const sentences = countDescriptionSentences(form.description.value);
     $("descriptionCounter").textContent = sketch
       ? wordCount + "/35 слов · " + form.description.value.length + "/230 символов"
-      : wordCount + "/110 слов · " + sentences + "/3 предложения" +
-        (!closedSentence && form.description.value.trim() ? " (последнее не завершено)" : "");
+      : wordCount + "/110 слов · " + sentences + "/3 завершенных предложения" +
+        (sentences < 3 ? " (нужно еще " + (3 - sentences) + ")" : " ✓");
     const slots = [form.mainGenre1, form.mainGenre2, form.mainGenre3];
     const amount = slots.filter((field) => field.value.trim()).length;
     const progress = $("genreProgress");
