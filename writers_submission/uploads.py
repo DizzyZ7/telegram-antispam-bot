@@ -379,7 +379,7 @@ def validate_description_for_format(description: str, work_type: str) -> None:
         # reject an otherwise complete description. Count real punctuation-
         # terminated sentences; ignore dots inside domains and file names.
         if count_description_sentences(text) < 3:
-            raise ValidationError("work description needs at least three complete sentences")
+            raise ValidationError("work description needs at least three sentences (completed)")
 
 
 def validate_submission_fields(
