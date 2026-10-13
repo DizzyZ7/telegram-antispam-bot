@@ -496,8 +496,21 @@ def create_writers_web_app(
     async def list_submissions(request: web.Request) -> web.Response:
         user_id = limited_actor(request, "read")
         items = await service.list_mine(user_id)
+        status_method = getattr(service, "moderation_delivery_statuses", None)
+        deliveries = (
+            await status_method(user_id, now=int(now_fn()))
+            if callable(status_method) else {}
+        )
         return _json_response(
-            {"items": [_json_value(item) for item in items]},
+            {
+                "items": [
+                    {
+                        **_json_value(item),
+                        "delivery": deliveries.get(str(item.id)),
+                    }
+                    for item in items
+                ],
+            },
         )
 
     async def create_submission(request: web.Request) -> web.Response:
@@ -524,9 +537,18 @@ def create_writers_web_app(
         files = []
         if callable(files_method):
             files = await files_method(user_id, submission_id)
+        status_method = getattr(service, "moderation_delivery_statuses", None)
+        deliveries = (
+            await status_method(
+                user_id, now=int(now_fn()), submission_id=submission_id,
+            ) if callable(status_method) else {}
+        )
         return _json_response(
             {
-                "submission": _bundle_payload(result),
+                "submission": {
+                    **_bundle_payload(result),
+                    "delivery": deliveries.get(str(result.id)),
+                },
                 "files": [_file_payload(item) for item in files],
             }
         )
