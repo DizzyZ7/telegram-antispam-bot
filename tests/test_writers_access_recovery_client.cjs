@@ -59,7 +59,7 @@ test("a denied create is understandable and does not silently save", async () =>
   });
   await assert.rejects(h.api("/api/writers/submissions", {method:"POST"}), (err) => {
     assert.equal(err.code, "not_eligible");
-    assert.match(err.message, /писательского чата/);
+    assert.match(err.message, /сообщество ИКФ/);
     return true;
   });
   h.setEditorError("Не удалось сохранить черновик: Фосген не видит тебя участником");
