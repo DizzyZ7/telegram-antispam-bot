@@ -360,11 +360,18 @@ def validate_description_for_format(description: str, work_type: str) -> None:
     else:
         if len(words) > LONG_DESCRIPTION_WORDS_MAX:
             raise ValidationError("work description: max 110 words")
-        # A sentence is a piece ending with terminal punctuation, not an
-        # arbitrary three semicolons or line breaks.
-        sentences = [s.strip() for s in re.findall(r"[^.!?]+[.!?]+", text) if s.strip()]
-        if len(sentences) < 3 or not re.search(r"[.!?]$", text):
-            raise ValidationError("work description needs at least three sentences")
+        # Count actually completed sentences. Trailing hashtags, emoji,
+        # punctuation-free notes or an unfinished *fourth* sentence must not
+        # invalidate the three or more sentences already present.
+        sentences = [
+            segment for segment in re.findall(r"[^.!?]+[.!?]+", text)
+            if re.search(r"[^\\W_]", segment, re.UNICODE)
+        ]
+        if len(sentences) < 3:
+            raise ValidationError(
+                "work description needs at least three completed sentences "
+                "(finish them with . ! or ?; trailing hashtags are allowed)"
+            )
 
 
 def validate_submission_fields(
