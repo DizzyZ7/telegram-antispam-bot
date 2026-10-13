@@ -33,6 +33,9 @@ class FicbookFormUiTests(unittest.TestCase):
             "extraLinksInput", "descriptionInput", "paletteEditors",
             "palettePreview", "imageInput", "imagePreview",
             "saveButton", "submitButton",
+            "sketchProfileUrlInput", "sketchArticleUrlInput",
+            "mainGenre1Input", "mainGenre2Input", "mainGenre3Input",
+            "genreProgress", "warningsInput", "warningsField",
         } <= parser.ids)
         self.assertEqual(parser.groups, {
             "workType", "sizeCategory", "completion", "visualMode",
