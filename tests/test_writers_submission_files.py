@@ -256,7 +256,7 @@ class WritersFileServiceTests(unittest.IsolatedAsyncioTestCase):
         path = temp_file()
         self.bot.send_document.side_effect = RuntimeError("telegram down")
 
-        with self.assertRaisesRegex(RuntimeError, "telegram down"):
+        with self.assertRaisesRegex(RuntimeError, "Telegram не принял файл") as caught:
             await self.service.attach_from_temp(
                 author_user_id=77,
                 submission_id=self.submission_id,
@@ -266,6 +266,8 @@ class WritersFileServiceTests(unittest.IsolatedAsyncioTestCase):
                 now=100,
             )
 
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+        self.assertIn("telegram down", str(caught.exception.__cause__))
         self.storage.add_ready_file.assert_not_awaited()
         self.assertFalse(path.exists())
 
