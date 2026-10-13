@@ -1780,6 +1780,60 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(health["problem_count"], 0)
 
+    async def test_owner_retry_does_not_duplicate_delivered_moderation_card(self):
+        created = await self.storage.create_submission(
+            author_user_id=77, writers_chat_id=-1002619489118,
+            fields=fields("Failed moderation"), now=100,
+            idempotency_key="queue-retry-draft",
+        )
+        await self.storage.seal_and_submit(
+            submission_id=created.id, author_user_id=77,
+            expected_version=1, now=110,
+            idempotency_key="queue-retry-submit",
+        )
+        events = await self.storage.claim_due_outbox(
+            worker_id="worker-retry", now=111, lease_seconds=60, limit=10,
+        )
+        moderation = next(
+            item for item in events if item.event_type.value == "MODERATION_CARD"
+        )
+        await self.storage.record_outbox_progress(
+            outbox_id=moderation.id, worker_id="worker-retry",
+            now=112, key="card", message_id=501,
+            delivery_chat_id=-100111,
+        )
+        await self.storage.mark_outbox_permanent_failure(
+            outbox_id=moderation.id, worker_id="worker-retry",
+            now=113, error_code="TelegramForbiddenError",
+        )
+
+        admin_rows = await self.storage.list_moderation_delivery_admin()
+        self.assertEqual(admin_rows[0]["state"], "PERMANENT_FAILED")
+        self.assertEqual(
+            admin_rows[0]["last_error_code"], "TelegramForbiddenError",
+        )
+        self.assertEqual(
+            await self.storage.retry_failed_moderation_delivery(
+                submission_id=created.id, now=114,
+            ),
+            created.id,
+        )
+        recovered = await self.storage.claim_due_outbox(
+            worker_id="worker-retry-2", now=115, lease_seconds=60, limit=10,
+        )
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0].progress, {"card": 501})
+        await self.storage.mark_outbox_delivered(
+            outbox_id=recovered[0].id, worker_id="worker-retry-2",
+            now=116, delivery_chat_id=-100111,
+            delivery_message_ids=(501,),
+        )
+        self.assertIsNone(
+            await self.storage.retry_failed_moderation_delivery(
+                submission_id=created.id, now=117,
+            )
+        )
+
     async def test_history_is_owned_and_restart_safe(self):
         created = await self.storage.create_submission(
             author_user_id=77,
