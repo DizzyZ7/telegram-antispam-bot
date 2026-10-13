@@ -63,6 +63,7 @@ class WritersSubmissionMenuTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch("writers_submission.runtime.PostgresWritersSubmissionStorage", return_value=storage),
+            patch("writers_submission.runtime.WritersCommunityMembershipRegistry", autospec=True),
             patch("writers_submission.runtime.WritersSubmissionService"),
             patch("writers_submission.runtime.WritersFileService"),
             patch("writers_submission.runtime.SessionSigner"),
@@ -97,6 +98,7 @@ class WritersSubmissionMenuTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch("writers_submission.runtime.PostgresWritersSubmissionStorage", return_value=storage),
+            patch("writers_submission.runtime.WritersCommunityMembershipRegistry", autospec=True),
             patch("writers_submission.runtime.WritersSubmissionService"),
             patch("writers_submission.runtime.WritersFileService"),
             patch("writers_submission.runtime.SessionSigner"),

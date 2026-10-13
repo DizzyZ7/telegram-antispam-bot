@@ -229,12 +229,36 @@ def register_writers_submission_handlers(
     config: Any,
     *,
     now_fn: Callable[[], float] = time.time,
+    membership_registry: Any | None = None,
+    membership_chat_id: int | None = None,
 ) -> PendingCommentStore:
     pending_comments = PendingCommentStore()
     message_handler_start = len(app.dp.message.handlers)
     callback_handler_start = len(app.dp.callback_query.handlers)
     moderation_chat_id = int(config.moderation_chat_id)
     moderator_ids = frozenset(int(value) for value in config.moderator_ids)
+
+    # Telegram sends chat_member updates only when the bot is a chat/channel
+    # administrator and polling subscribes to chat_member updates. This
+    # observer gradually builds the *known* member ledger; it never claims
+    # to enumerate all historic subscribers.
+    if membership_registry is not None and membership_chat_id is not None:
+        @app.dp.chat_member()
+        async def writers_community_member_change(event: Any) -> None:
+            chat = getattr(event, "chat", None)
+            if int(getattr(chat, "id", 0)) != int(membership_chat_id):
+                return
+            new_member = getattr(event, "new_chat_member", None)
+            user_id = getattr(getattr(new_member, "user", None), "id", None)
+            if user_id is None or bool(getattr(getattr(new_member, "user", None), "is_bot", False)):
+                return
+            try:
+                await membership_registry.observe(
+                    chat_id=int(membership_chat_id), user_id=int(user_id),
+                    member=new_member, source="event",
+                )
+            except Exception:
+                LOGGER.exception("WRITERS_COMMUNITY_MEMBER_EVENT_SAVE_FAILED")
 
     @app.dp.message(CommandStart(), WritersSubmissionStartFilter())
     async def writers_submission_start(message: Message) -> None:
@@ -253,7 +277,11 @@ def register_writers_submission_handlers(
             ]
         )
         await message.answer(
-            "✒️ Открой Mini App, чтобы создать черновик или отправить работу.",
+            "✒️ Привет! Здесь можно заполнить заявку и сохранять черновик "
+            "в своем темпе. 💛\n\n"
+            "Чтобы отправить готовую работу на проверку, нужно состоять "
+            "в сообществе ИКФ. Если еще не вступил(а), не переживай: "
+            "твой черновик останется на месте.",
             reply_markup=keyboard,
         )
 

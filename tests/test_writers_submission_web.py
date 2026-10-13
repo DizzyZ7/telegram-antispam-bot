@@ -294,7 +294,7 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 403)
         payload = await response.json()
         self.assertEqual(payload["error"], "not_eligible")
-        self.assertIn("чате авторов", payload["message"])
+        self.assertIn("сообщества ИКФ", payload["message"])
         self.service.submit.assert_awaited_once()
 
     async def test_submit_distinguishes_temporary_telegram_membership_outage(self):

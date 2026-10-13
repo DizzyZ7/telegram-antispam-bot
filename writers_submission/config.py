@@ -99,6 +99,8 @@ class WritersSubmissionConfig:
     rate_limit_window_seconds: int
     owner_user_id: int = DEFAULT_OWNER_USER_ID
     moderation_mode: str = DEFAULT_MODERATION_MODE
+    membership_chat_id: int | None = None
+    community_join_url: str | None = None
 
     @classmethod
     def from_env(
@@ -172,6 +174,23 @@ class WritersSubmissionConfig:
                 )
             moderator_ids = _moderator_ids()
 
+        # Optional: check subscription in a separate ИКФ channel instead
+        # of the writers chat. Without an override retain the existing gate.
+        membership_raw = os.getenv("WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID", "").strip()
+        try:
+            membership_chat_id = int(membership_raw) if membership_raw else int(writers_chat_id)
+        except ValueError as exc:
+            raise ValueError("WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID must be an integer") from exc
+        if membership_chat_id >= 0:
+            raise ValueError("WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID must be a Telegram group/channel id")
+        join_url = os.getenv("WRITERS_SUBMISSION_JOIN_URL", "").strip()
+        if join_url:
+            parsed_join = urlparse(join_url)
+            if (parsed_join.scheme != "https"
+                    or parsed_join.hostname not in {"t.me", "telegram.me", "www.t.me"}
+                    or not parsed_join.path.strip("/")):
+                raise ValueError("WRITERS_SUBMISSION_JOIN_URL must be a valid HTTPS t.me link")
+
         file_chat_id = _required_int("WRITERS_SUBMISSION_FILE_CHAT_ID")
         if file_chat_id >= 0 or file_chat_id in {int(writers_chat_id), int(moderation_chat_id)}:
             raise ValueError("WRITERS_SUBMISSION_FILE_CHAT_ID must be a separate private file storage group")
@@ -210,4 +229,6 @@ class WritersSubmissionConfig:
             ),
             owner_user_id=owner_user_id,
             moderation_mode=mode,
+            membership_chat_id=membership_chat_id,
+            community_join_url=join_url or None,
         )

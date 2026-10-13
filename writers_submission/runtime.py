@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
+
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .config import WritersSubmissionConfig
 from .delivery import WritersDeliveryWorker
 from .files import WritersFileService
 from .handlers import register_writers_submission_handlers
+from .membership import WritersCommunityMembershipRegistry, is_current_member
 from .menu import install_writers_submission_menu
 from .security import SessionSigner
 from .service import EligibilityUnavailableError, WritersSubmissionService
@@ -18,36 +22,107 @@ LOGGER = logging.getLogger(__name__)
 
 
 class TelegramWritersEligibilityChecker:
-    def __init__(self, bot: Any, writers_chat_id: int) -> None:
+    """Require fresh Telegram membership when submitting, not when drafting."""
+
+    def __init__(
+        self, bot: Any, writers_chat_id: int, *,
+        registry: WritersCommunityMembershipRegistry | None = None,
+        community_join_url: str | None = None,
+    ) -> None:
         self.bot = bot
         self.writers_chat_id = int(writers_chat_id)
+        self.registry = registry
+        self.community_join_url = community_join_url
+        self._cached_join_url: str | None = community_join_url
+        self._fallback_notified: dict[int, float] = {}
+
+    async def _get_join_url(self) -> str | None:
+        if self._cached_join_url:
+            return self._cached_join_url
+        try:
+            chat = await self.bot.get_chat(self.writers_chat_id)
+            username = getattr(chat, "username", None)
+            if isinstance(username, str) and username:
+                link = "https://t.me/" + username.lstrip("@")
+            else:
+                link = getattr(chat, "invite_link", None)
+            if isinstance(link, str) and link.startswith("https://t.me/"):
+                self._cached_join_url = link
+        except Exception:
+            LOGGER.debug("WRITERS_JOIN_LINK_LOOKUP_FAILED", exc_info=True)
+        return self._cached_join_url
+
+    async def _friendly_membership_reminder(self, user_id: int) -> None:
+        # Prefer a durable once-per-day per-user throttle. A process-local
+        # fallback avoids flooding if the membership table is unavailable.
+        now = time.time()
+        if now - self._fallback_notified.get(user_id, 0) < 24 * 3600:
+            return
+        if self.registry is not None:
+            try:
+                if not await self.registry.claim_join_notice(
+                    self.writers_chat_id, user_id, at=int(now),
+                ):
+                    return
+            except Exception:
+                LOGGER.warning("WRITERS_JOIN_REMINDER_DB_FAILED", exc_info=True)
+        self._fallback_notified[user_id] = now
+
+        link = await self._get_join_url()
+        keyboard = (
+            InlineKeyboardMarkup(
+                inline_keyboard=[[
+                    InlineKeyboardButton(
+                        text="💛 Вступить в сообщество ИКФ", url=link,
+                    ),
+                ]],
+            )
+            if link else None
+        )
+        try:
+            await self.bot.send_message(
+                chat_id=int(user_id),
+                text=(
+                    "Привет! 💛 Спасибо, что хочешь поделиться своей работой с ИКФ.\n\n"
+                    "Заполнять анкету и сохранять ее как черновик можно уже сейчас — "
+                    "все останется на месте.\n\n"
+                    "Для отправки работы на проверку нужно быть участником "
+                    "сообщества ИКФ. Вступи, пожалуйста, и затем снова нажми "
+                    "«Отправить на проверку» в своей анкете. ✨"
+                ),
+                reply_markup=keyboard,
+            )
+        except Exception:
+            # Telegram can only DM a user who has already started the bot.
+            # The web form independently shows a clear inline message.
+            LOGGER.info(
+                "WRITERS_JOIN_DM_UNAVAILABLE user_id=%s", user_id,
+            )
 
     async def __call__(self, user_id: int) -> bool:
+        user_id = int(user_id)
         try:
-            member = await self.bot.get_chat_member(
-                self.writers_chat_id,
-                int(user_id),
-            )
+            member = await self.bot.get_chat_member(self.writers_chat_id, user_id)
         except Exception as exc:
-            # A Telegram API/network failure is NOT evidence that the author
-            # left the chat. Fail closed for submission but surface an honest
-            # retryable error rather than "not_eligible".
             LOGGER.warning("WRITERS_ELIGIBILITY_CHECK_FAILED", exc_info=True)
             raise EligibilityUnavailableError(
-                "Не удалось проверить участие в чате авторов. "
+                "Не удалось проверить участие в сообществе ИКФ. "
                 "Повторите отправку позже; черновик сохранен."
             ) from exc
 
-        raw_status = getattr(member, "status", "")
-        status = str(getattr(raw_status, "value", raw_status)).casefold()
-        if status in {"member", "administrator", "creator", "owner"}:
-            return True
-        # Restricted Telegram members with is_member=True remain in the chat
-        # and must not be mistaken for users who left or were kicked.
-        if status == "restricted":
-            return bool(getattr(member, "is_member", False))
-        return False
+        if self.registry is not None:
+            try:
+                await self.registry.observe(
+                    chat_id=self.writers_chat_id,
+                    user_id=user_id, member=member, source="lookup",
+                )
+            except Exception:
+                LOGGER.exception("WRITERS_MEMBERSHIP_OBSERVATION_FAILED")
 
+        if is_current_member(member):
+            return True
+        await self._friendly_membership_reminder(user_id)
+        return False
 
 @dataclass(slots=True)
 class WritersSubmissionRuntime:
@@ -115,9 +190,16 @@ async def start_writers_submission_runtime(
     try:
         await storage.initialize()
 
+        community_chat_id = int(
+            getattr(config, "membership_chat_id", None) or config.writers_chat_id
+        )
+        registry = WritersCommunityMembershipRegistry(storage)
+        await registry.initialize()
         eligibility = TelegramWritersEligibilityChecker(
             app.bot,
-            int(config.writers_chat_id),
+            community_chat_id,
+            registry=registry,
+            community_join_url=getattr(config, "community_join_url", None),
         )
         service = WritersSubmissionService(
             storage,
@@ -159,6 +241,8 @@ async def start_writers_submission_runtime(
             app,
             service,
             config,
+            membership_registry=registry,
+            membership_chat_id=community_chat_id,
         )
 
         worker_start_attempted = True
