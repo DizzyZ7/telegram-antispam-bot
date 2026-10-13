@@ -497,10 +497,12 @@ def create_writers_web_app(
         user_id = limited_actor(request, "read")
         items = await service.list_mine(user_id)
         status_method = getattr(service, "moderation_delivery_statuses", None)
-        deliveries = (
-            await status_method(user_id, now=int(now_fn()))
-            if callable(status_method) else {}
-        )
+        deliveries = {}
+        if callable(status_method):
+            try:
+                deliveries = await status_method(user_id, now=int(now_fn()))
+            except Exception:
+                LOGGER.exception("WRITERS_AUTHOR_DELIVERY_STATUS_LIST_FAILED")
         return _json_response(
             {
                 "items": [
@@ -538,11 +540,14 @@ def create_writers_web_app(
         if callable(files_method):
             files = await files_method(user_id, submission_id)
         status_method = getattr(service, "moderation_delivery_statuses", None)
-        deliveries = (
-            await status_method(
-                user_id, now=int(now_fn()), submission_id=submission_id,
-            ) if callable(status_method) else {}
-        )
+        deliveries = {}
+        if callable(status_method):
+            try:
+                deliveries = await status_method(
+                    user_id, now=int(now_fn()), submission_id=submission_id,
+                )
+            except Exception:
+                LOGGER.exception("WRITERS_AUTHOR_DELIVERY_STATUS_DETAIL_FAILED")
         return _json_response(
             {
                 "submission": {
