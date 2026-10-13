@@ -38,6 +38,7 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.pool.execute(
             """
             TRUNCATE
+                writers_author_contacts,
                 writers_submission_outbox,
                 writers_submission_reviews,
                 writers_submission_files,
@@ -56,6 +57,7 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         assert self.storage.pool is not None
         for table in (
             "writers_submission_schema_meta",
+            "writers_author_contacts",
             "writers_submissions",
             "writers_submission_revisions",
             "writers_submission_files",
@@ -79,6 +81,34 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
             """
         )
         self.assertEqual(version, "1")
+
+    async def test_signed_author_contact_persists_and_appears_in_moderation_context(self):
+        draft = await self.storage.create_submission(
+            author_user_id=77, writers_chat_id=-1002619489118,
+            fields=fields(), now=100, idempotency_key="contact",
+        )
+        await self.storage.record_author_identity(
+            user_id=77, username="writer_77", first_name="Аня",
+            now=100,
+        )
+        await self.storage.record_author_identity(
+            user_id=77, username="stale", first_name="Old",
+            now=99,
+        )
+        context = await self.storage.get_moderation_delivery_context(
+            submission_id=draft.id, revision_id=draft.revision.id,
+        )
+        self.assertEqual(context.author_username, "writer_77")
+        self.assertEqual(context.author_first_name, "Аня")
+        self.assertEqual(context.author_user_id, 77)
+        # A later verified Telegram login may clear a username if removed.
+        await self.storage.record_author_identity(
+            user_id=77, username=None, first_name="Аня", now=101,
+        )
+        context = await self.storage.get_moderation_delivery_context(
+            submission_id=draft.id, revision_id=draft.revision.id,
+        )
+        self.assertIsNone(context.author_username)
 
     async def test_ficbook_form_fields_survive_restart_and_submission(self):
         form = NormalizedSubmissionFields(
