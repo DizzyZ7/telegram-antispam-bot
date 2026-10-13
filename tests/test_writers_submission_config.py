@@ -63,6 +63,36 @@ class WritersSubmissionConfigTests(unittest.TestCase):
                         writers_chat_id=-1002619489118,
                     )
 
+    def test_optional_community_channel_and_join_url(self):
+        with patch.dict(os.environ, self._enabled_env(), clear=True):
+            config = WritersSubmissionConfig.from_env(
+                bot_token="token", database_url="postgresql://db",
+                writers_chat_id=-1002619489118,
+            )
+        self.assertEqual(config.membership_chat_id, -1002619489118)
+        self.assertIsNone(config.community_join_url)
+
+        env = {
+            **self._enabled_env(),
+            "WRITERS_SUBMISSION_MEMBERSHIP_CHAT_ID": "-1001234567890",
+            "WRITERS_SUBMISSION_JOIN_URL": "https://t.me/ikf_community",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = WritersSubmissionConfig.from_env(
+                bot_token="token", database_url="postgresql://db",
+                writers_chat_id=-1002619489118,
+            )
+        self.assertEqual(config.membership_chat_id, -1001234567890)
+        self.assertEqual(config.community_join_url, "https://t.me/ikf_community")
+
+        env["WRITERS_SUBMISSION_JOIN_URL"] = "https://example.org/other"
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ValueError, "JOIN_URL"):
+                WritersSubmissionConfig.from_env(
+                    bot_token="token", database_url="postgresql://db",
+                    writers_chat_id=-1002619489118,
+                )
+
     def test_public_writers_chat_cannot_be_used_as_file_storage(self):
         env = self._enabled_env()
         env["WRITERS_SUBMISSION_MODERATION_MODE"] = "Owner"
