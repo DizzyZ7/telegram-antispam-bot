@@ -420,3 +420,46 @@ test("reopening the same draft preserves uncertain submit key; a new revision re
   await ctx.open("draft-a");
   assert.equal(state.submitKey, null);
 });
+
+
+test("malformed draft fetch cannot overwrite unsaved editor or chosen photo", async () => {
+  const code = section("  async function openSubmission(", "  async function newDraft(");
+  const errors = [];
+  const original = { id: "draft-a", version: 1, status: "DRAFT" };
+  const state = {
+    current: original, pendingFiles: [{ name: "cover.jpg" }],
+    attachments: [{ id: "old-file" }], editSequence: 3, savedSequence: 2,
+  };
+  const ctx = vm.createContext({
+    state,
+    api: async () => ({ submission: { id: "draft-a", status: "DRAFT" }, files: [] }),
+    setBusy: () => {},
+    clearImagePreview: () => { throw Error("should not clear any preview"); },
+    loadHistory: async () => {},
+    setBanner: (message) => errors.push(message),
+    fillForm: () => { throw Error("must not replace dirty fields"); },
+    renderAttachments: () => {},
+    renderDetail: () => {},
+    show: () => {},
+  });
+  vm.runInContext(code + ";this.open=openSubmission;", ctx);
+  await ctx.open("draft-a");
+  assert.equal(state.current, original);
+  assert.equal(state.pendingFiles.length, 1);
+  assert.equal(state.attachments.length, 1);
+  assert.match(errors.at(-1), /неполный черновик/);
+});
+
+test("malformed empty workspace response does not hide already loaded drafts", async () => {
+  const code = section("  async function loadWorkspace(", "  async function loadHistory(");
+  const existing = [{ id: "draft-a" }];
+  const state = { items: existing };
+  const ctx = vm.createContext({
+    state,
+    api: async () => ({}),
+    renderWorkspace: () => { throw Error("must not render empty invalid list"); },
+  });
+  vm.runInContext(code + ";this.load=loadWorkspace;", ctx);
+  await assert.rejects(ctx.load(), /неполный список работ/);
+  assert.equal(state.items, existing);
+});
