@@ -1314,36 +1314,20 @@ class PostgresWritersSubmissionStorage:
             )
             if revision is None or revision["state"] != RevisionState.DRAFT.value:
                 raise ConflictError("Draft revision is sealed")
-            # An old cached Mini App cannot bypass deferred uploads: the
-            # server independently verifies the form BEFORE send_document.
-            ready_for_upload = False
-            try:
-                details = normalize_submission_details(
-                    json.loads(str(revision["details_json"] or "{}")),
-                    complete=True,
-                    work_type=str(revision["work_type"] or ""),
-                )
-                if details.get("form_version") == 3:
-                    validate_description_for_format(
-                        str(revision["description"] or ""), str(revision["work_type"] or ""),
-                    )
-                valid_link = _external_url(revision["external_url"])
-                ready_for_upload = bool(
-                    str(revision["title"] or "").strip()
-                    and str(revision["genre"] or "").strip()
-                    and str(revision["description"] or "").strip()
-                    and str(revision["work_type"] or "") in {"ФФ", "Оридж", "Зарисовка"}
-                    and valid_link
-                    and (
-                        not details
-                        or (
-                            str(details.get("rating") or "").strip()
-                            and (str(revision["work_type"]) != "ФФ" or details.get("fandom"))
-                        )
-                    )
-                )
-            except (ValueError, TypeError, ValidationError):
-                ready_for_upload = False
+            # Allow a photo to be safely staged while the *draft* is still
+            # being written. Requiring the final description, genres, rating,
+            # warnings, and article link here made image selection fail until
+            # the entire form had passed submission validation.
+            #
+            # Only a signed, owner-scoped DRAFT reaches this code. The private
+            # staging chat, strict file signatures, 20 MB cap and max-file
+            # count are checked separately. Final submission still revalidates
+            # the complete form and channel subscription.
+            ready_for_upload = bool(
+                str(revision["title"] or "").strip()
+                and str(revision["work_type"] or "") in
+                    {"ФФ", "Оридж", "Зарисовка"}
+            )
             count = await connection.fetchval(
                 """
                 SELECT COUNT(*)
