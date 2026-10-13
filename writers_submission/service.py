@@ -24,14 +24,26 @@ class WritersSubmissionService:
         storage: Any,
         config: Any,
         eligibility_checker: WritersEligibilityChecker,
+        nonmember_notifier: Callable[[int], Awaitable[None]] | None = None,
     ) -> None:
         self.storage = storage
         self.config = config
         self.eligibility_checker = eligibility_checker
+        self.nonmember_notifier = nonmember_notifier
 
     async def _require_eligible(self, author_user_id: int) -> None:
         if not await self.eligibility_checker(int(author_user_id)):
-            raise PermissionError("Current writers community membership is required")
+            if self.nonmember_notifier is not None:
+                try:
+                    await self.nonmember_notifier(int(author_user_id))
+                except Exception:
+                    # Direct messages can be blocked when a user hasn't
+                    # opened the bot. This must not erase their draft.
+                    import logging
+                    logging.getLogger(__name__).info(
+                        "WRITERS_INVITE_DM_UNAVAILABLE user_id=%s", author_user_id,
+                    )
+            raise PermissionError("Current IKF community membership is required")
 
     async def _require_owned(
         self,
