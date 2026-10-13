@@ -54,7 +54,8 @@ class WritersSubmissionService:
         idempotency_key: str,
         now: int,
     ) -> SubmissionBundle:
-        await self._require_eligible(author_user_id)
+        # Anyone with valid Telegram Mini App authentication may draft.
+        # Community membership is required only at final submit time.
         writers_chat_id = getattr(self.config, "writers_chat_id", None)
         if writers_chat_id is None:
             raise RuntimeError("Writers chat id is not configured")
