@@ -51,8 +51,11 @@ function harness() {
     $: element,
     setReloadRequired(value) { reload = value; },
   };
+  const failureStart = source.indexOf("  function requestFailure(");
+  const failureEnd = source.indexOf("  async function api(", failureStart);
+  assert.ok(failureStart >= 0 && failureEnd > failureStart);
   vm.runInNewContext(
-    source.slice(start, end) +
+    source.slice(failureStart, failureEnd) + source.slice(start, end) +
     "\nthis.uploadHelpers={updateUploadProgress,sendFileWithProgress};",
     ctx,
     { filename: "app.js" }
@@ -150,4 +153,21 @@ test("upload markup has both accessible progress regions", () => {
   assert.ok(html.includes('role="status"'));
   assert.ok(html.includes('aria-live="polite"'));
   assert.ok(html.includes('app.js?v=form-reliability-v5'));
+});
+
+test("photo upload exposes actionable size and Telegram storage failures", async () => {
+  const h = harness();
+  const large = h.sendFileWithProgress("/upload", {}, () => {}, () => {});
+  h.requests[0].status = 413;
+  h.requests[0].responseText = JSON.stringify({ error: "payload_too_large" });
+  h.requests[0].onload();
+  await assert.rejects(large, /20 МБ/);
+  const staging = h.sendFileWithProgress("/upload", {}, () => {}, () => {});
+  h.requests[1].status = 503;
+  h.requests[1].responseText = JSON.stringify({
+    error: "telegram_file_staging_unavailable",
+    message: "Telegram не принял файл в закрытое хранилище.",
+  });
+  h.requests[1].onload();
+  await assert.rejects(staging, /Telegram не принял файл/);
 });
