@@ -86,6 +86,44 @@ class WritersSubmissionService:
     ) -> SubmissionBundle:
         return await self._require_owned(author_user_id, submission_id)
 
+    async def moderation_delivery_statuses(
+        self,
+        author_user_id: int,
+        *,
+        now: int,
+        submission_id: UUID | None = None,
+    ) -> dict[str, dict[str, object]]:
+        """Author-visible progress of the packet in the moderation chat.
+
+        DELIVERED means Telegram accepted the full card and attachments,
+        not that a moderator has read or approved them.
+        """
+        rows = await self.storage.list_author_moderation_delivery(
+            author_user_id=int(author_user_id),
+            submission_id=submission_id,
+        )
+        result: dict[str, dict[str, object]] = {}
+        states = {
+            "PENDING": "QUEUED",
+            "IN_FLIGHT": "SENDING",
+            "RETRYABLE_FAILED": "RETRYING",
+            "PERMANENT_FAILED": "NEEDS_ATTENTION",
+            "DELIVERED": "DELIVERED",
+        }
+        for row in rows:
+            raw = str(row.get("state") or "")
+            status = states.get(raw, "NEEDS_ATTENTION")
+            created_at = int(row.get("created_at") or 0)
+            if raw in {"PENDING", "IN_FLIGHT", "RETRYABLE_FAILED"} and (
+                created_at > 0 and int(now) - created_at >= 300
+            ):
+                status = "DELAYED"
+            result[str(row["submission_id"])] = {
+                "status": status,
+                "updated_at": int(row.get("updated_at") or 0),
+            }
+        return result
+
     async def autosave(
         self,
         *,
