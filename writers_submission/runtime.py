@@ -4,6 +4,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .config import WritersSubmissionConfig
 from .delivery import WritersDeliveryWorker
@@ -130,14 +131,61 @@ async def start_writers_submission_runtime(
     try:
         await storage.initialize()
 
+        membership_chat_id = int(
+            getattr(config, "membership_chat_id", None) or config.writers_chat_id
+        )
         eligibility = TelegramWritersEligibilityChecker(
             app.bot,
-            int(config.writers_chat_id),
+            membership_chat_id,
+            storage=storage,
         )
+        reminder_sent_at: dict[int, float] = {}
+
+        async def invite_nonmember(user_id: int) -> None:
+            now = time.monotonic()
+            if now - reminder_sent_at.get(user_id, -1e9) < 15 * 60:
+                return
+            reminder_sent_at[user_id] = now
+            community_url = getattr(config, "community_url", None)
+            if not community_url:
+                try:
+                    chat = await app.bot.get_chat(membership_chat_id)
+                    username = getattr(chat, "username", None)
+                    invite_link = getattr(chat, "invite_link", None)
+                    if username:
+                        community_url = "https://t.me/" + str(username).lstrip("@")
+                    elif isinstance(invite_link, str) and invite_link.startswith(
+                        ("https://t.me/", "https://telegram.me/")
+                    ):
+                        community_url = invite_link
+                except Exception:
+                    LOGGER.info("WRITERS_COMMUNITY_URL_UNAVAILABLE chat_id=%s", membership_chat_id)
+            buttons = (
+                InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="🌿 Вступить в ИКФ", url=community_url),
+                ]])
+                if community_url else None
+            )
+            try:
+                await app.bot.send_message(
+                    chat_id=int(user_id),
+                    text=(
+                        "Привет! 💛 Спасибо, что поделился своей работой с ИКФ. "
+                        "Анкета уже сохранена в черновиках — ничего переписывать не нужно.\n\n"
+                        "Чтобы отправить ее на проверку, сначала вступи в наше сообщество ИКФ. "
+                        "После вступления открой черновик и снова нажми «Отправить на проверку». "
+                        "Будем рады видеть тебя с нами! ✨"
+                    ),
+                    reply_markup=buttons,
+                )
+            except Exception:
+                # A bot cannot initiate a conversation with someone who has
+                # never opened its private chat. The Mini App also explains
+                # this requirement; a failed DM never destroys the draft.
+                LOGGER.info("WRITERS_COMMUNITY_DM_NOT_DELIVERED user_id=%s", user_id)
+
         service = WritersSubmissionService(
-            storage,
-            config,
-            eligibility,
+            storage, config, eligibility, nonmember_notifier=invite_nonmember,
         )
         file_service = WritersFileService(
             app.bot,
