@@ -115,11 +115,12 @@ def _moderation_text(context: Any, *, author_contact: str = "") -> str:
         "✒️ <b>Новая работа на модерацию</b>",
         "",
         f"Автор: <code>{int(context.author_user_id)}</code>",
-        author_contact,
         f"Название: {_escaped_preview(context.title, max_units=300)}",
         f"Тип: {_escaped_preview(context.work_type, max_units=80)}",
         f"{'Направление' if is_ficbook_form else 'Жанр'}: {_escaped_preview(context.genre, max_units=130)}",
     ]
+    if author_contact:
+        lines.insert(3, author_contact)
     if is_ficbook_form:
         for label, key in (
             ("Фандом", "fandom"),
@@ -169,7 +170,7 @@ def _moderation_text(context: Any, *, author_contact: str = "") -> str:
         if len(body) > len(preview):
             preview += "…"
         lines.extend(("", "<b>Текст:</b>", _escaped_preview(preview, max_units=620)))
-    return "\n".join(line for line in lines if line)
+    return "\n".join(lines)
 
 
 def _is_permanent_telegram_error(exc: Exception) -> bool:
