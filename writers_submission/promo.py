@@ -71,13 +71,16 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
     hashtags = [tag for tag in tags if tag]
     if hashtags:
         lines += ["", " | ".join(hashtags)]
-    if details.get("completion") == "завершен" and details.get("pages") and details.get("parts"):
+    if not is_sketch and details.get("completion") == "завершен" and details.get("pages") and details.get("parts"):
         lines += ["", f"Объем: {int(details.get('size_words') or 0)} слов, {int(details['pages'])} страниц, {int(details['parts'])} частей"]
-    if details.get("characters"):
+    if not is_sketch and details.get("characters"):
         lines += ["", f"Основные персонажи / пейринг: {_preview(details['characters'], 350)}"]
-    if context.external_url:
+    if is_sketch:
+        lines += ["", "👤 " + _link(details["sketch_profile_url"], "Профиль автора на Фикбуке")]
+        lines += ["📖 " + _link(details["sketch_article_url"], "Читать зарисовку в Telegraph")]
+    elif context.external_url:
         lines += ["", "📖 " + _link(context.external_url, "Читать на Фикбуке")]
-    for i, url in enumerate((details.get("extra_links") or [])[:5]):
+    for i, url in enumerate((details.get("extra_links") or [])[:5] if not is_sketch else []):
         if not isinstance(url, str) or urlsplit(url).scheme != "https":
             continue
         domain = (urlsplit(url).hostname or "").lower()
