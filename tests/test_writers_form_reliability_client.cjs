@@ -463,3 +463,21 @@ test("malformed empty workspace response does not hide already loaded drafts", a
   await assert.rejects(ctx.load(), /неполный список работ/);
   assert.equal(state.items, existing);
 });
+
+
+test("moderation delivery text never claims an unread Telegram card was read", () => {
+  const src = section("  const deliveryLabels = {", "  const $ = (id)");
+  const context = vm.createContext({});
+  vm.runInContext(src + ";this.deliveryLabel=deliveryLabel;", context);
+  assert.match(context.deliveryLabel({status:"QUEUED"}), /очереди/);
+  assert.match(context.deliveryLabel({status:"RETRYING"}), /повторит/);
+  assert.match(context.deliveryLabel({status:"DELAYED"}), /задерживается/);
+  assert.match(context.deliveryLabel({status:"NEEDS_ATTENTION"}), /администрации/);
+  assert.match(context.deliveryLabel({status:"DELIVERED"}), /чат модерации/);
+  assert.match(context.deliveryLabel({status:"DELIVERED"}), /не означает прочтение/);
+  const html = readFileSync(
+    resolve(__dirname, "../writers_submission/static/index.html"), "utf8"
+  );
+  assert.match(html, /id="refreshDeliveryButton"/);
+  assert.match(html, /app\.js\?v=delivery-recovery-v6/);
+});
