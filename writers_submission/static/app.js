@@ -92,6 +92,32 @@
     const banner = $("editorError");
     banner.textContent = message || "";
     banner.classList.toggle("hidden", !message);
+    const backupVisible = Boolean(message) &&
+      (/не удалось сохранить|не сохранился|недоступна проверка|участник|участником|not_eligible/i).test(message);
+    $("copyDraftButton").classList.toggle("hidden", !backupVisible);
+    $("draftBackupHint").classList.toggle("hidden", !backupVisible);
+  }
+
+  async function copyDraftToClipboard() {
+    // Explicit user action only. Don't cache unpublished works in localStorage.
+    // Telegram clipboard permissions vary; never claim success if blocked.
+    const backup = JSON.stringify({
+      type: "fosgen-writers-draft-backup",
+      version: 1,
+      saved_at: new Date().toISOString(),
+      fields: currentFields(),
+    }, null, 2);
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) {
+        throw new Error("clipboard_unavailable");
+      }
+      await navigator.clipboard.writeText(backup);
+      $("draftBackupHint").textContent =
+        "Анкета скопирована. Вставь ее в заметки и вернись к сохранению после устранения ошибки. Файлы не скопированы.";
+    } catch (_error) {
+      $("draftBackupHint").textContent =
+        "Буфер обмена недоступен в этом Telegram WebView. Не закрывай форму и скопируй текст полей вручную.";
+    }
   }
 
   function setBusy(active) {
@@ -162,8 +188,14 @@
     }
 
     if (!response.ok) {
+      const accessMessages = {
+        not_eligible: "Фосген не видит тебя участником писательского чата. Проверь, что ты вступил в чат, и повтори сохранение. Если ты уже участник — сообщи админу: бот должен быть администратором нужного чата.",
+        eligibility_unavailable: "Сейчас недоступна проверка участия через Telegram. Это не ошибка описания. Не закрывай форму, повтори сохранение позже или попроси админа проверить права Фосгена.",
+      };
       const error = new Error(
-        payload && payload.message
+        payload && accessMessages[payload.error]
+          ? accessMessages[payload.error]
+          : payload && payload.message
           ? payload.message
           : payload && payload.error
             ? payload.error
@@ -1438,6 +1470,7 @@
       show("workspace");
     });
     $("saveButton").addEventListener("click", () => autosave({ immediate: true }));
+    $("copyDraftButton").addEventListener("click", copyDraftToClipboard);
     $("submitButton").addEventListener("click", submitCurrent);
     $("fileInput").addEventListener("change", (event) => {
       void queueFilesLocally(event.target.files, "file");
