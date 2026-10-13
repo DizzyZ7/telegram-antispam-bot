@@ -16,6 +16,7 @@
     editSequence: 0,
     savedSequence: 0,
     createKey: null,
+    submitKey: null,
     uploadPending: false,
     uploadPreparing: false,
     submitting: false,
@@ -128,6 +129,38 @@
     }
   }
 
+  // Keep protocol failures separate from validation failures. Do not expose
+  // HTML error pages, proxy traces or internal exceptions to the author.
+  function requestFailure(status, code, message = "", reference = "") {
+    const details = String(message || "").trim();
+    const lookup = {
+      unauthorized: "Сессия Telegram истекла. Закрой и снова открой Mini App через бота.",
+      not_found: "Черновик не найден или больше недоступен. Вернись к списку работ.",
+      conflict: "Черновик изменился в другой вкладке. Проверь сохраненные данные перед повтором.",
+      payload_too_large: "Файл или запрос слишком большой. Для вложения предел — 20 МБ.",
+      rate_limited: "Слишком много запросов. Подожди минуту и повтори действие.",
+      expected_version_required: "Версия черновика не передана. Переоткрой работу.",
+      idempotency_key_required: "Не передан идентификатор операции. Переоткрой Mini App.",
+    };
+    let explanation = lookup[code];
+    if (!explanation && status === 401) explanation = lookup.unauthorized;
+    if (!explanation && status === 403) explanation = details || "Нет разрешения на эту операцию.";
+    if (!explanation && status === 404) explanation = lookup.not_found;
+    if (!explanation && status === 409) explanation = lookup.conflict;
+    if (!explanation && status === 413) explanation = lookup.payload_too_large;
+    if (!explanation && status === 422) explanation = details || "Данные анкеты не прошли проверку.";
+    if (!explanation && status === 429) explanation = lookup.rate_limited;
+    if (!explanation && status >= 500) {
+      explanation = "Ошибка на стороне сервера. Текст черновика останется в форме; повтори позднее.";
+      if (reference) explanation += " Код обращения: " + String(reference).slice(0, 32) + ".";
+    }
+    if (!explanation) explanation = "Запрос не выполнен (HTTP " + status + "). Повтори действие.";
+    const error = new Error(explanation);
+    error.code = code || "request_failed";
+    error.status = status;
+    return error;
+  }
+
   async function api(path, options = {}) {
     const request = {
       method: options.method || "GET",
@@ -141,10 +174,26 @@
       request.body = options.body;
     }
 
-    const response = await fetch(path, request);
-    if (response.status === 204) {
-      return null;
+    const timeoutMs = options.timeoutMs || 30000;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timeout = controller
+      ? window.setTimeout(() => controller.abort(), timeoutMs)
+      : null;
+    if (controller) request.signal = controller.signal;
+    let response;
+    try {
+      response = await fetch(path, request);
+    } catch (cause) {
+      const timedOut = controller && controller.signal.aborted;
+      const error = new Error(timedOut
+        ? "Сервер не ответил за 30 секунд. Операция могла выполниться — проверь статус перед повтором."
+        : "Нет соединения с сервером. Проверь интернет и повтори действие.");
+      error.code = timedOut ? "request_timeout" : "network_error";
+      throw error;
+    } finally {
+      if (timeout !== null) window.clearTimeout(timeout);
     }
+    if (response.status === 204) return null;
 
     let payload = null;
     try {
@@ -152,25 +201,22 @@
     } catch (_error) {
       payload = null;
     }
-
     if (response.status === 409) {
       setReloadRequired(true);
-      const conflict = new Error("conflict");
-      conflict.code = "conflict";
-      conflict.status = 409;
-      throw conflict;
     }
-
     if (!response.ok) {
-      const error = new Error(
-        payload && payload.message
-          ? payload.message
-          : payload && payload.error
-            ? payload.error
-            : `HTTP ${response.status}`
+      throw requestFailure(
+        response.status,
+        payload && payload.error,
+        payload && payload.message,
+        payload && payload.reference
       );
-      error.code = payload && payload.error ? payload.error : "request_failed";
-      error.status = response.status;
+    }
+    if (!payload || typeof payload !== "object") {
+      const error = new Error(
+        "Сервер ответил без подтверждения. Проверь состояние черновика перед повтором."
+      );
+      error.code = "invalid_response";
       throw error;
     }
     return payload;
@@ -875,6 +921,7 @@
         state.editSequence = 0;
         state.savedSequence = 0;
         state.createKey = null;
+    state.submitKey = null;
         setReloadRequired(false);
         renderAttachments();
         show("editor");
@@ -930,6 +977,7 @@
     });
     state.current = payload.submission;
     state.createKey = null;
+    state.submitKey = null;
     return state.current;
   }
 
@@ -1008,6 +1056,59 @@
     }
   }
 
+  async function showAcceptedSubmission(submission) {
+    // Once the submit endpoint or a recovery GET confirms acceptance, no
+    // subsequent list-refresh error may be represented as a failed submit.
+    state.current = submission;
+    state.submitKey = null;
+    setReloadRequired(false);
+    clearPendingFiles();
+    await loadHistory(submission.id);
+    try {
+      await loadWorkspace();
+      setBanner("");
+    } catch (_error) {
+      setBanner("Заявка принята, но список работ пока не обновился. Открой его позже.", "warning");
+    }
+    renderDetail();
+    show("detail");
+    if (tg && tg.HapticFeedback) {
+      tg.HapticFeedback.notificationOccurred("success");
+    }
+  }
+
+  async function confirmSubmissionAfterFailure(error) {
+    // The POST response may be lost *after* the database transaction commits.
+    // Read the actual status instead of inviting a duplicate POST.
+    const uncertain = ["network_error", "request_timeout", "invalid_response", "conflict"].includes(error.code) ||
+      Number(error.status) >= 500;
+    if (!uncertain || !state.current) return false;
+    try {
+      const payload = await api(
+        "/api/writers/submissions/" + encodeURIComponent(state.current.id)
+      );
+      const received = payload && payload.submission;
+      if (!received) throw new Error("Сервер не вернул состояние заявки.");
+      if (["SUBMITTED", "IN_REVIEW", "APPROVED", "CHANGES_REQUESTED", "REJECTED"].includes(received.status)) {
+        await showAcceptedSubmission(received);
+        return true;
+      }
+      // Keep the original idempotency key on an unconfirmed submission;
+      // never replace it with a new key for a retry.
+      if (received.status === "DRAFT") {
+        state.current = received;
+        if (error.code !== "conflict") setReloadRequired(false);
+      }
+      return false;
+    } catch (checkError) {
+      setEditorError(
+        "Не удалось подтвердить результат отправки: " + checkError.message +
+        " Не создавай вторую заявку. Открой черновик и проверь статус в списке работ."
+      );
+      return true;
+    }
+  }
+
   async function submitCurrent() {
     if (state.reloadRequired || state.autosavePending ||
         state.uploadPending || state.uploadPreparing || state.submitting) return;
@@ -1021,13 +1122,9 @@
     state.submitting = true;
     updateActionAvailability();
     try {
-      // No documents leave the user's device until the complete form passes
-      // validation AND its text has been saved in the draft.
       const saved = await autosave({ immediate: true });
       if (!saved || !state.current || state.reloadRequired) return;
       if (!await uploadQueuedFiles()) return;
-      // File staging increments the PostgreSQL submission version. Flush
-      // edits made while files were transferred using the refreshed version.
       if (!await autosave({ immediate: true }) || state.reloadRequired) return;
       try {
         validateReadyForm();
@@ -1035,27 +1132,29 @@
         setEditorError(error.message);
         return;
       }
+      state.submitKey ||= makeIdempotencyKey("submit");
       setBusy(true);
       try {
         const payload = await api(
           "/api/writers/submissions/" + encodeURIComponent(state.current.id) + "/submit",
           {
             method: "POST",
-            headers: { "Idempotency-Key": makeIdempotencyKey("submit") },
+            headers: { "Idempotency-Key": state.submitKey },
             json: { expected_version: state.current.version },
           }
         );
-        state.current = payload.submission;
-        clearPendingFiles();
-        await loadHistory(state.current.id);
-        await loadWorkspace();
-        renderDetail();
-        show("detail");
-        if (tg && tg.HapticFeedback) {
-          tg.HapticFeedback.notificationOccurred("success");
+        if (!payload || !payload.submission) {
+          const error = new Error("Сервер не подтвердил прием заявки.");
+          error.code = "invalid_response";
+          throw error;
         }
+        await showAcceptedSubmission(payload.submission);
       } catch (error) {
-        setEditorError(error.message || "Не удалось отправить работу. Вложения останутся прикрепленными к черновику.");
+        if (await confirmSubmissionAfterFailure(error)) return;
+        setEditorError(
+          "Отправка не подтверждена: " + error.message +
+          " Черновик и уже загруженные вложения сохраняются. Не создавай вторую заявку."
+        );
       } finally {
         setBusy(false);
       }
@@ -1437,6 +1536,7 @@
       state.editSequence = 0;
       state.savedSequence = 0;
       state.createKey = null;
+    state.submitKey = null;
       renderAttachments();
       setReloadRequired(false);
       show("editor");
