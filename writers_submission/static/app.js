@@ -777,6 +777,12 @@
       ["Рейтинг", (revision.details || {}).rating || "—"],
       ["Статус произведения", (revision.details || {}).completion || "—"],
       ["Фандом", (revision.details || {}).fandom || "—"],
+      ["Основа зарисовки", (revision.details || {}).sketch_origin || "—"],
+      ["Основные жанры", ((revision.details || {}).main_genres || []).join(" • ") || "—"],
+      ["Предупреждения", (revision.details || {}).warnings_present === "no"
+        ? "Нет" : ((revision.details || {}).warnings || []).join(" × ") || "—"],
+      ["Профиль Фикбука", (revision.details || {}).sketch_profile_url || "—"],
+      ["Статья Telegraph", (revision.details || {}).sketch_article_url || "—"],
       ["Размер (слов)", (revision.details || {}).size_words || "—"],
       ["Страниц", (revision.details || {}).pages || "—"],
       ["Частей", (revision.details || {}).parts || "—"],
