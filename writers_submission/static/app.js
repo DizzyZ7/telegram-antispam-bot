@@ -362,7 +362,7 @@
       ["png", "jpeg"].includes(file.file_class)
     );
     $("imageUploadStatus").textContent = pending.length
-      ? `Выбрана своя фотография: ${pending.map((entry) => entry.file.name).join(", ")}. Файл еще не отправлен. Передадим только после отправки анкеты.`
+      ? `Выбрана фотография: ${pending.map((entry) => entry.file.name).join(", ")}. Нажми «Сохранить черновик и файлы», чтобы загрузить ее на сервер.`
       : uploaded.length
         ? `Изображение уже прикреплено к этой заявке: ${uploaded.map((file) => file.filename).join(", ")}`
         : "Выбери фото. До отправки анкеты оно останется только на устройстве. Своя обложка — платная опция.";
@@ -583,9 +583,9 @@
         throw new Error("Описание зарисовки: не больше 35 слов и 230 символов.");
       }
     } else {
-      const sentenceCount = (values.description.match(/[^.!?]+[.!?]+/gu) || []).length;
-      if (sentenceCount < 3 || !/[.!?]\s*$/u.test(values.description)) {
-        throw new Error("Описание большой работы должно содержать не меньше трех предложений.");
+      const sentenceCount = countCompletedSentences(values.description);
+      if (sentenceCount < 3) {
+        throw new Error("Нужно минимум 3 законченных предложения с точкой, ! или ?. Хештеги и дополнительные фразы в конце разрешены.");
       }
       if (wordCount > 110) {
         throw new Error("Описание большой работы: максимум 110 слов.");
@@ -602,16 +602,19 @@
     return values;
   }
 
+  function countCompletedSentences(value) {
+    return (String(value || "").match(/[^.!?]+[.!?]+/gu) || [])
+      .filter((segment) => /[\p{L}\p{N}]/u.test(segment)).length;
+  }
+
   function refreshCounters() {
     $("titleCounter").textContent = String(form.title.value.length);
     const wordCount = countWords(form.description.value);
     const sketch = selectedChoice("workType") === "Зарисовка";
-    const sentences = (form.description.value.match(/[^.!?]+[.!?]+/gu) || []).length;
-    const closedSentence = /[.!?]\s*$/u.test(form.description.value);
+    const sentences = countCompletedSentences(form.description.value);
     $("descriptionCounter").textContent = sketch
       ? wordCount + "/35 слов · " + form.description.value.length + "/230 символов"
-      : wordCount + "/110 слов · " + sentences + "/3 предложения" +
-        (!closedSentence && form.description.value.trim() ? " (последнее не завершено)" : "");
+      : wordCount + "/110 слов · " + sentences + "/3 законченных предложения";
     const slots = [form.mainGenre1, form.mainGenre2, form.mainGenre3];
     const amount = slots.filter((field) => field.value.trim()).length;
     const progress = $("genreProgress");
@@ -991,6 +994,20 @@
     }
   }
 
+  async function saveDraftAndFiles() {
+    if (state.reloadRequired || state.uploadPreparing || state.uploadPending || state.submitting) return false;
+    const saved = await autosave({ immediate: true });
+    if (!saved || state.reloadRequired) return false;
+    if (state.pendingFiles.length) {
+      const uploaded = await uploadQueuedFiles();
+      if (!uploaded || state.reloadRequired) return false;
+      // Uploading a personal cover changes the cover_file_id in form details.
+      if (!await autosave({ immediate: true })) return false;
+    }
+    setSaveState("Черновик и выбранные вложения сохранены");
+    return true;
+  }
+
   async function submitCurrent() {
     if (state.reloadRequired || state.autosavePending ||
         state.uploadPending || state.uploadPreparing || state.submitting) return;
@@ -1241,7 +1258,7 @@
       renderAttachments();
       updateImageStatus();
       setEditorError("");
-      updateUploadProgress(source, "Выбрано, не отправлено. Передадим вместе с заполненной анкетой.", null, "waiting");
+      updateUploadProgress(source, "Файл выбран. Нажми «Сохранить черновик и файлы» для загрузки.", null, "waiting");
       return true;
     } catch (error) {
       setEditorError(error.message || "Не удалось подготовить файл.");
@@ -1440,7 +1457,7 @@
       await loadWorkspace();
       show("workspace");
     });
-    $("saveButton").addEventListener("click", () => autosave({ immediate: true }));
+    $("saveButton").addEventListener("click", () => { void saveDraftAndFiles(); });
     $("submitButton").addEventListener("click", submitCurrent);
     $("fileInput").addEventListener("change", (event) => {
       void queueFilesLocally(event.target.files, "file");
