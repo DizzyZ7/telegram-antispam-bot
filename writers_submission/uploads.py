@@ -258,7 +258,7 @@ def normalize_submission_details(value: object, *, complete: bool = False,
                 ("sketch_article_url", "telegra.ph"),
             ):
                 url = _external_url(details[key])
-                if not url or (urlparse(url).hostname or "").lower() not in (hostname, "www." + hostname):
+                if not url or (urlparse(url).hostname or "").lower() not in (hostname, "www." + hostname) or not urlparse(url).path.strip("/"):
                     raise ValidationError(f"{key} must be an HTTPS {hostname} link")
         if complete:
             if not genre_items:
