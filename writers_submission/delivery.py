@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 import time
 from contextlib import suppress
 from io import BytesIO
@@ -107,13 +108,14 @@ def _author_notification_text(context: Any) -> str:
     return "\n".join(lines)
 
 
-def _moderation_text(context: Any) -> str:
+def _moderation_text(context: Any, *, author_contact: str = "") -> str:
     details = getattr(context, "details", None) or {}
     is_ficbook_form = details.get("form_version") in (2, 3)
     lines = [
         "✒️ <b>Новая работа на модерацию</b>",
         "",
         f"Автор: <code>{int(context.author_user_id)}</code>",
+        author_contact,
         f"Название: {_escaped_preview(context.title, max_units=300)}",
         f"Тип: {_escaped_preview(context.work_type, max_units=80)}",
         f"{'Направление' if is_ficbook_form else 'Жанр'}: {_escaped_preview(context.genre, max_units=130)}",
@@ -167,7 +169,7 @@ def _moderation_text(context: Any) -> str:
         if len(body) > len(preview):
             preview += "…"
         lines.extend(("", "<b>Текст:</b>", _escaped_preview(preview, max_units=620)))
-    return "\n".join(lines)
+    return "\n".join(line for line in lines if line)
 
 
 def _is_permanent_telegram_error(exc: Exception) -> bool:
@@ -338,6 +340,30 @@ class WritersDeliveryWorker:
             return await self._deliver_owner_preview(item)
         raise RuntimeError("unsupported outbox event type")
 
+    async def _author_contact(self, author_user_id: int) -> str:
+        """Moderator-only direct contact, never included in public promos."""
+        uid = int(author_user_id)
+        fallback = (
+            f'✉️ <a href="tg://user?id={uid}">Написать автору в Telegram</a>'
+        )
+        getter = getattr(self.bot, "get_chat", None)
+        if not callable(getter):
+            return fallback
+        try:
+            chat = await getter(uid)
+            if int(getattr(chat, "id", 0)) != uid:
+                return fallback
+            username = str(getattr(chat, "username", "") or "").lstrip("@")
+            if re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+                return (
+                    f'✉️ Telegram автора: '
+                    f'<a href="https://t.me/{username}">@{username}</a>'
+                    f' · <a href="tg://user?id={uid}">по ID</a>'
+                )
+        except Exception:
+            LOGGER.info("WRITERS_AUTHOR_CONTACT_LOOKUP_UNAVAILABLE user_id=%s", uid)
+        return fallback
+
     async def _deliver_moderation_card(
         self,
         item: Any,
@@ -362,7 +388,10 @@ class WritersDeliveryWorker:
             chat_id=moderation_chat_id,
             text=(
                 "<b>📦 Комплект заявки</b> <code>" + packet_id + "</code>\n"
-                + _moderation_text(context)
+                + _moderation_text(
+                    context,
+                    author_contact=await self._author_contact(context.author_user_id),
+                )
                 + "\n\nВсе вложения и цветовой макет — ответами на эту карточку."
             ),
             parse_mode="HTML",
