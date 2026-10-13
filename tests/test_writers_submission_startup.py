@@ -205,7 +205,7 @@ class WritersSubmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         worker = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
         with (
             patch("writers_submission.runtime.PostgresWritersSubmissionStorage", return_value=storage),
-            patch("writers_submission.runtime.WritersCommunityMembershipRegistry"),
+            patch("writers_submission.runtime.WritersCommunityMembershipRegistry", autospec=True),
             patch("writers_submission.runtime.WritersSubmissionService") as service,
             patch("writers_submission.runtime.WritersFileService"),
             patch("writers_submission.runtime.SessionSigner"),
@@ -239,7 +239,7 @@ class WritersSubmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         worker = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
         with (
             patch("writers_submission.runtime.PostgresWritersSubmissionStorage", return_value=storage),
-            patch("writers_submission.runtime.WritersCommunityMembershipRegistry"),
+            patch("writers_submission.runtime.WritersCommunityMembershipRegistry", autospec=True),
             patch("writers_submission.runtime.WritersSubmissionService") as service,
             patch("writers_submission.runtime.WritersFileService"),
             patch("writers_submission.runtime.SessionSigner"),
