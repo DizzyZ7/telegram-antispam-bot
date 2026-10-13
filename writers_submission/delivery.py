@@ -340,12 +340,30 @@ class WritersDeliveryWorker:
             return await self._deliver_owner_preview(item)
         raise RuntimeError("unsupported outbox event type")
 
-    async def _author_contact(self, author_user_id: int) -> str:
+    async def _author_contact(
+        self, author_user_id: int, *,
+        saved_username: str | None = None,
+        saved_first_name: str | None = None,
+    ) -> str:
         """Moderator-only direct contact, never included in public promos."""
         uid = int(author_user_id)
         fallback = (
             f'✉️ <a href="tg://user?id={uid}">Написать автору в Telegram</a>'
         )
+        # Signed Telegram initData is recorded at Mini App login. Telegram
+        # Bot API get_chat may fail when the person has not started a DM;
+        # retain the signed username as a useful last-seen fallback.
+        saved = str(saved_username or "").lstrip("@")
+        if re.fullmatch(r"[A-Za-z0-9_]{5,32}", saved):
+            fallback = (
+                f'✉️ Telegram при заполнении: '
+                f'<a href="https://t.me/{saved}">@{saved}</a>'
+                f' · <a href="tg://user?id={uid}">по ID</a>'
+            )
+        elif saved_first_name:
+            import html
+            first = html.escape(str(saved_first_name)[:100])
+            fallback = f'✉️ Имя Telegram: {first} · ' + fallback
         getter = getattr(self.bot, "get_chat", None)
         if not callable(getter):
             return fallback
@@ -390,7 +408,11 @@ class WritersDeliveryWorker:
                 "<b>📦 Комплект заявки</b> <code>" + packet_id + "</code>\n"
                 + _moderation_text(
                     context,
-                    author_contact=await self._author_contact(context.author_user_id),
+                    author_contact=await self._author_contact(
+                        context.author_user_id,
+                        saved_username=getattr(context, "author_username", None),
+                        saved_first_name=getattr(context, "author_first_name", None),
+                    ),
                 )
                 + "\n\nВсе вложения и цветовой макет — ответами на эту карточку."
             ),
