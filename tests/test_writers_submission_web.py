@@ -15,6 +15,7 @@ from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
 from writers_submission.models import ConflictError, NotFoundError, ValidationError
+from writers_submission.service import EligibilityUnavailableError
 from writers_submission.security import SESSION_COOKIE_NAME, SessionSigner
 from writers_submission.web import create_writers_web_app
 
@@ -267,6 +268,35 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing.status, 403)
         self.assertEqual(wrong.status, 403)
         self.service.create.assert_not_awaited()
+
+    async def test_submit_reports_explicit_membership_failure_not_draft_save_error(self):
+        self.service.submit.side_effect = PermissionError(
+            "Current writers community membership is required"
+        )
+        response = await self.client.post(
+            f"/api/writers/submissions/{self.item.id}/submit",
+            json={"expected_version": 1},
+            headers={**self.auth_headers(), "Idempotency-Key": "membership-denied"},
+        )
+        self.assertEqual(response.status, 403)
+        payload = await response.json()
+        self.assertEqual(payload["error"], "not_eligible")
+        self.assertIn("чате авторов", payload["message"])
+        self.service.submit.assert_awaited_once()
+
+    async def test_submit_distinguishes_temporary_telegram_membership_outage(self):
+        self.service.submit.side_effect = EligibilityUnavailableError(
+            "Не удалось проверить участие в чате авторов. Повторите позже."
+        )
+        response = await self.client.post(
+            f"/api/writers/submissions/{self.item.id}/submit",
+            json={"expected_version": 1},
+            headers={**self.auth_headers(), "Idempotency-Key": "membership-outage"},
+        )
+        self.assertEqual(response.status, 503)
+        payload = await response.json()
+        self.assertEqual(payload["error"], "eligibility_unavailable")
+        self.assertIn("Повторите позже", payload["message"])
 
     async def test_json_transport_accepts_full_domain_body_limit(self):
         payload = {
