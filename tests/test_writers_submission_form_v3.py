@@ -60,7 +60,7 @@ class NewSubmissionFormTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "main genre"):
             full_submission(common_details(main_genres=[]))
         with self.assertRaisesRegex(ValidationError, "yes or no"):
-            full_submission(common_details(warnings_present=""))
+            full_submission(common_details(warnings_present="", warnings=[]))
         with self.assertRaisesRegex(ValidationError, "content warning"):
             full_submission(common_details(warnings=[]))
         with self.assertRaisesRegex(ValidationError, "warnings require"):
