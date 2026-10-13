@@ -91,6 +91,21 @@ class NewSubmissionFormTests(unittest.TestCase):
         long_but_valid = " ".join(["длинное"] * 100) + ". Еще предложение. Последнее предложение."
         validate_description_for_format(long_but_valid, "Оридж")
 
+    def test_three_completed_sentences_survive_tags_and_unfinished_trailing_text(self):
+        samples = [
+            "Однажды герой приехал домой. Друзья ждали его. Все закончилось хорошо. #фандом #романтика",
+            "Завязка готова! Второй поворот удивляет? Финал уже написан. #зарисовка",
+            "Начало истории. Продолжение сюжета. Сцена закончилась! Еще одна незаконченая заметка",
+            "Первое событие. Второе событие. Третье событие. ✨💖 #драма",
+            "Начало. Середина. Конец. [AU] #ФФ <тег>",
+        ]
+        for text in samples:
+            with self.subTest(description=text):
+                validate_description_for_format(text, "ФФ")
+                full_submission(description=text)
+        with self.assertRaisesRegex(ValidationError, "three completed"):
+            full_submission(description="Одно предложение. Второе предложение. #тег")
+
     def test_warning_and_genres_are_escaped_and_positioned_after_description(self):
         details = common_details(
             main_genres=["Романтика", "Фэнтези & сказки"],
