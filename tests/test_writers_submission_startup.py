@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from writers_submission.models import EligibilityUnavailableError
+
 from writers_submission.runtime import (
     TelegramWritersEligibilityChecker,
     start_writers_submission_runtime,
@@ -28,25 +30,31 @@ class TelegramWritersEligibilityCheckerTests(unittest.IsolatedAsyncioTestCase):
                     77,
                 )
 
-    async def test_rejects_left_kicked_restricted_and_bot_api_errors(self):
+    async def test_restricted_active_member_is_eligible_but_left_or_kicked_not(self):
         bot = SimpleNamespace(get_chat_member=AsyncMock())
         checker = TelegramWritersEligibilityChecker(bot, -1002619489118)
-
-        for status, is_member in (
-            ("left", False),
-            ("kicked", False),
-            ("restricted", False),
-            ("restricted", True),
+        for status, is_member, allowed in (
+            ("left", False, False),
+            ("kicked", False, False),
+            ("restricted", False, False),
+            ("restricted", True, True),
+            ("restricted", None, False),
         ):
             with self.subTest(status=status, is_member=is_member):
                 bot.get_chat_member.return_value = SimpleNamespace(
                     status=status,
                     is_member=is_member,
                 )
-                self.assertFalse(await checker(77))
+                self.assertEqual(await checker(77), allowed)
 
-        bot.get_chat_member.side_effect = RuntimeError("Telegram unavailable")
-        self.assertFalse(await checker(77))
+    async def test_bot_permission_or_telegram_outage_is_not_reported_as_nonmember(self):
+        bot = SimpleNamespace(
+            get_chat_member=AsyncMock(side_effect=RuntimeError("Telegram unavailable")),
+        )
+        checker = TelegramWritersEligibilityChecker(bot, -1002619489118)
+        with self.assertRaises(EligibilityUnavailableError):
+            await checker(77)
+        bot.get_chat_member.assert_awaited_once_with(-1002619489118, 77)
 
 
 class WritersSubmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
