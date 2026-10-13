@@ -2863,7 +2863,7 @@ class PostgresWritersSubmissionStorage:
               AND o.state <> 'DELIVERED'
               AND (
                 o.state = 'PERMANENT_FAILED'
-                OR o.created_at <= $1 - $2
+                OR o.created_at <= $1::bigint - $2::bigint
               )
             GROUP BY o.state
             """,
