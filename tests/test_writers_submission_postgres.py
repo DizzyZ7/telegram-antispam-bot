@@ -1702,6 +1702,84 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_moderation_delivery_status_and_checkpoints_survive_retries(self):
+        created = await self.storage.create_submission(
+            author_user_id=77, writers_chat_id=-1002619489118,
+            fields=fields("Queue tracking"), now=100,
+            idempotency_key="queue-tracking-draft",
+        )
+        await self.storage.seal_and_submit(
+            submission_id=created.id, author_user_id=77,
+            expected_version=1, now=110,
+            idempotency_key="queue-tracking-submit",
+        )
+        statuses = await self.storage.list_author_moderation_delivery(
+            author_user_id=77,
+        )
+        self.assertEqual(len(statuses), 1)
+        self.assertEqual(statuses[0]["submission_id"], str(created.id))
+        self.assertEqual(statuses[0]["state"], "PENDING")
+        self.assertEqual(
+            await self.storage.list_author_moderation_delivery(author_user_id=78),
+            [],
+        )
+
+        claimed = await self.storage.claim_due_outbox(
+            worker_id="w-first", now=111, lease_seconds=60, limit=10,
+        )
+        moderation = next(
+            event for event in claimed
+            if event.event_type.value == "MODERATION_CARD"
+        )
+        self.assertEqual(moderation.progress, {})
+        with self.assertRaises(ConflictError):
+            await self.storage.record_outbox_progress(
+                outbox_id=moderation.id, worker_id="w-stranger",
+                now=112, key="card", message_id=900,
+                delivery_chat_id=-100111,
+            )
+        await self.storage.record_outbox_progress(
+            outbox_id=moderation.id, worker_id="w-first",
+            now=112, key="card", message_id=501,
+            delivery_chat_id=-100111,
+        )
+        await self.storage.record_outbox_progress(
+            outbox_id=moderation.id, worker_id="w-first",
+            now=113, key="file:" + str(created.revision.id),
+            message_id=502, delivery_chat_id=-100111,
+        )
+        await self.storage.mark_outbox_retryable(
+            outbox_id=moderation.id, worker_id="w-first",
+            now=114, next_attempt_at=130, error_code="connection_dropped",
+        )
+        retry = await self.storage.claim_due_outbox(
+            worker_id="w-second", now=130, lease_seconds=60, limit=10,
+        )
+        self.assertEqual(len(retry), 1)
+        self.assertEqual(retry[0].progress["card"], 501)
+        self.assertEqual(
+            retry[0].progress["file:" + str(created.revision.id)], 502,
+        )
+        with self.assertRaises(ConflictError):
+            await self.storage.record_outbox_progress(
+                outbox_id=moderation.id, worker_id="w-first",
+                now=131, key="card", message_id=999,
+                delivery_chat_id=-100111,
+            )
+        await self.storage.mark_outbox_delivered(
+            outbox_id=retry[0].id, worker_id="w-second",
+            now=132, delivery_chat_id=-100111,
+            delivery_message_ids=(501, 502),
+        )
+        finished = await self.storage.list_author_moderation_delivery(
+            author_user_id=77, submission_id=created.id,
+        )
+        self.assertEqual(finished[0]["state"], "DELIVERED")
+        health = await self.storage.get_moderation_delivery_health(
+            now=1000, stale_seconds=300,
+        )
+        self.assertEqual(health["problem_count"], 0)
+
     async def test_history_is_owned_and_restart_safe(self):
         created = await self.storage.create_submission(
             author_user_id=77,
