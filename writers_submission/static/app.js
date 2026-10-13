@@ -1716,6 +1716,24 @@
     }
   }
 
+  async function reloadDraftSafely() {
+    if (!state.current) return false;
+    if (state.autosavePending || state.savePromise ||
+        state.uploadPending || state.uploadPreparing || state.submitting) {
+      setEditorError("Дождись завершения сохранения или загрузки перед обновлением черновика.");
+      return false;
+    }
+    const hasUnsaved = state.editSequence > state.savedSequence ||
+      state.pendingFiles.length > 0;
+    if (hasUnsaved && !window.confirm(
+      "В черновике есть несохраненный текст или незагруженные файлы. " +
+      "Обновление заменит текущие данные сохраненной версией. " +
+      "Сначала скопируй важный текст. Все равно обновить?"
+    )) return false;
+    await openSubmission(state.current.id);
+    return true;
+  }
+
   function bindEvents() {
     $("newWorkButton").addEventListener("click", () => { void newDraft(); });
     $("editorBackButton").addEventListener("click", async () => {
@@ -1766,21 +1784,7 @@
         setBanner("");
       }
     });
-    $("reloadButton").addEventListener("click", () => {
-      if (!state.current) return;
-      if (state.autosavePending || state.savePromise ||
-          state.uploadPending || state.uploadPreparing || state.submitting) {
-        setEditorError("Дождись завершения сохранения или загрузки перед обновлением черновика.");
-        return;
-      }
-      const hasUnsaved = state.editSequence > state.savedSequence || state.pendingFiles.length > 0;
-      if (hasUnsaved && !window.confirm(
-        "В черновике есть несохраненный текст или незагруженные файлы. " +
-        "Обновление заменит текущие данные сохраненной версией. " +
-        "Сначала скопируй важный текст. Все равно обновить?"
-      )) return;
-      void openSubmission(state.current.id);
-    });
+    $("reloadButton").addEventListener("click", () => { void reloadDraftSafely(); });
 
     Object.values(form).forEach((field) => {
       field.addEventListener("input", markChanged);
