@@ -6,7 +6,7 @@ import unittest
 from writers_submission.models import ModerationDeliveryContext, ValidationError
 from writers_submission.promo import render_owner_promo
 from writers_submission.uploads import (
-    normalize_submission_details, validate_description_for_format,
+    normalize_submission_details, validate_description_for_format, count_description_sentences,
     validate_submission_fields,
 )
 
@@ -90,6 +90,25 @@ class NewSubmissionFormTests(unittest.TestCase):
             full_submission(description=" ".join(["слово"] * 111) + ". Потом. Конец.")
         long_but_valid = " ".join(["длинное"] * 100) + ". Еще предложение. Последнее предложение."
         validate_description_for_format(long_but_valid, "Оридж")
+
+    def test_completed_sentences_survive_trailing_tags_emoji_and_fragment(self):
+        good = [
+            "Это первая глава. У героя появляется цель! Дальше будет интереснее? #фанфик",
+            "Первая сцена окончена. Вторая сцена начинается. Третья сцена описана. Продолжение позже",
+            "Все получилось. Все стали друзьями. Сюжет завершен. ❤️ #романтика",
+            "История начинается. Дальше начинается путешествие. И все меняется. #фикбук #фэнтези",
+            "Далеко отсюда. Уже наступило утро. Герои все поняли. https://ficbook.net/readfic/123",
+        ]
+        for text in good:
+            with self.subTest(text=text):
+                self.assertGreaterEqual(count_description_sentences(text), 3)
+                validate_description_for_format(text, "ФФ")
+        for text in ("Начало главы. Середина главы. Концовка без точки #хештег",
+                     "Один текст. Еще одно предложение. #тег"):
+            with self.subTest(text=text):
+                self.assertLess(count_description_sentences(text), 3)
+                with self.assertRaisesRegex(ValidationError, "three sentences"):
+                    validate_description_for_format(text, "ФФ")
 
     def test_warning_and_genres_are_escaped_and_positioned_after_description(self):
         details = common_details(
