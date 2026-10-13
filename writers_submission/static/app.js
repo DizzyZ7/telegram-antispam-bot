@@ -1414,17 +1414,14 @@
         }
         if (xhr.status === 409) {
           setReloadRequired(true);
-          const conflict = new Error("Черновик изменился в другой вкладке.");
-          conflict.code = "conflict";
-          reject(conflict);
-          return;
         }
         if (xhr.status < 200 || xhr.status >= 300) {
-          const message = data && (data.message || data.error);
-          const error = new Error(message || `Ошибка сервера: HTTP ${xhr.status}`);
-          error.status = xhr.status;
-          error.code = data && data.error ? data.error : "request_failed";
-          reject(error);
+          reject(requestFailure(
+            xhr.status,
+            data && data.error,
+            data && data.message,
+            data && data.reference
+          ));
           return;
         }
         if (!data || !data.id) {
