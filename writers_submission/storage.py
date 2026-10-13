@@ -26,7 +26,7 @@ from .models import (
     SubmissionSummary,
     ValidationError,
 )
-from .uploads import NormalizedSubmissionFields, ValidatedUpload, _external_url, normalize_submission_details
+from .uploads import NormalizedSubmissionFields, ValidatedUpload, _external_url, normalize_submission_details, validate_description_for_format
 
 
 def _uuid(value: object | None) -> UUID | None:
@@ -1321,13 +1321,18 @@ class PostgresWritersSubmissionStorage:
                 details = normalize_submission_details(
                     json.loads(str(revision["details_json"] or "{}")),
                     complete=True,
+                    work_type=str(revision["work_type"] or ""),
                 )
+                if details.get("form_version") == 3:
+                    validate_description_for_format(
+                        str(revision["description"] or ""), str(revision["work_type"] or ""),
+                    )
                 valid_link = _external_url(revision["external_url"])
                 ready_for_upload = bool(
                     str(revision["title"] or "").strip()
                     and str(revision["genre"] or "").strip()
                     and str(revision["description"] or "").strip()
-                    and str(revision["work_type"] or "") in {"ФФ", "Оридж"}
+                    and str(revision["work_type"] or "") in {"ФФ", "Оридж", "Зарисовка"}
                     and valid_link
                     and (
                         not details
@@ -1756,7 +1761,7 @@ class PostgresWritersSubmissionStorage:
                     raise ValidationError("Submission has an incomplete attachment")
                 raw_details = json.loads(str(revision["details_json"] or "{}"))
                 details = (
-                    normalize_submission_details(raw_details, complete=True)
+                    normalize_submission_details(raw_details, complete=True, work_type=str(revision["work_type"] or ""))
                     if raw_details else {}
                 )
                 if details and any(
@@ -1764,12 +1769,19 @@ class PostgresWritersSubmissionStorage:
                     for name in ("title", "genre", "description")
                 ):
                     raise ValidationError("title, direction and description are required")
-                if details and str(revision["work_type"]) not in {"ФФ", "Оридж"}:
-                    raise ValidationError("work_type must be ФФ or Оридж")
+                if details and str(revision["work_type"]) not in {"ФФ", "Оридж", "Зарисовка"}:
+                    raise ValidationError("work_type must be ФФ, Оридж or Зарисовка")
+                if details.get("form_version") == 3:
+                    validate_description_for_format(
+                        str(revision["description"] or ""), str(revision["work_type"] or ""),
+                    )
                 if details and str(revision["work_type"]) == "ФФ" and not details["fandom"]:
                     raise ValidationError("fandom is required for fanfiction")
                 if details and not str(revision["external_url"] or "").strip():
-                    raise ValidationError("Ficbook URL is required")
+                    raise ValidationError("external reading URL is required")
+                if details.get("form_version") == 3 and str(revision["work_type"]) == "Зарисовка":
+                    if str(revision["external_url"] or "") != details["sketch_article_url"]:
+                        raise ValidationError("sketch reading link must be the Telegraph article")
                 if details:
                     # Partial drafts may contain incomplete HTTPS URLs.
                     # Revalidate at seal time, including external URLs.
