@@ -250,6 +250,35 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(context.fields_ready_for_upload)
 
+    async def test_photo_can_be_saved_before_description_is_finished(self):
+        partial = validate_submission_fields(
+            title="Моя будущая работа",
+            work_type="ФФ",
+            genre="",
+            description="Одно пока незаконченное описание #фандом",
+            body_text="",
+            external_url=None,
+            has_ready_file=False,
+            require_work_content=False,
+            details={"form_version": 3, "visual_mode": "image"},
+        )
+        draft = await self.storage.create_submission(
+            author_user_id=77, writers_chat_id=-1002619489118,
+            fields=partial, now=101, idempotency_key="draft-image-before-description",
+        )
+        ready = await self.storage.get_draft_file_context(
+            submission_id=draft.id, author_user_id=77,
+        )
+        self.assertTrue(ready.fields_ready_for_upload)
+        # This is only permission to stage files in a closed archive. Sending
+        # the work still requires the complete form and IKF subscription.
+        with self.assertRaises(ValidationError):
+            await self.storage.seal_and_submit(
+                submission_id=draft.id, author_user_id=77,
+                expected_version=draft.version,
+                idempotency_key="image-before-complete", now=102,
+            )
+
     async def test_create_list_get_and_update_owned_draft(self):
         created = await self.storage.create_submission(
             author_user_id=77,
