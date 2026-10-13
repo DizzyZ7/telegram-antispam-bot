@@ -113,6 +113,59 @@ def _external_url(value: object) -> str | None:
 
 
 
+_TELEGRAM_HOSTS = frozenset({
+    "t.me", "www.t.me", "telegram.me", "www.telegram.me",
+})
+_TELEGRAM_BARE_LINK = re.compile(
+    r"^(?:(?:www\\.)?(?:t\\.me|telegram\\.me))/",
+    re.IGNORECASE,
+)
+_TELEGRAM_USERNAME = re.compile(r"@[A-Za-z0-9_]{5,32}\\Z")
+_TELEGRAM_PATH = re.compile(r"/[A-Za-z0-9_+/-]+\\Z")
+
+
+def normalize_extra_link(value: object) -> str | None:
+    """Support Telegram-native channel shorthand in optional link fields.
+
+    Only Telegram addresses may omit HTTPS. Other websites retain the
+    existing strict HTTPS-only rule. Return canonical clickable URLs.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValidationError("extra_links must contain text")
+    raw = value.strip()
+    if not raw:
+        return None
+    if len(raw) > EXTERNAL_URL_MAX:
+        raise ValidationError("extra_links URL exceeds maximum length")
+    if _TELEGRAM_USERNAME.fullmatch(raw):
+        return "https://t.me/" + raw[1:]
+    if raw.startswith("@"):
+        raise ValidationError("Telegram username must be @ followed by 5–32 letters, digits or underscores")
+
+    candidate = raw
+    if _TELEGRAM_BARE_LINK.match(raw):
+        candidate = "https://" + raw
+    elif raw.lower().startswith("http://"):
+        parsed_http = urlparse(raw)
+        if (parsed_http.hostname or "").lower() in _TELEGRAM_HOSTS:
+            candidate = "https://" + raw[len("http://"):]
+
+    url = _external_url(candidate)
+    if url is None:
+        return None
+    parsed = urlparse(url)
+    if (parsed.hostname or "").lower() in _TELEGRAM_HOSTS:
+        if (not _TELEGRAM_PATH.fullmatch(parsed.path) or parsed.port not in (None, 443)
+                or parsed.fragment or any(ch.isspace() for ch in url)
+                or "\\\\" in url):
+            raise ValidationError("Telegram link must point to a valid channel, invite or message")
+    if len(url) > EXTERNAL_URL_MAX:
+        raise ValidationError("extra_links URL exceeds maximum length")
+    return url
+
+
 _DETAILS_ALLOWED = frozenset({
     "form_version", "fandom", "size_category", "rating", "completion",
     "size_words", "pages", "parts", "extra_links", "visual_mode",
@@ -166,11 +219,11 @@ def normalize_submission_details(value: object, *, complete: bool = False,
 
     raw_links = value.get("extra_links", [])
     if not isinstance(raw_links, list) or len(raw_links) > 5:
-        raise ValidationError("extra_links must contain at most five HTTPS URLs")
+        raise ValidationError("extra_links must contain at most five links")
     links = []
     for raw in raw_links:
         if complete:
-            url = _external_url(raw)
+            url = normalize_extra_link(raw)
         else:
             # Autosave must work while someone is halfway through typing
             # "https://ficbook.net/..." or an optional external link.
