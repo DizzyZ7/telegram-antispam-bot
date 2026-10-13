@@ -31,6 +31,37 @@ const fileRecovery = section(
   "  async function verifyAmbiguousFileUpload(", "  async function uploadQueuedFiles("
 );
 
+
+test("visible Save action retries selected files without requiring finished application", async () => {
+  const js = section("  async function saveDraftAndFiles(", "  async function submitCurrent(");
+  const calls = [];
+  const state = {
+    reloadRequired: false,
+    autosavePending: false,
+    uploadPending: false,
+    uploadPreparing: false,
+    submitting: false,
+    pendingFiles: [{ file: "photo.jpg" }],
+  };
+  const ctx = vm.createContext({
+    state,
+    autosave: async () => { calls.push("draft"); return true; },
+    uploadQueuedFiles: async () => { calls.push("files"); return true; },
+  });
+  vm.runInContext(js + ";this.save = saveDraftAndFiles;", ctx);
+  assert.equal(await ctx.save(), true);
+  assert.deepEqual(calls, ["draft", "files"]);
+});
+
+test("server-side validation errors identify the exact failing field in Russian", () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(transport + ";this.failure=requestFailure;", ctx);
+  assert.match(ctx.failure(422, "validation_error",
+    "work description needs at least three sentences (completed)").message, /Описание: нужно не менее трех/);
+  assert.match(ctx.failure(422, "validation_error",
+    "unsupported file extension").message, /Формат файла не поддерживается/);
+});
+
 test("API errors name causes without leaking raw server internals", () => {
   const ctx = vm.createContext({});
   vm.runInContext(transport + ";this.failure = requestFailure;", ctx);
