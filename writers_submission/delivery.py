@@ -336,7 +336,52 @@ class WritersDeliveryWorker:
                     item.submission_id, item.revision_id,
                     delivery_chat_id, delivery_message_ids,
                 )
+        await self._check_delivery_health(now=int(now))
         return len(items)
+
+    async def _check_delivery_health(self, *, now: int) -> None:
+        """Watch persisted moderation backlog and alert the owner with bounds."""
+        method = getattr(self.storage, "get_moderation_delivery_health", None)
+        if not callable(method):
+            return
+        if self._last_health_check_at and now - self._last_health_check_at < 60:
+            return
+        self._last_health_check_at = now
+        try:
+            snapshot = await method(now=now, stale_seconds=300)
+            count = int(snapshot.get("problem_count") or 0)
+            if not count:
+                return
+            breakdown = snapshot.get("by_state", {})
+            LOGGER.warning(
+                "WRITERS_MODERATION_DELIVERY_BACKLOG count=%s states=%s oldest_at=%s",
+                count, breakdown, snapshot.get("oldest_at"),
+            )
+            if self._last_alert_at and now - self._last_alert_at < 900:
+                return
+            owner_id = getattr(self.config, "owner_user_id", None)
+            if not owner_id:
+                LOGGER.warning("WRITERS_MODERATION_ALERT_NO_OWNER_CONFIGURED")
+                return
+            # Even when Telegram's moderation chat is broken, private owner
+            # notifications may still work. No private author data is exposed.
+            self._last_alert_at = now
+            await self.bot.send_message(
+                chat_id=int(owner_id),
+                text=(
+                    "⚠️ ИКФ: задержка доставки заявок на модерацию.\n"
+                    f"Проблемных комплектов: {count}.\n"
+                    "Состояния очереди: "
+                    + ", ".join(
+                        f"{key}: {value}" for key, value in sorted(breakdown.items())
+                    )
+                    + "\nПроверь доступ бота к чату модерации и журнал "
+                    "WRITERS_MODERATION_DELIVERY_BACKLOG. "
+                    "Автоматические повторы продолжаются для временных ошибок."
+                ),
+            )
+        except Exception:
+            LOGGER.exception("WRITERS_MODERATION_DELIVERY_HEALTH_CHECK_FAILED")
 
     async def _deliver(
         self,
