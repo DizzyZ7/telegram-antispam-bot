@@ -243,7 +243,7 @@
       work_type: selectedChoice("workType"),
       genre: form.direction.value.trim(),
       description: form.description.value,
-      body_text: form.body.value,
+      body_text: sketch ? "" : form.body.value,
       external_url: sketch ? (form.sketchArticle.value.trim() || null) : (form.url.value.trim() || null),
       has_ready_file: state.attachments.length > 0,
       details: {
