@@ -953,7 +953,7 @@
         state.editSequence = 0;
         state.savedSequence = 0;
         state.createKey = null;
-    state.submitKey = null;
+        state.submitKey = null;
         setReloadRequired(false);
         renderAttachments();
         show("editor");
@@ -989,6 +989,7 @@
     state.editSequence = 0;
     state.savedSequence = 0;
     state.createKey = makeIdempotencyKey("create");
+    state.submitKey = null;
     setReloadRequired(false);
     fillForm({ revision: {} });
     renderAttachments();
@@ -1011,6 +1012,61 @@
     state.createKey = null;
     state.submitKey = null;
     return state.current;
+  }
+
+  function draftMatchesSavedRequest(revision, fields) {
+    // Detect a PATCH that committed before its HTTP response disappeared.
+    // Comparing *all* submitted fields prevents silently adopting another
+    // editor's revision and overwriting their changes.
+    if (!revision || !fields || !fields.details || !revision.details) return false;
+    const clean = (value) => String(value == null ? "" : value)
+      .replace(/\s+/gu, " ").trim();
+    for (const key of ["title", "work_type", "genre", "description"]) {
+      if (clean(revision[key]) !== clean(fields[key])) return false;
+    }
+    if (String(revision.body_text || "").trim() !== String(fields.body_text || "").trim()) return false;
+    if (clean(revision.external_url) !== clean(fields.external_url)) return false;
+    for (const [key, value] of Object.entries(fields.details)) {
+      const remote = revision.details[key];
+      if (Array.isArray(value)) {
+        if (!Array.isArray(remote)) return false;
+        const normalizeList = (items) => items.map((item) =>
+          key === "palette_colors" ? clean(item).toUpperCase() : clean(item)
+        ).filter(Boolean);
+        let expected = normalizeList(value);
+        if (key === "extra_links") expected = [...new Set(expected)];
+        if (JSON.stringify(expected) !== JSON.stringify(normalizeList(remote))) return false;
+      } else if (typeof value === "number" || value === null) {
+        if (value !== (remote === undefined ? null : remote)) return false;
+      } else if (clean(value) !== clean(remote)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async function reconcileDraftSave(fields, expectedVersion, revisionId, error) {
+    const uncertain = ["network_error", "request_timeout", "invalid_response", "conflict"].includes(error.code) ||
+      Number(error.status) >= 500;
+    if (!uncertain || !state.current) return false;
+    try {
+      const payload = await api(
+        "/api/writers/submissions/" + encodeURIComponent(state.current.id)
+      );
+      const remote = payload && payload.submission;
+      if (!remote || remote.status !== "DRAFT" ||
+          Number(remote.version) <= expectedVersion ||
+          String(remote.revision && remote.revision.id) !== String(revisionId) ||
+          !draftMatchesSavedRequest(remote.revision, fields)) {
+        return false;
+      }
+      state.current = remote;
+      setReloadRequired(false);
+      setSaveState("Сохранение подтверждено после восстановления связи");
+      return true;
+    } catch (_verificationFailure) {
+      return false;
+    }
   }
 
   async function autosave({ immediate = false } = {}) {
@@ -1047,14 +1103,27 @@
           if (!state.current) {
             await createDraft(fields);
           } else {
-            const payload = await api(
-              `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
-              {
-                method: "PATCH",
-                json: { ...fields, expected_version: state.current.version },
+            const expectedVersion = Number(state.current.version);
+            const revisionId = state.current.revision && state.current.revision.id;
+            try {
+              const payload = await api(
+                `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
+                {
+                  method: "PATCH",
+                  json: { ...fields, expected_version: expectedVersion },
+                }
+              );
+              if (!payload || !payload.submission) {
+                const missing = new Error("Сервер не подтвердил сохранение черновика.");
+                missing.code = "invalid_response";
+                throw missing;
               }
-            );
-            state.current = payload.submission;
+              state.current = payload.submission;
+            } catch (error) {
+              if (!await reconcileDraftSave(fields, expectedVersion, revisionId, error)) {
+                throw error;
+              }
+            }
           }
           state.savedSequence = capturedSequence;
           if (state.editSequence > capturedSequence) {
