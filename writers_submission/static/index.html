@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Writers Submission</title>
-  <link rel="stylesheet" href="/writers/app.css?v=genres-warnings-sketch-v3">
+  <link rel="stylesheet" href="/writers/app.css?v=writers-access-recovery-v4">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/writers/app.js?v=genres-warnings-sketch-v3" defer></script>
+  <script src="/writers/app.js?v=writers-access-recovery-v4" defer></script>
 </head>
 <body>
   <main class="shell" aria-live="polite">
@@ -241,6 +241,8 @@
         </div>
 
         <div id="editorError" class="banner banner-error hidden" role="alert"></div>
+        <button id="copyDraftButton" class="button button-secondary hidden" type="button">Скопировать текст анкеты для сохранения</button>
+        <p id="draftBackupHint" class="muted hidden">Скопируются поля анкеты, но не вложенные файлы. Вставь текст в заметки, пока доступ не восстановлен.</p>
         <div id="reloadRequired" class="banner banner-warning hidden" role="alert">
           Черновик изменился в другой вкладке. Перезагрузи работу, чтобы не затереть новую версию.
           <button id="reloadButton" class="button button-ghost" type="button">Перезагрузить</button>
