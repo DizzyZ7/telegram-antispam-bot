@@ -2722,6 +2722,81 @@ class PostgresWritersSubmissionStorage:
                     )
                 return sub_id
 
+    async def list_author_moderation_delivery(
+        self,
+        *,
+        author_user_id: int,
+        submission_id: UUID | None = None,
+    ) -> list[dict[str, object]]:
+        """Return only the author's current submitted revision delivery state.
+
+        A single indexed query serves both the list and detail views. No
+        moderator chat IDs, message IDs or private Telegram errors leave the
+        storage boundary.
+        """
+        rows = await self._require_pool().fetch(
+            """
+            SELECT
+                s.id AS submission_id,
+                o.state AS outbox_state,
+                o.attempt_count,
+                o.created_at,
+                o.updated_at,
+                o.next_attempt_at
+            FROM writers_submissions AS s
+            LEFT JOIN writers_submission_outbox AS o
+              ON o.submission_id = s.id
+             AND o.revision_id = s.current_submitted_revision_id
+             AND o.event_type = 'MODERATION_CARD'
+            WHERE s.author_user_id = $1
+              AND s.current_submitted_revision_id IS NOT NULL
+              AND ($2::uuid IS NULL OR s.id = $2)
+            ORDER BY s.updated_at DESC
+            """,
+            int(author_user_id),
+            submission_id,
+        )
+        return [
+            {
+                "submission_id": str(row["submission_id"]),
+                "state": str(row["outbox_state"]) if row["outbox_state"] else None,
+                "attempt_count": int(row["attempt_count"] or 0),
+                "created_at": int(row["created_at"] or 0),
+                "updated_at": int(row["updated_at"] or 0),
+                "next_attempt_at": int(row["next_attempt_at"] or 0),
+            }
+            for row in rows
+        ]
+
+    async def get_moderation_delivery_health(
+        self, *, now: int, stale_seconds: int = 300,
+    ) -> dict[str, object]:
+        """Aggregated watchdog snapshot; safe to log without author content."""
+        rows = await self._require_pool().fetch(
+            """
+            SELECT o.state, COUNT(*) AS quantity,
+                   MIN(o.created_at) AS oldest_at
+            FROM writers_submission_outbox AS o
+            WHERE o.event_type = 'MODERATION_CARD'
+              AND o.state <> 'DELIVERED'
+              AND (
+                o.state = 'PERMANENT_FAILED'
+                OR o.created_at <= $1 - $2
+              )
+            GROUP BY o.state
+            """,
+            int(now), max(1, int(stale_seconds)),
+        )
+        return {
+            "problem_count": sum(int(row["quantity"]) for row in rows),
+            "by_state": {
+                str(row["state"]): int(row["quantity"]) for row in rows
+            },
+            "oldest_at": min(
+                (int(row["oldest_at"]) for row in rows), default=0,
+            ),
+        }
+
     async def claim_due_outbox(
         self,
         *,
