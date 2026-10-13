@@ -38,6 +38,7 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.pool.execute(
             """
             TRUNCATE
+                writers_community_members,
                 writers_submission_outbox,
                 writers_submission_reviews,
                 writers_submission_files,
@@ -79,6 +80,36 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
             """
         )
         self.assertEqual(version, "1")
+
+    async def test_observed_membership_keeps_latest_status_and_survives_restart(self):
+        chat_id = -1002619489118
+        await self.storage.record_community_member(
+            chat_id=chat_id, user_id=77, status="member",
+            is_member=True, source="chat_member_update", now=100,
+        )
+        # Delayed delivery must not overwrite fresher observations.
+        await self.storage.record_community_member(
+            chat_id=chat_id, user_id=77, status="left",
+            is_member=False, source="chat_member_update", now=90,
+        )
+        assert self.storage.pool is not None
+        current = await self.storage.pool.fetchrow(
+            "SELECT status,is_member,source,checked_at FROM writers_community_members "
+            "WHERE chat_id=$1 AND user_id=$2", chat_id, 77,
+        )
+        self.assertEqual(current["status"], "member")
+        self.assertTrue(current["is_member"])
+        self.assertEqual(current["checked_at"], 100)
+        await self.storage.record_community_member(
+            chat_id=chat_id, user_id=77, status="left",
+            is_member=False, source="live_lookup", now=110,
+        )
+        updated = await self.storage.pool.fetchrow(
+            "SELECT status,is_member FROM writers_community_members "
+            "WHERE chat_id=$1 AND user_id=$2", chat_id, 77,
+        )
+        self.assertEqual(updated["status"], "left")
+        self.assertFalse(updated["is_member"])
 
     async def test_ficbook_form_fields_survive_restart_and_submission(self):
         form = NormalizedSubmissionFields(
