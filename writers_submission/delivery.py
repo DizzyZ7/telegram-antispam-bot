@@ -487,6 +487,10 @@ class WritersDeliveryWorker:
             revision_id=item.revision_id,
         )
         moderation_chat_id = int(self.config.moderation_chat_id)
+        charge = None
+        read_charge = getattr(self.storage, "get_submission_work_charge", None)
+        if callable(read_charge):
+            charge = await read_charge(submission_id=item.submission_id)
         # A single moderation card is the anchor of ONE submission packet.
         # Every file and the palette mockup are direct replies to that card;
         # no unattributed attachments are sent into an owner's message stream.
@@ -506,6 +510,15 @@ class WritersDeliveryWorker:
                             saved_first_name=getattr(context, "author_first_name", None),
                         ),
                     )
+                    + (
+                        "\n\n💳 Учет работ: №" + str(charge["work_number"])
+                        + (" · Бесплатная работа (из первых двух)"
+                           if charge["amount_rub"] == 0 else
+                           " · 100 ₽ за отправку"
+                           + (" · оплачено ✅" if charge["paid"] else " · ожидает подтверждения"))
+                        if charge else ""
+                    )
+                    + "\n💎 Своя обложка оплачивается отдельно (если выбрана)."
                     + "\n\nОформленный пост, вложения и цветовой макет — ответами на эту карточку."
                 ),
                 parse_mode="HTML",
@@ -514,6 +527,7 @@ class WritersDeliveryWorker:
                     paid_cover=(
                         (getattr(context, "details", None) or {}).get("visual_mode") == "image"
                     ),
+                    paid_work=bool(charge and charge["amount_rub"] > 0),
                 ),
             )
             card_message_id = getattr(card, "message_id", None)
