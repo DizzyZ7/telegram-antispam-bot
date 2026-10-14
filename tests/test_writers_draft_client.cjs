@@ -30,6 +30,7 @@ function createHarness(apiImpl) {
     views: { editor: { classList: { contains: () => true } } },
     refreshCounters() {}, renderIkfCover() {}, renderAttachments() {},
     storeEmergencyBackup() {}, clearEmergencyBackupIfSynced() {},
+    promoteEmergencyBackupAfterCreate() {},
     clearPendingFiles() { state.pendingFiles = []; },
     fillForm() {}, show() {}, setReloadRequired(v) { state.reloadRequired = v; },
     setEditorError(m) { errors.push(m); }, setSaveState(v) { status.push(v); },
