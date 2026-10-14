@@ -254,15 +254,31 @@ class WritersSubmissionService:
         )
 
 
+    async def author_work_billing(self, author_user_id: int) -> dict[str, int]:
+        """Only the caller's authenticated Telegram ID is accepted by the web layer."""
+        return await self.storage.get_author_work_billing(
+            author_user_id=int(author_user_id),
+        )
+
+    async def confirm_work_payment(
+        self, *, reviewer_user_id: int, submission_id: UUID,
+        revision_id: UUID, now: int,
+    ) -> bool:
+        # Any allowlisted moderator may attest an externally received
+        # payment for a submission they personally claimed for review.
+        self._require_reviewer(reviewer_user_id)
+        return await self.storage.confirm_work_payment(
+            submission_id=submission_id, revision_id=revision_id,
+            reviewer_user_id=int(reviewer_user_id), now=int(now),
+        )
+
     async def confirm_cover_payment(
         self, *, reviewer_user_id: int, submission_id: UUID,
         revision_id: UUID, now: int,
     ) -> bool:
+        # Cover payment is independent of the work fee, but has the same
+        # allowlisted moderator + claimed-submission authorization.
         self._require_reviewer(reviewer_user_id)
-        # Only the configured owner can attest external payment. Other
-        # moderators cannot grant paid cover access, including group mode.
-        if int(reviewer_user_id) != int(self.config.owner_user_id):
-            raise AuthorizationError("Only IKF owner may confirm custom-cover payment")
         return await self.storage.confirm_cover_payment(
             reviewer_user_id=int(reviewer_user_id),
             submission_id=submission_id,

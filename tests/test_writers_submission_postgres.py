@@ -63,6 +63,7 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
             "writers_submission_files",
             "writers_submission_reviews",
             "writers_submission_events",
+            "writers_submission_work_charges",
             "writers_submission_outbox",
             "writers_submission_idempotency",
         ):
@@ -81,6 +82,180 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
             """
         )
         self.assertEqual(version, "1")
+
+    async def test_two_free_works_then_100_rub_with_independent_owner_payment(self):
+        self.assertEqual(
+            (await self.storage.get_author_work_billing(author_user_id=77))["free_works_remaining"], 2
+        )
+        saved = []
+        for index in range(1, 4):
+            draft = await self.storage.create_submission(
+                author_user_id=77, writers_chat_id=-1002619489118,
+                fields=fields(f"Работа номер {index}"), now=100 + index,
+                idempotency_key=f"work-charge-create-{index}",
+            )
+            if index == 1:
+                self.assertEqual(
+                    (await self.storage.get_author_work_billing(author_user_id=77))["submitted_works"], 0
+                )
+            sent = await self.storage.seal_and_submit(
+                submission_id=draft.id, author_user_id=77,
+                expected_version=draft.version, now=200 + index,
+                idempotency_key=f"work-charge-submit-{index}",
+            )
+            duplicate = await self.storage.seal_and_submit(
+                submission_id=draft.id, author_user_id=77,
+                expected_version=draft.version, now=220 + index,
+                idempotency_key=f"work-charge-submit-{index}",
+            )
+            self.assertEqual(duplicate.id, sent.id)
+            charge = await self.storage.get_submission_work_charge(submission_id=sent.id)
+            self.assertEqual(charge["work_number"], index)
+            self.assertEqual(charge["amount_rub"], 0 if index <= 2 else 100)
+            saved.append(sent)
+        billing = await self.storage.get_author_work_billing(author_user_id=77)
+        self.assertEqual(billing["submitted_works"], 3)
+        self.assertEqual(billing["free_works_used"], 2)
+        self.assertEqual(billing["next_work_price_rub"], 100)
+        self.assertEqual(billing["unpaid_works"], 1)
+        self.assertEqual(billing["unpaid_rub"], 100)
+        self.assertEqual(
+            (await self.storage.get_author_work_billing(author_user_id=88))["submitted_works"], 0
+        )
+        paid = saved[2]
+        await self.storage.claim_submission(
+            submission_id=paid.id, revision_id=paid.revision.id,
+            reviewer_user_id=9002, now=250,
+        )
+        with self.assertRaisesRegex(ValidationError, "100 RUB work fee"):
+            await self.storage.decide_submission(
+                submission_id=paid.id, revision_id=paid.revision.id,
+                reviewer_user_id=9002, action=ReviewAction.APPROVE,
+                comment=None, now=260,
+            )
+        # Another allowlisted moderator cannot confirm an unclaimed work.
+        with self.assertRaises(ConflictError):
+            await self.storage.confirm_work_payment(
+                submission_id=paid.id, revision_id=paid.revision.id,
+                reviewer_user_id=9001, now=269,
+            )
+        self.assertTrue(await self.storage.confirm_work_payment(
+            submission_id=paid.id, revision_id=paid.revision.id,
+            reviewer_user_id=9002, now=270,
+        ))
+        assert self.storage.pool is not None
+        confirmer = await self.storage.pool.fetchval(
+            "SELECT confirmed_by_user_id FROM writers_submission_work_charges "
+            "WHERE submission_id=$1", paid.id,
+        )
+        self.assertEqual(confirmer, 9002)
+        self.assertFalse(await self.storage.confirm_work_payment(
+            submission_id=paid.id, revision_id=paid.revision.id,
+            reviewer_user_id=9002, now=271,
+        ))
+        decision = await self.storage.decide_submission(
+            submission_id=paid.id, revision_id=paid.revision.id,
+            reviewer_user_id=9002, action=ReviewAction.APPROVE,
+            comment=None, now=280,
+        )
+        self.assertEqual(decision.submission.status, SubmissionStatus.APPROVED)
+        self.assertEqual(
+            (await self.storage.get_author_work_billing(author_user_id=77))["unpaid_rub"], 0
+        )
+
+    async def test_concurrent_first_submissions_get_distinct_numbers(self):
+        drafts = []
+        for n in (1, 2):
+            drafts.append(await self.storage.create_submission(
+                author_user_id=42, writers_chat_id=-1002619489118,
+                fields=fields(f"Одновременная {n}"), now=100,
+                idempotency_key=f"concurrent-ledger-{n}",
+            ))
+        await asyncio.gather(*(
+            self.storage.seal_and_submit(
+                submission_id=draft.id, author_user_id=42,
+                expected_version=draft.version,
+                idempotency_key=f"concurrent-ledger-submit-{i}", now=150,
+            )
+            for i, draft in enumerate(drafts)
+        ))
+        values = [await self.storage.get_submission_work_charge(submission_id=d.id) for d in drafts]
+        self.assertEqual(sorted(v["work_number"] for v in values), [1, 2])
+        self.assertTrue(all(v["amount_rub"] == 0 for v in values))
+        numbers = {d.id: v["work_number"] for d, v in zip(drafts, values)}
+        # Equal-second events are common. Re-initializing must not use
+        # UUID order to reshuffle already assigned payment slots.
+        await self.storage.close()
+        reopened = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
+        await reopened.initialize()
+        self.storage = reopened
+        for draft in drafts:
+            after = await reopened.get_submission_work_charge(submission_id=draft.id)
+            self.assertEqual(after["work_number"], numbers[draft.id])
+
+    async def test_resubmitted_revision_keeps_original_free_slot(self):
+        draft = await self.storage.create_submission(
+            author_user_id=99, writers_chat_id=-1002619489118,
+            fields=fields("Исправляемая работа"), now=100,
+            idempotency_key="revision-fee-create",
+        )
+        sent = await self.storage.seal_and_submit(
+            submission_id=draft.id, author_user_id=99,
+            expected_version=draft.version, now=110,
+            idempotency_key="revision-fee-submit-1",
+        )
+        await self.storage.claim_submission(
+            submission_id=sent.id, revision_id=sent.revision.id,
+            reviewer_user_id=9001, now=115,
+        )
+        await self.storage.decide_submission(
+            submission_id=sent.id, revision_id=sent.revision.id,
+            reviewer_user_id=9001, action=ReviewAction.REQUEST_CHANGES,
+            comment="Правки", now=120,
+        )
+        reopened = await self.storage.create_revision(
+            submission_id=sent.id, author_user_id=99,
+            idempotency_key="revision-fee-edit", now=125,
+        )
+        resent = await self.storage.seal_and_submit(
+            submission_id=sent.id, author_user_id=99,
+            expected_version=reopened.version, now=130,
+            idempotency_key="revision-fee-submit-2",
+        )
+        self.assertNotEqual(sent.revision.id, resent.revision.id)
+        billing = await self.storage.get_author_work_billing(author_user_id=99)
+        self.assertEqual(billing["submitted_works"], 1)
+        self.assertEqual(
+            (await self.storage.get_submission_work_charge(submission_id=sent.id))["work_number"], 1,
+        )
+
+    async def test_restart_backfills_preexisting_submit_events_without_double_counting(self):
+        draft = await self.storage.create_submission(
+            author_user_id=48, writers_chat_id=-1002619489118,
+            fields=fields("Историческая работа"), now=100,
+            idempotency_key="old-ledger-create",
+        )
+        sent = await self.storage.seal_and_submit(
+            submission_id=draft.id, author_user_id=48,
+            expected_version=draft.version, now=200,
+            idempotency_key="old-ledger-submit",
+        )
+        assert self.storage.pool is not None
+        await self.storage.pool.execute(
+            "DELETE FROM writers_submission_work_charges WHERE submission_id=$1", sent.id
+        )
+        await self.storage.close()
+        reopened = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
+        await reopened.initialize()
+        self.storage = reopened
+        charge = await reopened.get_submission_work_charge(submission_id=sent.id)
+        self.assertEqual(charge["work_number"], 1)
+        self.assertEqual(charge["amount_rub"], 0)
+        await reopened.close()
+        await reopened.initialize()
+        self.assertEqual(
+            (await reopened.get_author_work_billing(author_user_id=48))["submitted_works"], 1
+        )
 
     async def test_signed_author_contact_persists_and_appears_in_moderation_context(self):
         draft = await self.storage.create_submission(

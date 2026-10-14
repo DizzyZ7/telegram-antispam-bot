@@ -14,6 +14,7 @@ from writers_submission.handlers import (
     PendingModerationCommentFilter,
     WritersSubmissionStartFilter,
     register_writers_submission_handlers,
+    build_moderation_keyboard,
 )
 
 
@@ -160,6 +161,11 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
                  "attempt_count": 2, "last_error_code": "TelegramForbiddenError"}
             ]),
             retry_failed_moderation_delivery=AsyncMock(return_value=uuid4()),
+            get_author_work_billing=AsyncMock(return_value={
+                "submitted_works": 3, "free_works_used": 2,
+                "next_work_number": 4, "next_work_price_rub": 100,
+                "unpaid_works": 1, "unpaid_rub": 100,
+            }),
         )
         self.service = make_service()
         self.service.storage = self.storage
@@ -176,6 +182,7 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
         self.moderation_status = handlers["writers_moderation_delivery_status"]
         self.moderation_retry = handlers["writers_moderation_delivery_retry"]
         self.publication_format = handlers["writers_publication_template_version"]
+        self.author_ledger = handlers["writers_author_work_count"]
 
     def private_message(self, text, *, actor_id=None, private=True):
         actor_id = self.owner_id if actor_id is None else actor_id
@@ -188,6 +195,22 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
             text=text,
             answer=AsyncMock(),
         )
+
+    async def test_owner_can_inspect_by_telegram_id_but_other_users_cannot(self):
+        owner = self.private_message("/writers_author 1234567")
+        await self.author_ledger(owner)
+        self.storage.get_author_work_billing.assert_awaited_once_with(
+            author_user_id=1234567,
+        )
+        text = owner.answer.await_args.args[0]
+        self.assertIn("Отправлено работ: 3", text)
+        self.assertIn("Ожидают оплаты: 1 работ · 100 ₽", text)
+        for attempt in (
+            self.private_message("/writers_author 1234567", actor_id=777),
+            self.private_message("/writers_author 1234567", private=False),
+        ):
+            await self.author_ledger(attempt)
+            attempt.answer.assert_not_awaited()
 
     async def test_owner_can_verify_live_publication_style_and_font_support(self):
         owner = self.private_message("/writers_format")
@@ -449,6 +472,40 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(owner_service.decide.await_args.kwargs["comment"],
                          "Поправить описание")
 
+    async def test_fee_and_cover_confirmation_buttons_are_independent(self):
+        keyboard = build_moderation_keyboard(
+            "opaque-token", paid_work=True, paid_cover=True,
+        )
+        codes = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+        self.assertIn("ws:p:opaque-token", codes)
+        self.assertIn("ws:w:opaque-token", codes)
+        self.assertNotEqual(codes.index("ws:p:opaque-token"), codes.index("ws:w:opaque-token"))
+
+    async def test_moderator_work_payment_callback_targets_sealed_work(self):
+        self.service.confirm_work_payment = AsyncMock(return_value=True)
+        self.service.storage = SimpleNamespace(
+            get_submission_work_charge=AsyncMock(return_value={
+                "work_number": 3, "amount_rub": 100, "paid": True,
+            }),
+            get_moderation_delivery_context=AsyncMock(return_value=SimpleNamespace(
+                details={"visual_mode": "image"},
+            )),
+        )
+        callback = moderation_callback("ws:w:opaque-token")
+        await self.callback_handler(callback)
+        self.service.confirm_work_payment.assert_awaited_once_with(
+            reviewer_user_id=MODERATOR_ID,
+            submission_id=self.service.target.submission_id,
+            revision_id=self.service.target.revision_id,
+            now=100,
+        )
+        self.assertIn("100 ₽", callback.answer.await_args.args[0])
+        callback.message.edit_reply_markup.assert_awaited_once()
+        keys = callback.message.edit_reply_markup.await_args.kwargs["reply_markup"]
+        codes = [b.callback_data for row in keys.inline_keyboard for b in row]
+        self.assertIn("ws:p:opaque-token", codes)
+        self.assertIn("ws:w:opaque-token", codes)
+
     async def test_claim_uses_callback_actor_not_payload_identity(self):
         callback = moderation_callback("ws:c:opaque-token")
 
@@ -621,7 +678,7 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         message_names = [
             item.callback.__name__
-            for item in app.dp.message.handlers[:7]
+            for item in app.dp.message.handlers[:8]
         ]
         callback_names = [
             item.callback.__name__
@@ -632,7 +689,7 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
             {"writers_submission_start", "writers_moderation_comment",
              "writers_delivery_status", "writers_retry_preview",
              "writers_moderation_delivery_status", "writers_moderation_delivery_retry",
-             "writers_publication_template_version"},
+             "writers_publication_template_version", "writers_author_work_count"},
         )
         self.assertEqual(
             callback_names,

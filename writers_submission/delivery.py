@@ -110,7 +110,10 @@ def _author_notification_text(context: Any) -> str:
     return "\n".join(lines)
 
 
-def _moderation_text(context: Any, *, author_contact: str = "") -> str:
+def _moderation_text(
+    context: Any, *, author_contact: str = "",
+    work_charge: dict[str, object] | None = None,
+) -> str:
     details = getattr(context, "details", None) or {}
     is_ficbook_form = details.get("form_version") in (2, 3)
     lines = [
@@ -123,6 +126,24 @@ def _moderation_text(context: Any, *, author_contact: str = "") -> str:
     ]
     if author_contact:
         lines.insert(3, author_contact)
+    if work_charge is not None:
+        number = int(work_charge["work_number"])
+        amount = int(work_charge["amount_rub"])
+        if amount == 0:
+            fee_label = "Бесплатно (одна из первых двух работ)"
+        else:
+            fee_label = (
+                "100 ₽ · оплата подтверждена ✅"
+                if bool(work_charge["paid"])
+                else "100 ₽ · ожидает подтверждения оплаты"
+            )
+        # Place the author's lifetime ordinal alongside their Telegram ID,
+        # above the title: moderators must not search the bottom of a card.
+        insert_at = 4 if author_contact else 3
+        lines[insert_at:insert_at] = [
+            f"📚 <b>Заявка автора №{number}</b> (за все время)",
+            f"💳 Публикация: {fee_label}",
+        ]
     if is_ficbook_form:
         for label, key in (
             ("Фандом", "fandom"),
@@ -168,7 +189,7 @@ def _moderation_text(context: Any, *, author_contact: str = "") -> str:
             colors = details.get("palette_colors") or []
             lines.append(f"Палитра RGB: {_escaped_preview(', '.join(colors), max_units=120)}")
         elif details.get("visual_mode") == "image":
-            lines.append("Оформление: своя обложка — платная услуга, требуется подтверждение владельцем ИКФ")
+            lines.append("Оформление: своя обложка — платная услуга, требуется подтверждение администратором")
         links = details.get("extra_links") or []
         if links:
             lines.append(f"Доп. ссылки: {_escaped_preview(' | '.join(links), max_units=450)}")
@@ -487,6 +508,10 @@ class WritersDeliveryWorker:
             revision_id=item.revision_id,
         )
         moderation_chat_id = int(self.config.moderation_chat_id)
+        charge = None
+        read_charge = getattr(self.storage, "get_submission_work_charge", None)
+        if callable(read_charge):
+            charge = await read_charge(submission_id=item.submission_id)
         # A single moderation card is the anchor of ONE submission packet.
         # Every file and the palette mockup are direct replies to that card;
         # no unattributed attachments are sent into an owner's message stream.
@@ -505,7 +530,9 @@ class WritersDeliveryWorker:
                             saved_username=getattr(context, "author_username", None),
                             saved_first_name=getattr(context, "author_first_name", None),
                         ),
+                        work_charge=charge,
                     )
+                    + "\n💎 Своя обложка оплачивается отдельно (если выбрана)."
                     + "\n\nОформленный пост, вложения и цветовой макет — ответами на эту карточку."
                 ),
                 parse_mode="HTML",
@@ -514,6 +541,7 @@ class WritersDeliveryWorker:
                     paid_cover=(
                         (getattr(context, "details", None) or {}).get("visual_mode") == "image"
                     ),
+                    paid_work=bool(charge and charge["amount_rub"] > 0),
                 ),
             )
             card_message_id = getattr(card, "message_id", None)

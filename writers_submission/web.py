@@ -503,6 +503,8 @@ def create_writers_web_app(
                 deliveries = await status_method(user_id, now=int(now_fn()))
             except Exception:
                 LOGGER.exception("WRITERS_AUTHOR_DELIVERY_STATUS_LIST_FAILED")
+        billing_method = getattr(service, "author_work_billing", None)
+        billing = await billing_method(user_id) if callable(billing_method) else None
         return _json_response(
             {
                 "items": [
@@ -512,6 +514,7 @@ def create_writers_web_app(
                     }
                     for item in items
                 ],
+                "billing": billing,
             },
         )
 

@@ -4,6 +4,7 @@
   const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
   const state = {
     items: [],
+    billing: null,
     filter: "all",
     current: null,
     attachments: [],
@@ -1180,6 +1181,21 @@
       throw error;
     }
     state.items = payload.items;
+    state.billing = payload.billing || state.billing;
+    const billing = state.billing;
+    if (billing && Number.isInteger(billing.submitted_works)) {
+      const remaining = Number(billing.free_works_remaining) || 0;
+      const nextPrice = Number(billing.next_work_price_rub) || 0;
+      const due = Number(billing.unpaid_rub) || 0;
+      $("writersBillingNotice").textContent =
+        "Telegram ID: " + String(billing.telegram_user_id) +
+        " · Всего отправленных работ: " + String(billing.submitted_works) +
+        " · Бесплатных осталось: " + String(remaining) +
+        " · Следующая работа №" + String(billing.next_work_number) +
+        ": " + (nextPrice ? "100 ₽ (оплата согласуется с администратором)" : "бесплатно") +
+        (due ? " · Ожидают подтверждения оплаты: " + String(due) + " ₽" : "") +
+        ". Своя обложка оплачивается отдельно; форма не списывает деньги.";
+    }
     renderWorkspace();
   }
 
