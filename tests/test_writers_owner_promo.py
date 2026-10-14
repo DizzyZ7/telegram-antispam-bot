@@ -35,7 +35,7 @@ class OwnerPreviewFormattingTests(unittest.TestCase):
 
     def test_original_work_matches_ikf_post_structure(self):
         post = render_owner_promo(self.context())
-        self.assertIn("<b>Однажды в Лост-Крике</b>", post)
+        self.assertIn("<b>«Однажды в Лост-Крике»</b>", post)
         self.assertIn("#Ориджиналы | #Макси | #Джен | #R | #ВПроцессе", post)
         self.assertIn("Основные персонажи", post)
         self.assertIn("Примечания:", post)
