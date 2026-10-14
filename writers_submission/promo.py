@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 from .models import ModerationDeliveryContext, ValidationError
 from .uploads import normalize_extra_link
 
+PUBLICATION_TEMPLATE_VERSION = "ikf-format-guillemets-spoiler-ornament-v3"
+
 
 def quote_work_title(value: object) -> str:
     """One pair of Russian guillemets for the actual title.
