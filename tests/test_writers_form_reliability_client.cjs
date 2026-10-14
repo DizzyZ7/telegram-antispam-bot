@@ -110,6 +110,7 @@ function recoveryContext(api) {
     state, api,
     setReloadRequired: (value) => events.push(["reload", value]),
     clearPendingFiles: () => events.push("files-cleared"),
+    clearEmergencyBackupIfSynced: () => events.push("emergency-cleared"),
     loadHistory: async () => events.push("history"),
     loadWorkspace: async () => { throw new Error("Workspace unavailable"); },
     setBanner: (message, type) => events.push(["banner", message, type]),
@@ -208,6 +209,7 @@ test("submit retry reuses the same key and never declares an unconfirmed result 
       return { submission: { id: "submission-1", version: 1, status: "DRAFT" } };
     },
     clearPendingFiles: () => {},
+    clearEmergencyBackupIfSynced: () => {},
     setReloadRequired: () => {},
     loadHistory: async () => {},
     loadWorkspace: async () => {},
