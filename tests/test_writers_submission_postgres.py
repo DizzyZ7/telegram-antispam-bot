@@ -125,25 +125,37 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         paid = saved[2]
         await self.storage.claim_submission(
             submission_id=paid.id, revision_id=paid.revision.id,
-            reviewer_user_id=9001, now=250,
+            reviewer_user_id=9002, now=250,
         )
         with self.assertRaisesRegex(ValidationError, "100 RUB work fee"):
             await self.storage.decide_submission(
                 submission_id=paid.id, revision_id=paid.revision.id,
-                reviewer_user_id=9001, action=ReviewAction.APPROVE,
+                reviewer_user_id=9002, action=ReviewAction.APPROVE,
                 comment=None, now=260,
+            )
+        # Another allowlisted moderator cannot confirm an unclaimed work.
+        with self.assertRaises(ConflictError):
+            await self.storage.confirm_work_payment(
+                submission_id=paid.id, revision_id=paid.revision.id,
+                reviewer_user_id=9001, now=269,
             )
         self.assertTrue(await self.storage.confirm_work_payment(
             submission_id=paid.id, revision_id=paid.revision.id,
-            reviewer_user_id=9001, now=270,
+            reviewer_user_id=9002, now=270,
         ))
+        assert self.storage.pool is not None
+        confirmer = await self.storage.pool.fetchval(
+            "SELECT confirmed_by_user_id FROM writers_submission_work_charges "
+            "WHERE submission_id=$1", paid.id,
+        )
+        self.assertEqual(confirmer, 9002)
         self.assertFalse(await self.storage.confirm_work_payment(
             submission_id=paid.id, revision_id=paid.revision.id,
-            reviewer_user_id=9001, now=271,
+            reviewer_user_id=9002, now=271,
         ))
         decision = await self.storage.decide_submission(
             submission_id=paid.id, revision_id=paid.revision.id,
-            reviewer_user_id=9001, action=ReviewAction.APPROVE,
+            reviewer_user_id=9002, action=ReviewAction.APPROVE,
             comment=None, now=280,
         )
         self.assertEqual(decision.submission.status, SubmissionStatus.APPROVED)
