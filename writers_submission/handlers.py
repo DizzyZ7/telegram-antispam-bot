@@ -666,7 +666,7 @@ def register_writers_submission_handlers(
             return
         except ValidationError as exc:
             await callback.answer(
-                "Для платной обложки сначала подтверди оплату у владельца ИКФ."
+                "Для платной обложки сначала подтвердите оплату у администратора, взявшего заявку на проверку."
                 if "Paid custom cover" in str(exc) else str(exc)[:180],
                 show_alert=True,
             )
