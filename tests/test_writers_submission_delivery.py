@@ -218,6 +218,57 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         ids = self.storage.mark_outbox_delivered.await_args.kwargs["delivery_message_ids"]
         self.assertEqual(ids, (10, 10, 12, 11))
 
+    async def test_incoming_v3_application_delivers_copy_ready_decorated_post_to_moderator(self):
+        item = moderation_item()
+        self.storage.claim_due_outbox.return_value = [item]
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.title = '"Название"'
+        context.work_type = "ФФ"
+        context.genre = "Фемслэш"
+        context.description = "Описание заявки."
+        context.external_url = "https://ficbook.net/readfic/12345"
+        context.details = {
+            "form_version": 3,
+            "fandom": "Фандом", "size_category": "макси",
+            "rating": "NC-17", "completion": "в процессе",
+            "main_genres": ["Ангст", "Hurt/comfort", "Сюрреализм"],
+            "warnings_present": "yes",
+            "warnings": ["Буллинг", " <Опасность> & тревога "],
+            "characters": "Персонаж А/Персонаж Б",
+            "extra_links": ["https://t.me/ikf_channel"],
+        }
+        self.bot.send_message.side_effect = [
+            SimpleNamespace(message_id=10),
+            SimpleNamespace(message_id=20),
+        ]
+
+        await self.worker.run_once(now=151)
+
+        self.assertEqual(self.bot.send_message.await_count, 2)
+        card, preview = (call.kwargs for call in self.bot.send_message.await_args_list)
+        self.assertEqual(card["chat_id"], -100111)
+        self.assertTrue(card["reply_markup"].inline_keyboard)
+        self.assertIn("Автор: <code>77</code>", card["text"])
+        self.assertEqual(preview["chat_id"], -100111)
+        self.assertEqual(preview["reply_parameters"].message_id, 10)
+        self.assertEqual(preview["parse_mode"], "HTML")
+        self.assertTrue(preview["disable_web_page_preview"])
+        self.assertTrue(preview["text"].startswith("« <b>Название</b> »\\n\\n"))
+        self.assertIn("• Ангст • Hurt/comfort • Сюрреализм •", preview["text"])
+        self.assertIn(
+            "<tg-spoiler>× Буллинг × &lt;Опасность&gt; &amp; тревога ×</tg-spoiler>",
+            preview["text"],
+        )
+        self.assertIn("#Фандом | #Макси | #Фемслэш | #NC17 | #ВПроцессе", preview["text"])
+        self.assertIn("8️⃣ <a href=", preview["text"])
+        self.assertTrue(preview["text"].endswith(
+            "• • • • • • • • ✦ • • • • • • • •"
+        ))
+        self.storage.mark_outbox_delivered.assert_awaited_once_with(
+            outbox_id=item.id, worker_id="worker-test", now=151,
+            delivery_chat_id=-100111, delivery_message_ids=(10, 20, 11),
+        )
+
     async def test_paid_cover_uuid_labels_correct_attachment_not_first_photo(self):
         item = moderation_item()
         self.storage.claim_due_outbox.return_value = [item]
@@ -298,6 +349,9 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("…", sent)
         self.assertNotIn("<script>", sent)
         self.assertEqual(context.body_text, original_body)
+        preview = self.bot.send_message.await_args_list[1].kwargs["text"]
+        self.assertLessEqual(len(preview.encode("utf-16-le")) // 2, 3900)
+        self.assertTrue(preview.endswith("• • • • • • • • ✦ • • • • • • • •"))
         self.storage.mark_outbox_delivered.assert_awaited_once()
         self.storage.mark_outbox_permanent_failure.assert_not_awaited()
 
