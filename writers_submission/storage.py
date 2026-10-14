@@ -428,6 +428,65 @@ class PostgresWritersSubmissionStorage:
             )
             """
         )
+        # Persistent per-author work ledger. One distinct submitted work is
+        # counted once, regardless of later revisions, rejections or retries.
+        # Payments are externally received and confirmed only by the owner.
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS writers_submission_work_charges (
+                submission_id UUID PRIMARY KEY
+                    REFERENCES writers_submissions(id) ON DELETE CASCADE,
+                author_user_id BIGINT NOT NULL,
+                work_number INTEGER NOT NULL CHECK (work_number > 0),
+                amount_rub INTEGER NOT NULL CHECK (amount_rub IN (0, 100)),
+                confirmed_by_user_id BIGINT,
+                confirmed_at BIGINT,
+                created_at BIGINT NOT NULL,
+                CONSTRAINT writers_work_charge_sequence_unique
+                    UNIQUE(author_user_id, work_number),
+                CONSTRAINT writers_work_charge_confirmation_both_check
+                    CHECK ((confirmed_at IS NULL) = (confirmed_by_user_id IS NULL))
+            )
+            """
+        )
+        await connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_writers_work_charges_author
+            ON writers_submission_work_charges(author_user_id, work_number)
+            """
+        )
+        # Backfill real historical SUBMITTED events once, without treating
+        # unsubmitted drafts as free slots or charging for editing/resubmitting.
+        await connection.execute(
+            """
+            WITH first_submitted AS (
+                SELECT
+                    s.id AS submission_id,
+                    s.author_user_id,
+                    MIN(e.created_at) AS first_at
+                FROM writers_submission_events e
+                JOIN writers_submissions s ON s.id = e.submission_id
+                WHERE e.event_type = 'SUBMITTED'
+                GROUP BY s.id, s.author_user_id
+            ), enumerated AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY author_user_id
+                        ORDER BY first_at, submission_id
+                    ) AS work_number
+                FROM first_submitted
+            )
+            INSERT INTO writers_submission_work_charges (
+                submission_id, author_user_id, work_number,
+                amount_rub, created_at
+            )
+            SELECT submission_id, author_user_id, work_number::integer,
+                   CASE WHEN work_number <= 2 THEN 0 ELSE 100 END,
+                   first_at
+            FROM enumerated
+            ON CONFLICT (submission_id) DO NOTHING
+            """
+        )
         await connection.execute(
             """
             CREATE TABLE IF NOT EXISTS writers_submission_reviews (
@@ -1820,6 +1879,23 @@ class PostgresWritersSubmissionStorage:
                         "Submission requires an HTTPS link, body text or a ready file"
                     )
 
+                # Serialize only distinct first submissions for this Telegram
+                # account across multiple Bothost worker instances.
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock($1::bigint)",
+                    author_user_id,
+                )
+                existing_charge = await connection.fetchval(
+                    "SELECT 1 FROM writers_submission_work_charges WHERE submission_id=$1",
+                    submission_id,
+                )
+                work_number = None
+                if not existing_charge:
+                    work_number = int(await connection.fetchval(
+                        "SELECT COUNT(*) FROM writers_submission_work_charges WHERE author_user_id=$1",
+                        author_user_id,
+                    )) + 1
+
                 sealed = await connection.execute(
                     """
                     UPDATE writers_submission_revisions
@@ -1860,6 +1936,19 @@ class PostgresWritersSubmissionStorage:
                 )
                 if updated != "UPDATE 1":
                     raise ConflictError("Submission changed during submit")
+
+                if work_number is not None:
+                    await connection.execute(
+                        """
+                        INSERT INTO writers_submission_work_charges(
+                            submission_id, author_user_id, work_number,
+                            amount_rub, created_at
+                        )
+                        VALUES($1, $2, $3, $4, $5)
+                        """,
+                        submission_id, author_user_id, work_number,
+                        0 if work_number <= 2 else 100, now,
+                    )
 
                 await connection.execute(
                     """
@@ -2238,6 +2327,112 @@ class PostgresWritersSubmissionStorage:
                 )
                 return True
 
+    async def get_author_work_billing(self, *, author_user_id: int) -> dict[str, int]:
+        """Account-scoped total from durable first submissions, never drafts."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            """
+            SELECT COUNT(*)::integer AS submitted_works,
+                   COUNT(*) FILTER (WHERE amount_rub = 0)::integer AS free_works,
+                   COUNT(*) FILTER (
+                       WHERE amount_rub > 0 AND confirmed_at IS NULL
+                   )::integer AS unpaid_works,
+                   COALESCE(SUM(amount_rub) FILTER (
+                       WHERE confirmed_at IS NULL
+                   ), 0)::integer AS unpaid_rub
+            FROM writers_submission_work_charges
+            WHERE author_user_id = $1
+            """,
+            int(author_user_id),
+        )
+        total = int(row["submitted_works"] or 0)
+        return {
+            "telegram_user_id": int(author_user_id),
+            "submitted_works": total,
+            "free_works_used": int(row["free_works"] or 0),
+            "free_works_remaining": max(0, 2 - total),
+            "next_work_number": total + 1,
+            "next_work_price_rub": 0 if total < 2 else 100,
+            "unpaid_works": int(row["unpaid_works"] or 0),
+            "unpaid_rub": int(row["unpaid_rub"] or 0),
+        }
+
+    async def get_submission_work_charge(
+        self, *, submission_id: UUID,
+    ) -> dict[str, object] | None:
+        row = await self._require_pool().fetchrow(
+            """
+            SELECT submission_id, author_user_id, work_number, amount_rub,
+                   confirmed_by_user_id, confirmed_at
+            FROM writers_submission_work_charges
+            WHERE submission_id = $1
+            """,
+            submission_id,
+        )
+        if row is None:
+            return None
+        return {
+            "submission_id": str(row["submission_id"]),
+            "author_user_id": int(row["author_user_id"]),
+            "work_number": int(row["work_number"]),
+            "amount_rub": int(row["amount_rub"]),
+            "paid": row["confirmed_at"] is not None or int(row["amount_rub"]) == 0,
+        }
+
+    async def confirm_work_payment(
+        self, *, submission_id: UUID, revision_id: UUID,
+        reviewer_user_id: int, now: int,
+    ) -> bool:
+        """Owner-only confirmation of 100 RUB for one distinct work."""
+        pool = self._require_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                submission = await connection.fetchrow(
+                    """
+                    SELECT status, current_submitted_revision_id, claimed_by_user_id
+                    FROM writers_submissions WHERE id=$1 FOR UPDATE
+                    """,
+                    submission_id,
+                )
+                if submission is None or _uuid(submission["current_submitted_revision_id"]) != revision_id:
+                    raise NotFoundError("Submission revision was not found")
+                if str(submission["status"]) != SubmissionStatus.IN_REVIEW.value:
+                    raise ConflictError("Only in-review works can confirm work payment")
+                if int(submission["claimed_by_user_id"] or 0) != int(reviewer_user_id):
+                    raise ConflictError("Claim this submission before confirming payment")
+                charge = await connection.fetchrow(
+                    """
+                    SELECT amount_rub, confirmed_at
+                    FROM writers_submission_work_charges
+                    WHERE submission_id = $1 FOR UPDATE
+                    """,
+                    submission_id,
+                )
+                if charge is None or int(charge["amount_rub"]) != 100:
+                    raise ValidationError("No 100 RUB work fee is due")
+                if charge["confirmed_at"] is not None:
+                    return False
+                await connection.execute(
+                    """
+                    UPDATE writers_submission_work_charges
+                    SET confirmed_at=$2, confirmed_by_user_id=$3
+                    WHERE submission_id=$1 AND confirmed_at IS NULL
+                    """,
+                    submission_id, int(now), int(reviewer_user_id),
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO writers_submission_events(
+                        submission_id, revision_id, actor_user_id,
+                        event_type, metadata_json, created_at
+                    )
+                    VALUES ($1, $2, $3, 'WORK_PAYMENT_CONFIRMED',
+                            '{"amount_rub":100}', $4)
+                    """,
+                    submission_id, revision_id, int(reviewer_user_id), int(now),
+                )
+                return True
+
     async def decide_submission(
         self,
         *,
@@ -2321,6 +2516,19 @@ class PostgresWritersSubmissionStorage:
                     raise ConflictError("Only the claimant can decide this submission")
 
                 if action is ReviewAction.APPROVE:
+                    charge = await connection.fetchrow(
+                        """
+                        SELECT amount_rub, confirmed_at
+                        FROM writers_submission_work_charges
+                        WHERE submission_id=$1
+                        """,
+                        submission_id,
+                    )
+                    if (charge is not None and int(charge["amount_rub"]) > 0
+                            and charge["confirmed_at"] is None):
+                        raise ValidationError(
+                            "The 100 RUB work fee must be confirmed by the owner before approval"
+                        )
                     revision_details = await connection.fetchval(
                         """
                         SELECT details_json FROM writers_submission_revisions
