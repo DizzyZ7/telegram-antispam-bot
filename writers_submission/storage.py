@@ -413,7 +413,7 @@ class PostgresWritersSubmissionStorage:
             ON writers_submission_moderation_tokens(submission_id, revision_id)
             """
         )
-        # Manual confirmation by ICФ owner only. This records an externally
+        # Manual confirmation by an allowlisted, assigned moderator. This records an externally
         # received payment, it is NOT a checkout, invoice, or payment processor.
         await connection.execute(
             """
@@ -2296,7 +2296,7 @@ class PostgresWritersSubmissionStorage:
         self, *, submission_id: UUID, revision_id: UUID,
         reviewer_user_id: int, now: int,
     ) -> bool:
-        """Owner-attested offline payment for one sealed revision. Idempotent."""
+        """Moderator-attested external cover payment for one sealed revision. Idempotent."""
         pool = self._require_pool()
         async with pool.acquire() as connection:
             async with connection.transaction():
@@ -2397,7 +2397,7 @@ class PostgresWritersSubmissionStorage:
         self, *, submission_id: UUID, revision_id: UUID,
         reviewer_user_id: int, now: int,
     ) -> bool:
-        """Owner-only confirmation of 100 RUB for one distinct work."""
+        """Assigned moderator confirms 100 RUB for one distinct work."""
         pool = self._require_pool()
         async with pool.acquire() as connection:
             async with connection.transaction():
