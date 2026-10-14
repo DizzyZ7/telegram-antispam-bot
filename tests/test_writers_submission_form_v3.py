@@ -308,6 +308,17 @@ class NewSubmissionFormTests(unittest.TestCase):
         self.assertLess(profile_at, collection_at)
         self.assertLess(collection_at, article_at)
         self.assertIn('href="https://ficbook.net/readfic/45678"', post)
+        moderation = _moderation_text(ctx)
+        self.assertIn("Размер зарисовки: Сборник драбблов", moderation)
+        self.assertLess(
+            moderation.index("Профиль Фикбука:"),
+            moderation.index("Сборник драбблов на Фикбуке:"),
+        )
+        self.assertLess(
+            moderation.index("Сборник драбблов на Фикбуке:"),
+            moderation.index("Статья с текстом зарисовки в Telegraph (один из драбблов сборника):"),
+        )
+        self.assertEqual(moderation.count("https://telegra.ph/One-Drabble-10-14"), 1)
         self.assertTrue(post.endswith("• • • • • • • • ✦ • • • • • • • •"))
 
     def test_drabble_collection_url_and_size_are_enforced_only_for_sketches(self):
