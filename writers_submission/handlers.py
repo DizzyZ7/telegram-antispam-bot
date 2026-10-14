@@ -408,6 +408,41 @@ def register_writers_submission_handlers(
             parse_mode="HTML",
         )
 
+    @app.dp.message(Command("writers_author"))
+    async def writers_author_work_count(message: Message) -> None:
+        """Owner-only history for a Telegram ID; no mutable username matching."""
+        if (
+            _chat_type_value(message.chat) != "private"
+            or getattr(message, "from_user", None) is None
+            or int(message.from_user.id) != int(config.owner_user_id)
+        ):
+            return
+        parts = str(message.text or "").split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip().isdigit() or int(parts[1].strip()) <= 0:
+            await message.answer("Формат: /writers_author Telegram_ID")
+            return
+        author_id = int(parts[1].strip())
+        try:
+            billing = await service.storage.get_author_work_billing(
+                author_user_id=author_id,
+            )
+        except Exception:
+            LOGGER.exception("WRITERS_AUTHOR_WORK_LEDGER_FAILED")
+            await message.answer("Не удалось прочитать историю отправок. Проверь логи.")
+            return
+        await message.answer(
+            "📚 <b>Учет отправленных работ</b>"
+            + "\nTelegram ID: <code>" + str(author_id) + "</code>"
+            + "\nОтправлено работ: " + str(billing["submitted_works"])
+            + "\nИспользовано бесплатных: " + str(billing["free_works_used"]) + "/2"
+            + "\nСледующая работа №" + str(billing["next_work_number"]) + ": "
+            + str(billing["next_work_price_rub"]) + " ₽"
+            + "\nОжидают оплаты: " + str(billing["unpaid_works"])
+            + " работ · " + str(billing["unpaid_rub"]) + " ₽"
+            + "\nОбложки считаются отдельно.",
+            parse_mode="HTML",
+        )
+
     @app.dp.message(Command("writers_moderation"))
     async def writers_moderation_delivery_status(message: Message) -> None:
         """Owner-only queue diagnostics; does not reveal author content."""
@@ -752,6 +787,7 @@ def register_writers_submission_handlers(
     # moderator callback and pending-comment flow cannot be swallowed first.
     _promote_registered_handler(app.dp.message, writers_submission_start)
     _promote_registered_handler(app.dp.message, writers_delivery_status)
+    _promote_registered_handler(app.dp.message, writers_author_work_count)
     _promote_registered_handler(app.dp.message, writers_publication_template_version)
     _promote_registered_handler(app.dp.message, writers_retry_preview)
     _promote_registered_handler(app.dp.message, writers_moderation_comment)
