@@ -111,17 +111,22 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(document_kwargs["reply_parameters"].message_id, 10)
         self.assertIn(str(item.submission_id), document_kwargs["caption"])
 
-        self.bot.send_message.assert_awaited_once()
-        text = self.bot.send_message.await_args.kwargs["text"]
+        self.assertEqual(self.bot.send_message.await_count, 2)
+        text = self.bot.send_message.await_args_list[0].kwargs["text"]
         self.assertIn("&lt;b&gt;Опасное &amp; название&lt;/b&gt;", text)
         self.assertNotIn("<script>", text)
         self.assertIn("https://example.test/work?a=1&amp;b=2", text)
+        preview = self.bot.send_message.await_args_list[1].kwargs
+        self.assertEqual(preview["parse_mode"], "HTML")
+        self.assertEqual(preview["reply_parameters"].message_id, 10)
+        self.assertIn("« <b>&lt;b&gt;Опасное &amp; название&lt;/b&gt;</b> »", preview["text"])
+        self.assertTrue(preview["text"].endswith("• • • • • • • • ✦ • • • • • • • •"))
         self.storage.mark_outbox_delivered.assert_awaited_once_with(
             outbox_id=item.id,
             worker_id="worker-test",
             now=100,
             delivery_chat_id=-100111,
-            delivery_message_ids=(10, 11),
+            delivery_message_ids=(10, 10, 11),
         )
         self.storage.mark_outbox_retryable.assert_not_awaited()
         self.storage.mark_outbox_permanent_failure.assert_not_awaited()
@@ -133,7 +138,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             id=77, username="actual_author", first_name="Автор",
         ))
         await self.worker.run_once(now=135)
-        text = self.bot.send_message.await_args.kwargs["text"]
+        text = self.bot.send_message.await_args_list[0].kwargs["text"]
         self.assertIn('href="https://t.me/actual_author"', text)
         self.assertIn("@actual_author", text)
         self.assertIn('href="tg://user?id=77"', text)
@@ -147,7 +152,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         context.author_first_name = "Писательница"
         self.bot.get_chat = AsyncMock(side_effect=RuntimeError("user has not started bot"))
         await self.worker.run_once(now=136)
-        text = self.bot.send_message.await_args.kwargs["text"]
+        text = self.bot.send_message.await_args_list[0].kwargs["text"]
         self.assertIn('href="https://t.me/saved_writer"', text)
         self.assertIn('href="tg://user?id=77"', text)
 
@@ -158,7 +163,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         context.author_username = None
         context.author_first_name = "<Мила & добра>"
         await self.worker.run_once(now=137)
-        text = self.bot.send_message.await_args.kwargs["text"]
+        text = self.bot.send_message.await_args_list[0].kwargs["text"]
         self.assertIn("Имя Telegram: &lt;Мила &amp; добра&gt;", text)
         self.assertIn('href="tg://user?id=77"', text)
         self.assertNotIn('href="https://t.me/None"', text)
@@ -176,8 +181,8 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.bot.send_document.await_args.kwargs["chat_id"], 2039781854
         )
-        self.bot.send_message.assert_awaited_once()
-        card = self.bot.send_message.await_args.kwargs
+        self.assertEqual(self.bot.send_message.await_count, 2)
+        card = self.bot.send_message.await_args_list[0].kwargs
         self.assertEqual(card["chat_id"], 2039781854)
         self.assertIn("Новая работа на модерацию", card["text"])
         self.assertIn(str(item.submission_id), card["text"])
@@ -187,7 +192,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(card["reply_markup"].inline_keyboard)
         self.storage.mark_outbox_delivered.assert_awaited_once_with(
             outbox_id=item.id, worker_id="worker-test", now=145,
-            delivery_chat_id=2039781854, delivery_message_ids=(10, 11),
+            delivery_chat_id=2039781854, delivery_message_ids=(10, 10, 11),
         )
 
     async def test_palette_mockup_and_files_are_replies_to_same_packet(self):
@@ -200,7 +205,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             "palette_colors": ["#AABBCC", "#112233", "#445566", "#778899"],
         }
         await self.worker.run_once(now=148)
-        self.bot.send_message.assert_awaited_once()
+        self.assertEqual(self.bot.send_message.await_count, 2)
         self.bot.send_photo.assert_awaited_once()
         kwargs = self.bot.send_photo.await_args.kwargs
         self.assertEqual(kwargs["chat_id"], self.config.moderation_chat_id)
@@ -211,7 +216,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(str(item.submission_id), doc["caption"])
         self.storage.mark_outbox_delivered.assert_awaited_once()
         ids = self.storage.mark_outbox_delivered.await_args.kwargs["delivery_message_ids"]
-        self.assertEqual(ids, (10, 12, 11))
+        self.assertEqual(ids, (10, 10, 12, 11))
 
     async def test_paid_cover_uuid_labels_correct_attachment_not_first_photo(self):
         item = moderation_item()
@@ -256,7 +261,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             revision_id=item.revision_id,
             now=150,
         )
-        kwargs = self.bot.send_message.await_args.kwargs
+        kwargs = self.bot.send_message.await_args_list[0].kwargs
         keyboard = kwargs["reply_markup"]
         callback_data = [
             button.callback_data
@@ -288,7 +293,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         await self.worker.run_once(now=175)
 
-        sent = self.bot.send_message.await_args.kwargs["text"]
+        sent = self.bot.send_message.await_args_list[0].kwargs["text"]
         self.assertLessEqual(len(sent.encode("utf-16-le")) // 2, 3900)
         self.assertIn("…", sent)
         self.assertNotIn("<script>", sent)
@@ -309,7 +314,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         await self.worker.run_once(now=180)
 
-        sent = self.bot.send_message.await_args.kwargs["text"]
+        sent = self.bot.send_message.await_args_list[0].kwargs["text"]
         self.assertLessEqual(len(sent.encode("utf-16-le")) // 2, 3900)
         self.assertIn("…", sent)
         self.assertNotIn("<script>", sent)
