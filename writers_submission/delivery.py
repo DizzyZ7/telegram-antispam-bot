@@ -150,12 +150,19 @@ def _moderation_text(context: Any, *, author_contact: str = "") -> str:
             else:
                 lines.append("Предупреждения: нет")
             if context.work_type == "Зарисовка":
+                sketch_size = details.get("sketch_size") or "Мини/драббл"
                 lines.append("Происхождение зарисовки: " +
                              _escaped_preview(details.get("sketch_origin"), max_units=100))
+                lines.append("Размер зарисовки: " + _escaped_preview(sketch_size, max_units=65))
                 lines.append("Профиль Фикбука: " +
-                             _escaped_preview(details.get("sketch_profile_url"), max_units=370))
-                lines.append("Текст Telegraph: " +
-                             _escaped_preview(details.get("sketch_article_url"), max_units=370))
+                             _escaped_preview(details.get("sketch_profile_url"), max_units=220))
+                if sketch_size == "Сборник драбблов" and details.get("sketch_collection_url"):
+                    lines.append("Сборник драбблов на Фикбуке: " +
+                                 _escaped_preview(details["sketch_collection_url"], max_units=220))
+                article_label = ("Статья с текстом зарисовки в Telegraph (один из драбблов сборника)"
+                                 if sketch_size == "Сборник драбблов" else "Текст Telegraph")
+                lines.append(article_label + ": " +
+                             _escaped_preview(details.get("sketch_article_url"), max_units=220))
                 lines.append("Обложка: редакционная для рубрики")
         if details.get("visual_mode") == "palette":
             colors = details.get("palette_colors") or []
@@ -166,7 +173,10 @@ def _moderation_text(context: Any, *, author_contact: str = "") -> str:
         if links:
             lines.append(f"Доп. ссылки: {_escaped_preview(' | '.join(links), max_units=450)}")
     lines.extend(("", f"Описание: {_escaped_preview(context.description, max_units=620)}"))
-    if getattr(context, "external_url", None):
+    if getattr(context, "external_url", None) and not (
+        context.work_type == "Зарисовка"
+        and context.external_url == details.get("sketch_article_url")
+    ):
         label = "Фикбук" if is_ficbook_form else "Ссылка"
         lines.extend(
             ("", f"{label}: {_escaped_preview(context.external_url, max_units=700)}")

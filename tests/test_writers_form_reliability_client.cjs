@@ -482,5 +482,5 @@ test("moderation delivery text never claims an unread Telegram card was read", (
     resolve(__dirname, "../writers_submission/static/index.html"), "utf8"
   );
   assert.match(html, /id="refreshDeliveryButton"/);
-  assert.match(html, /app\.js\?v=draft-recovery-v7/);
+  assert.match(html, /app\.js\?v=sketch-collection-v8/);
 });

@@ -22,6 +22,7 @@ jobs:
       - run: node --test tests/test_writers_mobile_submission_client.cjs
       - run: node --test tests/test_writers_form_reliability_client.cjs
       - run: node --test tests/test_writers_emergency_recovery_client.cjs
+      - run: node --test tests/test_writers_sketch_collection_client.cjs
       - run: python -m compileall -q .
       - run: python -m unittest discover -s tests -p "test_*.py"
 

@@ -172,6 +172,7 @@ _DETAILS_ALLOWED = frozenset({
     "palette_colors", "characters", "notes", "cover_template", "cover_file_id",
     "main_genres", "warnings_present", "warnings", "sketch_origin",
     "sketch_profile_url", "sketch_article_url",
+    "sketch_size", "sketch_collection_url",
 })
 
 
@@ -296,7 +297,12 @@ def normalize_submission_details(value: object, *, complete: bool = False,
         if sketch_origin not in ("", "Фандом", "Ориджинал"):
             raise ValidationError("sketch_origin is invalid")
         details["sketch_origin"] = sketch_origin
-        for key in ("sketch_profile_url", "sketch_article_url"):
+        sketch_size = value.get("sketch_size", "")
+        if sketch_size not in ("", "Мини/драббл", "Сборник драбблов"):
+            raise ValidationError("sketch_size is invalid")
+        details["sketch_size"] = sketch_size
+
+        for key in ("sketch_profile_url", "sketch_collection_url", "sketch_article_url"):
             raw = value.get(key, "")
             if not isinstance(raw, str) or len(raw) > EXTERNAL_URL_MAX:
                 raise ValidationError(f"{key} is invalid")
@@ -306,6 +312,13 @@ def normalize_submission_details(value: object, *, complete: bool = False,
                 raise ValidationError("sketch_origin is required")
             if details["sketch_origin"] == "Фандом" and not details["fandom"]:
                 raise ValidationError("fandom is required for fandom sketches")
+            if not details["sketch_size"]:
+                raise ValidationError("sketch_size is required")
+            if (details["sketch_size"] == "Сборник драбблов"
+                    and not details["sketch_collection_url"]):
+                raise ValidationError("sketch_collection_url is required for drabble collections")
+            if details["sketch_size"] == "Мини/драббл" and details["sketch_collection_url"]:
+                raise ValidationError("sketch_collection_url is only for drabble collections")
             for key, hostname in (
                 ("sketch_profile_url", "ficbook.net"),
                 ("sketch_article_url", "telegra.ph"),
@@ -313,6 +326,11 @@ def normalize_submission_details(value: object, *, complete: bool = False,
                 url = _external_url(details[key])
                 if not url or (urlparse(url).hostname or "").lower() not in (hostname, "www." + hostname) or not urlparse(url).path.strip("/"):
                     raise ValidationError(f"{key} must be an HTTPS {hostname} link")
+            if details["sketch_size"] == "Сборник драбблов":
+                collection_url = _external_url(details["sketch_collection_url"])
+                parsed = urlparse(collection_url or "")
+                if (parsed.hostname or "").lower() not in ("ficbook.net", "www.ficbook.net") or not parsed.path.lower().startswith("/readfic/") or not parsed.path[len("/readfic/"):].strip("/"):
+                    raise ValidationError("sketch_collection_url must be an HTTPS ficbook.net/readfic link")
         if complete:
             if not genre_items:
                 raise ValidationError("at least one main genre is required")
@@ -331,7 +349,7 @@ def normalize_submission_details(value: object, *, complete: bool = False,
 
     if complete:
         required = (
-            ("rating", "visual_mode", "sketch_origin")
+            ("rating", "visual_mode", "sketch_origin", "sketch_size")
             if version == 3 and work_type == "Зарисовка"
             else ("size_category", "rating", "completion", "visual_mode")
         )
