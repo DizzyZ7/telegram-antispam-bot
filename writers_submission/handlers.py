@@ -25,6 +25,7 @@ from .models import (
     ReviewAction,
     ValidationError,
 )
+from .promo import PUBLICATION_TEMPLATE_VERSION, _title_font_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -371,6 +372,33 @@ def register_writers_submission_handlers(
             f"🔁 Пост <code>{target}</code> поставлен в очередь повторно. "
             "Обычно доставка занимает несколько секунд. "
             "Статус: /writers_delivery",
+            parse_mode="HTML",
+        )
+
+    @app.dp.message(Command("writers_format"))
+    async def writers_publication_template_version(message: Message) -> None:
+        """Help the owner distinguish a stale Bothost deployment from live code."""
+        if (
+            _chat_type_value(message.chat) != "private"
+            or getattr(message, "from_user", None) is None
+            or int(message.from_user.id) != int(config.owner_user_id)
+        ):
+            return
+        try:
+            _title_font_path()
+        except Exception:
+            LOGGER.warning("WRITERS_CYRILLIC_FONT_NOT_AVAILABLE", exc_info=True)
+            font_status = "⚠️ Кириллический шрифт не найден"
+        else:
+            font_status = "✅ Кириллический шрифт доступен"
+        await message.answer(
+            "🧩 Версия оформления заявок: "
+            + html.escape(PUBLICATION_TEMPLATE_VERSION)
+            + "\n✅ Название: « <b>Название</b> »"
+            + "\n✅ Предупреждения: Telegram-спойлер"
+            + "\n✅ Нижний декоративный узор"
+            + "\n✅ Оформленный пост отдельным ответом на заявку"
+            + "\n" + font_status,
             parse_mode="HTML",
         )
 
