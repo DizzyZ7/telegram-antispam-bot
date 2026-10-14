@@ -4,7 +4,7 @@ import html
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from aiogram import Dispatcher, F
@@ -175,6 +175,7 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
         self.retry = handlers["writers_retry_preview"]
         self.moderation_status = handlers["writers_moderation_delivery_status"]
         self.moderation_retry = handlers["writers_moderation_delivery_retry"]
+        self.publication_format = handlers["writers_publication_template_version"]
 
     def private_message(self, text, *, actor_id=None, private=True):
         actor_id = self.owner_id if actor_id is None else actor_id
@@ -186,6 +187,31 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
             from_user=user(actor_id),
             text=text,
             answer=AsyncMock(),
+        )
+
+    async def test_owner_can_verify_live_publication_style_and_font_support(self):
+        owner = self.private_message("/writers_format")
+        with patch("writers_submission.handlers._title_font_path", return_value="/font.ttf"):
+            await self.publication_format(owner)
+        body = owner.answer.await_args.args[0]
+        self.assertIn("ikf-format-guillemets-spoiler-ornament-v3", body)
+        self.assertIn("« <b>Название</b> »", body)
+        self.assertIn("Кириллический шрифт доступен", body)
+        for denied in (
+            self.private_message("/writers_format", actor_id=12345),
+            self.private_message("/writers_format", private=False),
+        ):
+            await self.publication_format(denied)
+            denied.answer.assert_not_awaited()
+
+    async def test_live_font_diagnostic_is_honest_when_font_missing(self):
+        owner = self.private_message("/writers_format")
+        with patch("writers_submission.handlers._title_font_path",
+                   side_effect=RuntimeError("missing font")):
+            await self.publication_format(owner)
+        self.assertIn(
+            "Кириллический шрифт не найден",
+            owner.answer.await_args.args[0],
         )
 
     async def test_owner_can_inspect_failed_preview(self):
