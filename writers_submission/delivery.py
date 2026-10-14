@@ -495,7 +495,7 @@ class WritersDeliveryWorker:
                             saved_first_name=getattr(context, "author_first_name", None),
                         ),
                     )
-                    + "\n\nВсе вложения и цветовой макет — ответами на эту карточку."
+                    + "\n\nОформленный пост, вложения и цветовой макет — ответами на эту карточку."
                 ),
                 parse_mode="HTML",
                 reply_markup=build_moderation_keyboard(
@@ -517,6 +517,26 @@ class WritersDeliveryWorker:
             "chat_id": moderation_chat_id,
             "reply_parameters": ReplyParameters(message_id=int(card_message_id)),
         }
+        # The moderator receives an immediately copyable, formatted post
+        # even before approval. It is a REPLY to the operational card, not
+        # an automatic publication in the public channel.
+        preview_message_id = progress.get("preview")
+        if not preview_message_id:
+            formatted_post = render_owner_promo(context)
+            preview = await self.bot.send_message(
+                **reply_kwargs,
+                text=formatted_post,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            preview_message_id = getattr(preview, "message_id", None)
+            if preview_message_id is None:
+                raise RuntimeError("Telegram moderation preview has no message_id")
+            await self._checkpoint_moderation_message(
+                item, key="preview", message_id=int(preview_message_id),
+                chat_id=moderation_chat_id, now=now,
+            )
+        message_ids.append(int(preview_message_id))
         details = getattr(context, "details", None) or {}
         if details.get("visual_mode") == "palette":
             palette_message_id = progress.get("palette")
