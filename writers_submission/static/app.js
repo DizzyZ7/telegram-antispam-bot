@@ -526,6 +526,25 @@
     }
   }
 
+  function promoteEmergencyBackupAfterCreate(createKey, submission) {
+    // A POST may finish while the author types more text. The original
+    // backup must follow the newly allocated draft ID without erasing the
+    // newer unsaved fields or the stable create key prematurely.
+    const key = emergencyBackupKey();
+    if (!key || typeof localStorage === "undefined") return;
+    try {
+      const saved = readEmergencyBackup();
+      if (!saved || saved.id !== null || saved.createKey !== createKey) return;
+      localStorage.setItem(key, JSON.stringify({
+        ...saved,
+        id: String(submission.id),
+        revisionId: submission.revision ? String(submission.revision.id) : null,
+        expectedVersion: Number(submission.version),
+        createKey: null,
+      }));
+    } catch (_error) {}
+  }
+
   function clearEmergencyBackupIfSynced(force = false) {
     const key = emergencyBackupKey();
     if (!key || typeof localStorage === "undefined") return;
@@ -536,9 +555,8 @@
         if (!state.current || state.editSequence > state.savedSequence ||
             (saved.id && saved.id !== String(state.current.id)) ||
             JSON.stringify(saved.fields) !== JSON.stringify(currentFields())) return;
-      } else if (!state.current || (
-        saved.id && saved.id !== String(state.current.id)
-      )) {
+      } else if (!state.current || saved.id !== String(state.current.id)) {
+        // Never discard another tab's unnamed draft during a submit.
         return;
       }
       localStorage.removeItem(key);
@@ -1247,6 +1265,7 @@
     });
     // A 2xx without a valid draft must never consume the idempotency key.
     const created = verifiedDraftResponse(payload);
+    promoteEmergencyBackupAfterCreate(state.createKey, created);
     state.current = created;
     state.createKey = null;
     state.submitKey = null;
