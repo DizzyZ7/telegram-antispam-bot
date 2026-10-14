@@ -15,6 +15,34 @@ from .models import ModerationDeliveryContext, ValidationError
 from .uploads import normalize_extra_link
 
 
+def quote_work_title(value: object) -> str:
+    """One pair of Russian guillemets for the actual title.
+
+    Users may omit quotes or type common straight/curly quotation marks.
+    Strip only complete outer pairs; preserve punctuation inside the title.
+    """
+    title = " ".join(str(value or "").split()).strip()
+    pairs = {("«", "»"), ('"', '"'), ("“", "”"), ("„", "“"), ("‘", "’"), ("'", "'")}
+    while len(title) >= 2 and (title[0], title[-1]) in pairs:
+        title = title[1:-1].strip()
+    return f"«{title or 'Название'}»"
+
+
+def _visible_warnings(raw: object) -> list[str]:
+    """Deduplicate warnings before HTML escaping and spoiler rendering."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw if isinstance(raw, (list, tuple)) else ():
+        value = " ".join(str(item or "").split())
+        if not value or value.casefold() in seen:
+            continue
+        result.append(value)
+        seen.add(value.casefold())
+        if len(result) >= 10:
+            break
+    return result
+
+
 def _preview(value: object, limit: int) -> str:
     value = str(value or "").strip()
     if len(value) > limit:
@@ -53,7 +81,7 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
             _tag(context.genre),
         ]
     lines = [
-        f"🎩 <b>{_preview(context.title, 250)}</b> 🎩",
+        f"🎩 <b>{_preview(quote_work_title(context.title), 250)}</b> 🎩",
         "",
         _preview(context.description, 1650),
     ]
@@ -62,9 +90,12 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
         if genres:
             lines.extend(("", "• " + " • ".join(_preview(g, 70) for g in genres[:3]) + " •"))
         if details.get("warnings_present") == "yes":
-            warnings = details.get("warnings") or []
-            lines.extend(("", "🚨 <b>ПРЕДУПРЕЖДЕНИЯ (18+)</b>",
-                          "× " + " × ".join(_preview(w, 85) for w in warnings[:10])))
+            warnings = _visible_warnings(details.get("warnings"))
+            if warnings:
+                lines.extend((
+                    "", "🚨 <b>ПРЕДУПРЕЖДЕНИЯ (18+)</b>",
+                    "<tg-spoiler>" + " × ".join(_preview(w, 85) for w in warnings) + "</tg-spoiler>",
+                ))
         if is_sketch:
             lines.extend(("", "🎨 Обложка для рубрики — от команды ИКФ."))
     if not is_sketch and details.get("notes"):
@@ -124,7 +155,7 @@ def _title_lines(draw: object, title: str, font_path: str | None, *, max_width: 
         # that run Python directly may not have Debian's DejaVu font package.
         return ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default(size=size)
 
-    title = "«" + (" ".join(str(title or "Название произведения").split())[:200]) + "»"
+    title = quote_work_title(" ".join(str(title or "Название").split())[:200])
     words = title.split()
     for size in range(66, 23, -2):
         font = chosen_font(size)
