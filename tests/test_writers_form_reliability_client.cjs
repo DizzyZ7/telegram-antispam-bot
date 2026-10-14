@@ -286,6 +286,7 @@ function draftRecoveryHarness(fields, serverRevision) {
     state,
     clearTimeout: () => {},
     currentFields: () => structuredClone(fields),
+    clearEmergencyBackupIfSynced: () => {},
     setSaveState: (message) => events.push(["state", message]),
     setEditorError: (message) => events.push(["error", message]),
     setReloadRequired: (value) => { state.reloadRequired = value; },
