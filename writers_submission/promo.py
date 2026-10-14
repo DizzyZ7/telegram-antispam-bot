@@ -9,6 +9,8 @@ import html
 import re
 import struct
 import zlib
+from importlib import metadata as package_metadata
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from .models import ModerationDeliveryContext, ValidationError
@@ -158,13 +160,49 @@ def _foreground_color(hex_color: str) -> str:
     return "#161923" if luminance > 0.24 else "#F5F3ED"
 
 
-def _title_lines(draw: object, title: str, font_path: str | None, *, max_width: int) -> tuple[list[str], object]:
+def _title_font_path() -> str:
+    """Locate a font with REAL Cyrillic glyphs, even without system fonts.
+
+    Pillow's default Aileron fallback does not contain Cyrillic and renders
+    every Russian letter as the same missing-glyph rectangle. The pinned
+    font-roboto distribution supplies an independent TTF on direct Python
+    Bothost deployments; Docker additionally installs DejaVu.
+    """
+    from PIL import ImageFont
+
+    candidates = [
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Italic.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSerif-Italic.ttf"),
+    ]
+    try:
+        entries = package_metadata.files("font-roboto") or []
+        candidates.extend(
+            Path(entry.locate()) for entry in entries
+            if str(entry).lower().endswith((".ttf", ".otf"))
+        )
+    except (package_metadata.PackageNotFoundError, OSError):
+        pass
+
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            font = ImageFont.truetype(str(path), 32)
+            missing = bytes(font.getmask("\u0378"))  # Unicode unassigned codepoint.
+            if all(bytes(font.getmask(char)) != missing for char in "ЛегендаяёЖ«»"):
+                return str(path)
+        except (OSError, ValueError):
+            continue
+    raise RuntimeError("Cyrillic title font is not installed; refusing tofu glyphs")
+
+
+def _title_lines(draw: object, title: str, font_path: str, *, max_width: int) -> tuple[list[str], object]:
     from PIL import ImageFont
 
     def chosen_font(size: int):
-        # Pillow bundles a Unicode-capable default font. Bothost deployments
-        # that run Python directly may not have Debian's DejaVu font package.
-        return ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default(size=size)
+        return ImageFont.truetype(font_path, size)
 
     title = "« " + unquoted_work_title(title)[:200].strip() + " »"
     words = title.split()
@@ -281,14 +319,7 @@ def render_palette_png(
             fill=line_color, width=3,
         )
 
-    font_path = next(
-        (str(p) for p in (
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Italic.ttf"),
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf"),
-        ) if p.is_file()),
-        None,
-    )
-    # Use Pillow's bundled font when system DejaVu is unavailable.
+    font_path = _title_font_path()
 
     max_width = 770
     lines, font = _title_lines(draw, title, font_path, max_width=max_width)
@@ -343,15 +374,7 @@ def render_custom_cover_png(photo_bytes: bytes, title: str) -> bytes:
                    fill=(241, 237, 231, 185), width=3)
     image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(image)
-    font_path = next(
-        (str(p) for p in (
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Italic.ttf"),
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf"),
-        ) if p.is_file()),
-        None,
-    )
-    if font_path is None:
-        raise RuntimeError("ICФ Cyrillic serif font is missing from the Docker image")
+    font_path = _title_font_path()
     lines, font = _title_lines(draw, title, font_path, max_width=770)
     line_height = font.size + 9
     y = 450 - 20 - len(lines) * line_height
