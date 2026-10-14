@@ -253,7 +253,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preview["reply_parameters"].message_id, 10)
         self.assertEqual(preview["parse_mode"], "HTML")
         self.assertTrue(preview["disable_web_page_preview"])
-        self.assertTrue(preview["text"].startswith("« <b>Название</b> »\\n\\n"))
+        self.assertTrue(preview["text"].startswith("« <b>Название</b> »\n\n"))
         self.assertIn("• Ангст • Hurt/comfort • Сюрреализм •", preview["text"])
         self.assertIn(
             "<tg-spoiler>× Буллинг × &lt;Опасность&gt; &amp; тревога ×</tg-spoiler>",
