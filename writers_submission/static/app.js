@@ -582,6 +582,15 @@
   }
 
   async function restoreEmergencyBackup() {
+    // Avoid replacing a different work that the author is already editing.
+    if (typeof views !== "undefined" &&
+        !views.editor.classList.contains("hidden")) {
+      setBanner(
+        "Сначала вернись к списку работ, сохрани открытый черновик, " +
+        "а затем восстанови локальную копию.", "warning"
+      );
+      return false;
+    }
     const saved = readEmergencyBackup();
     if (!saved) {
       hideEmergencyRecovery();
