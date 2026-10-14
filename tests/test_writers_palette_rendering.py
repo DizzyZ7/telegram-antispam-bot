@@ -12,6 +12,7 @@ from writers_submission.promo import (
     render_palette_png,
     render_palette_fallback_png,
     render_custom_cover_png,
+    _title_font_path,
 )
 
 COLORS = ["#5B67F1", "#EF86AC", "#78CFBC", "#FFC777"]
@@ -38,10 +39,33 @@ class PaletteRenderingTests(unittest.TestCase):
         for sample in COLORS:
             self.assertIn(tuple(bytes.fromhex(sample[1:])), colors_in_image)
 
-    def test_missing_system_dejavu_font_uses_bundled_pillow_font(self):
-        with patch.object(Path, "is_file", return_value=False):
-            data = render_palette_png(COLORS, title=TITLE)
+    def test_without_system_fonts_package_supplies_real_cyrillic(self):
+        # Mirrors Bothost running the app as direct Python rather than Docker.
+        original_is_file = Path.is_file
+        def no_system_fonts(path):
+            if str(path).startswith("/usr/share/fonts/"):
+                return False
+            return original_is_file(path)
+        with patch.object(Path, "is_file", no_system_fonts):
+            selected = _title_font_path()
+            self.assertNotIn("/usr/share/fonts", selected)
+            data = render_palette_png(COLORS, title="Легенда")
         self._load(data)
+
+    def test_missing_fonts_raise_instead_of_rendering_cyrillic_as_boxes(self):
+        # The delivery worker catches failure and sends a plain RGB board.
+        with patch.object(Path, "is_file", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "Cyrillic title font"):
+                render_palette_png(COLORS, title="Легенда")
+
+    def test_font_cyrillic_glyphs_are_not_missing_glyph_boxes(self):
+        from PIL import ImageFont
+        font = ImageFont.truetype(_title_font_path(), 32)
+        missing = bytes(font.getmask("\u0378"))
+        self.assertTrue(all(
+            bytes(font.getmask(char)) != missing
+            for char in "ЛегендаяёЖ«»"
+        ))
 
     def test_standard_library_fallback_has_exact_rgb_swatches(self):
         image = self._load(render_palette_fallback_png(COLORS))
