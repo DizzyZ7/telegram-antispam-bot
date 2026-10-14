@@ -170,6 +170,52 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         values = [await self.storage.get_submission_work_charge(submission_id=d.id) for d in drafts]
         self.assertEqual(sorted(v["work_number"] for v in values), [1, 2])
         self.assertTrue(all(v["amount_rub"] == 0 for v in values))
+        numbers = {d.id: v["work_number"] for d, v in zip(drafts, values)}
+        # Equal-second events are common. Re-initializing must not use
+        # UUID order to reshuffle already assigned payment slots.
+        await self.storage.close()
+        reopened = PostgresWritersSubmissionStorage(TEST_DATABASE_URL)
+        await reopened.initialize()
+        self.storage = reopened
+        for draft in drafts:
+            after = await reopened.get_submission_work_charge(submission_id=draft.id)
+            self.assertEqual(after["work_number"], numbers[draft.id])
+
+    async def test_resubmitted_revision_keeps_original_free_slot(self):
+        draft = await self.storage.create_submission(
+            author_user_id=99, writers_chat_id=-1002619489118,
+            fields=fields("Исправляемая работа"), now=100,
+            idempotency_key="revision-fee-create",
+        )
+        sent = await self.storage.seal_and_submit(
+            submission_id=draft.id, author_user_id=99,
+            expected_version=draft.version, now=110,
+            idempotency_key="revision-fee-submit-1",
+        )
+        await self.storage.claim_submission(
+            submission_id=sent.id, revision_id=sent.revision.id,
+            reviewer_user_id=9001, now=115,
+        )
+        await self.storage.decide_submission(
+            submission_id=sent.id, revision_id=sent.revision.id,
+            reviewer_user_id=9001, action=ReviewAction.REQUEST_CHANGES,
+            comment="Правки", now=120,
+        )
+        reopened = await self.storage.create_revision(
+            submission_id=sent.id, author_user_id=99,
+            idempotency_key="revision-fee-edit", now=125,
+        )
+        resent = await self.storage.seal_and_submit(
+            submission_id=sent.id, author_user_id=99,
+            expected_version=reopened.version, now=130,
+            idempotency_key="revision-fee-submit-2",
+        )
+        self.assertNotEqual(sent.revision.id, resent.revision.id)
+        billing = await self.storage.get_author_work_billing(author_user_id=99)
+        self.assertEqual(billing["submitted_works"], 1)
+        self.assertEqual(
+            (await self.storage.get_submission_work_charge(submission_id=sent.id))["work_number"], 1,
+        )
 
     async def test_restart_backfills_preexisting_submit_events_without_double_counting(self):
         draft = await self.storage.create_submission(
