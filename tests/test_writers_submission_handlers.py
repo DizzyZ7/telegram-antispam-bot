@@ -4,7 +4,7 @@ import html
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from aiogram import Dispatcher, F
@@ -155,6 +155,11 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
                  "last_error_code": "TelegramForbiddenError", "title": "Тест"}
             ]),
             retry_failed_owner_preview=AsyncMock(return_value=uuid4()),
+            list_moderation_delivery_admin=AsyncMock(return_value=[
+                {"submission_id": uuid4(), "state": "PERMANENT_FAILED",
+                 "attempt_count": 2, "last_error_code": "TelegramForbiddenError"}
+            ]),
+            retry_failed_moderation_delivery=AsyncMock(return_value=uuid4()),
         )
         self.service = make_service()
         self.service.storage = self.storage
@@ -168,6 +173,9 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
         handlers = handlers_by_name(self.app, "message")
         self.status = handlers["writers_delivery_status"]
         self.retry = handlers["writers_retry_preview"]
+        self.moderation_status = handlers["writers_moderation_delivery_status"]
+        self.moderation_retry = handlers["writers_moderation_delivery_retry"]
+        self.publication_format = handlers["writers_publication_template_version"]
 
     def private_message(self, text, *, actor_id=None, private=True):
         actor_id = self.owner_id if actor_id is None else actor_id
@@ -179,6 +187,31 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
             from_user=user(actor_id),
             text=text,
             answer=AsyncMock(),
+        )
+
+    async def test_owner_can_verify_live_publication_style_and_font_support(self):
+        owner = self.private_message("/writers_format")
+        with patch("writers_submission.handlers._title_font_path", return_value="/font.ttf"):
+            await self.publication_format(owner)
+        body = owner.answer.await_args.args[0]
+        self.assertIn("ikf-format-guillemets-spoiler-ornament-v3", body)
+        self.assertIn("« <b>Название</b> »", body)
+        self.assertIn("Кириллический шрифт доступен", body)
+        for denied in (
+            self.private_message("/writers_format", actor_id=12345),
+            self.private_message("/writers_format", private=False),
+        ):
+            await self.publication_format(denied)
+            denied.answer.assert_not_awaited()
+
+    async def test_live_font_diagnostic_is_honest_when_font_missing(self):
+        owner = self.private_message("/writers_format")
+        with patch("writers_submission.handlers._title_font_path",
+                   side_effect=RuntimeError("missing font")):
+            await self.publication_format(owner)
+        self.assertIn(
+            "Кириллический шрифт не найден",
+            owner.answer.await_args.args[0],
         )
 
     async def test_owner_can_inspect_failed_preview(self):
@@ -214,6 +247,40 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
         await self.retry(owner)
         self.storage.retry_failed_owner_preview.assert_not_awaited()
         self.assertIn("UUID", owner.answer.await_args.args[0])
+
+
+    async def test_owner_sees_moderation_delivery_failures_with_reason(self):
+        message = self.private_message("/writers_moderation")
+        await self.moderation_status(message)
+        self.storage.list_moderation_delivery_admin.assert_awaited_once_with(limit=20)
+        body = message.answer.await_args.args[0]
+        self.assertIn("PERMANENT_FAILED", body)
+        self.assertIn("нет доступа к чату", body)
+        self.assertIn("/writers_moderation_retry", body)
+
+    async def test_moderation_retry_is_owner_private_only(self):
+        for msg in (
+            self.private_message("/writers_moderation_retry", actor_id=1234),
+            self.private_message("/writers_moderation_retry", private=False),
+        ):
+            await self.moderation_retry(msg)
+            msg.answer.assert_not_awaited()
+        self.storage.retry_failed_moderation_delivery.assert_not_awaited()
+
+        bad = self.private_message("/writers_moderation_retry no-uuid")
+        await self.moderation_retry(bad)
+        self.assertIn("UUID", bad.answer.await_args.args[0])
+        self.storage.retry_failed_moderation_delivery.assert_not_awaited()
+
+        target = uuid4()
+        owner = self.private_message(f"/writers_moderation_retry {target}")
+        await self.moderation_retry(owner)
+        self.storage.retry_failed_moderation_delivery.assert_awaited_once()
+        self.assertEqual(
+            self.storage.retry_failed_moderation_delivery.await_args.kwargs["submission_id"],
+            target,
+        )
+        self.assertIn("возвращена в очередь", owner.answer.await_args.args[0])
 
 
 class WritersSubmissionStartFilterTests(unittest.IsolatedAsyncioTestCase):
@@ -554,7 +621,7 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         message_names = [
             item.callback.__name__
-            for item in app.dp.message.handlers[:4]
+            for item in app.dp.message.handlers[:7]
         ]
         callback_names = [
             item.callback.__name__
@@ -563,7 +630,9 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             set(message_names),
             {"writers_submission_start", "writers_moderation_comment",
-             "writers_delivery_status", "writers_retry_preview"},
+             "writers_delivery_status", "writers_retry_preview",
+             "writers_moderation_delivery_status", "writers_moderation_delivery_retry",
+             "writers_publication_template_version"},
         )
         self.assertEqual(
             callback_names,

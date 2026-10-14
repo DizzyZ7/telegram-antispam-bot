@@ -14,6 +14,7 @@ from uuid import uuid4
 from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
+from writers_submission.files import FileStagingUnavailableError
 from writers_submission.models import ConflictError, NotFoundError, ValidationError
 from writers_submission.service import EligibilityUnavailableError
 from writers_submission.security import SESSION_COOKIE_NAME, SessionSigner
@@ -131,6 +132,7 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
             created_at=100,
         )
         self.service.list_files = AsyncMock(return_value=[self.uploaded_file])
+        self.service.moderation_delivery_statuses = AsyncMock(return_value={})
         self.file_service = SimpleNamespace(
             attach_from_temp=AsyncMock(return_value=self.uploaded_file),
             delete_attachment=AsyncMock(),
@@ -567,6 +569,66 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(captured["path"].exists())
 
 
+
+    async def test_telegram_staging_error_is_specific_without_exposing_trace(self):
+        self.file_service.attach_from_temp.side_effect = FileStagingUnavailableError(
+            "Telegram не принял файл в закрытое хранилище."
+        )
+        form = FormData()
+        form.add_field("file", b"hello", filename="story.txt", content_type="text/plain")
+        response = await self.client.post(
+            f"/api/writers/submissions/{self.item.id}/files",
+            data=form,
+            headers=self.auth_headers(),
+        )
+        self.assertEqual(response.status, 503)
+        payload = await response.json()
+        self.assertEqual(payload["error"], "telegram_file_staging_unavailable")
+        self.assertIn("Telegram", payload["message"])
+
+    async def test_unhandled_submit_error_returns_support_reference_not_trace(self):
+        self.service.submit.side_effect = RuntimeError("private database traceback")
+        response = await self.client.post(
+            f"/api/writers/submissions/{self.item.id}/submit",
+            json={"expected_version": 1},
+            headers={**self.auth_headers(), "Idempotency-Key": "test-submit-42"},
+        )
+        self.assertEqual(response.status, 500)
+        payload = await response.json()
+        self.assertEqual(payload["error"], "internal_error")
+        self.assertEqual(len(payload["reference"]), 12)
+        self.assertNotIn("private database traceback", str(payload))
+
+    async def test_author_can_check_moderation_delivery_without_chat_receipts(self):
+        expected = {str(self.item.id): {
+            "status": "RETRYING", "updated_at": NOW - 10,
+        }}
+        self.service.list_mine.return_value = [self.item]
+        self.service.moderation_delivery_statuses.return_value = expected
+
+        listed = await self.client.get(
+            "/api/writers/submissions",
+            headers=self.auth_headers(origin=None),
+        )
+        self.assertEqual(listed.status, 200)
+        payload = await listed.json()
+        self.assertEqual(payload["items"][0]["delivery"]["status"], "RETRYING")
+        self.assertNotIn("delivery_chat_id", str(payload))
+        self.assertNotIn("delivery_message_ids", str(payload))
+        self.service.moderation_delivery_statuses.assert_awaited_with(
+            77, now=NOW,
+        )
+
+        detail = await self.client.get(
+            f"/api/writers/submissions/{self.item.id}",
+            headers=self.auth_headers(origin=None),
+        )
+        self.assertEqual(detail.status, 200)
+        response = await detail.json()
+        self.assertEqual(response["submission"]["delivery"], expected[str(self.item.id)])
+        self.service.moderation_delivery_statuses.assert_awaited_with(
+            77, now=NOW, submission_id=self.item.id,
+        )
 
     async def test_detail_restores_persisted_files_after_reload(self):
         response = await self.client.get(

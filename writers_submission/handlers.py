@@ -25,6 +25,7 @@ from .models import (
     ReviewAction,
     ValidationError,
 )
+from .promo import PUBLICATION_TEMPLATE_VERSION, _title_font_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -374,6 +375,124 @@ def register_writers_submission_handlers(
             parse_mode="HTML",
         )
 
+    @app.dp.message(Command("writers_format"))
+    async def writers_publication_template_version(message: Message) -> None:
+        """Help the owner distinguish a stale Bothost deployment from live code."""
+        if (
+            _chat_type_value(message.chat) != "private"
+            or getattr(message, "from_user", None) is None
+            or int(message.from_user.id) != int(config.owner_user_id)
+        ):
+            return
+        try:
+            _title_font_path()
+        except Exception:
+            LOGGER.warning("WRITERS_CYRILLIC_FONT_NOT_AVAILABLE", exc_info=True)
+            font_status = "⚠️ Кириллический шрифт не найден"
+        else:
+            font_status = "✅ Кириллический шрифт доступен"
+        await message.answer(
+            "🧩 Версия оформления заявок: "
+            + html.escape(PUBLICATION_TEMPLATE_VERSION)
+            + "\n✅ Название: « <b>Название</b> »"
+            + "\n✅ Предупреждения: Telegram-спойлер"
+            + "\n✅ Нижний декоративный узор"
+            + "\n✅ Оформленный пост отдельным ответом на заявку"
+            + "\n" + font_status,
+            parse_mode="HTML",
+        )
+
+    @app.dp.message(Command("writers_moderation"))
+    async def writers_moderation_delivery_status(message: Message) -> None:
+        """Owner-only queue diagnostics; does not reveal author content."""
+        if (
+            _chat_type_value(message.chat) != "private"
+            or getattr(message, "from_user", None) is None
+            or int(message.from_user.id) != int(config.owner_user_id)
+        ):
+            return
+        try:
+            rows = await service.storage.list_moderation_delivery_admin(limit=20)
+        except Exception:
+            LOGGER.exception("WRITERS_MODERATION_ADMIN_STATUS_FAILED")
+            await message.answer("Не удалось прочитать очередь модерации. Проверь журнал сервера.")
+            return
+        if not rows:
+            await message.answer("📬 В очереди модерации пока нет заявок.")
+            return
+        icons = {
+            "DELIVERED": "✅", "PENDING": "🕐",
+            "IN_FLIGHT": "🚚", "RETRYABLE_FAILED": "🔄",
+            "PERMANENT_FAILED": "❌",
+        }
+        lines = ["📬 Доставка заявок в чат модерации"]
+        for row in rows:
+            status = str(row["state"])
+            code = str(row.get("last_error_code") or "")
+            description = {
+                "TelegramForbiddenError": "нет доступа к чату",
+                "TelegramBadRequest": "Telegram отклонил сообщение",
+                "TelegramUnauthorizedError": "ошибка авторизации бота",
+                "TimeoutError": "превышено время ожидания",
+            }.get(code, code or "—")
+            lines.append(
+                f"{icons.get(status, '❔')} <code>{html.escape(str(row['submission_id']))}</code>"
+                f"\n{html.escape(status)} · попыток {int(row['attempt_count'])}"
+                + (f" · {html.escape(description[:100])}" if code else "")
+            )
+        lines.append(
+            "\nПосле исправления причины: "
+            "<code>/writers_moderation_retry UUID</code>. "
+            "Доставленные комплекты повторно не отправляются."
+        )
+        await message.answer("\n\n".join(lines), parse_mode="HTML")
+
+    @app.dp.message(Command("writers_moderation_retry"))
+    async def writers_moderation_delivery_retry(message: Message) -> None:
+        if (
+            _chat_type_value(message.chat) != "private"
+            or getattr(message, "from_user", None) is None
+            or int(message.from_user.id) != int(config.owner_user_id)
+        ):
+            return
+        parts = str(message.text or "").split(maxsplit=1)
+        if len(parts) != 2:
+            await message.answer("Формат: /writers_moderation_retry UUID_заявки")
+            return
+        try:
+            submission_id = UUID(parts[1].strip())
+        except (ValueError, TypeError):
+            await message.answer("Некорректный UUID. Формат: /writers_moderation_retry UUID_заявки")
+            return
+        try:
+            target = await service.storage.retry_failed_moderation_delivery(
+                submission_id=submission_id,
+                now=int(now_fn()),
+            )
+        except Exception:
+            LOGGER.exception(
+                "WRITERS_MODERATION_MANUAL_RETRY_FAILED submission_id=%s",
+                submission_id,
+            )
+            await message.answer("Не удалось поставить заявку в очередь. Проверь логи.")
+            return
+        if target is None:
+            await message.answer(
+                "Для этой заявки нет ошибки доставки, требующей повтора. "
+                "Уже доставленные комплекты не дублируются."
+            )
+            return
+        LOGGER.warning(
+            "WRITERS_MODERATION_MANUAL_REQUEUED submission_id=%s owner=%s",
+            target, int(config.owner_user_id),
+        )
+        await message.answer(
+            f"🔄 Заявка <code>{target}</code> возвращена в очередь. "
+            "Подтвержденные части комплекта повторно не отправляются. "
+            "Статус: /writers_moderation",
+            parse_mode="HTML",
+        )
+
     @app.dp.callback_query(F.data.startswith(f"{_CALLBACK_PREFIX}:"))
     async def writers_moderation_callback(callback: CallbackQuery) -> None:
         actor_id = int(callback.from_user.id)
@@ -610,6 +729,7 @@ def register_writers_submission_handlers(
     # moderator callback and pending-comment flow cannot be swallowed first.
     _promote_registered_handler(app.dp.message, writers_submission_start)
     _promote_registered_handler(app.dp.message, writers_delivery_status)
+    _promote_registered_handler(app.dp.message, writers_publication_template_version)
     _promote_registered_handler(app.dp.message, writers_retry_preview)
     _promote_registered_handler(app.dp.message, writers_moderation_comment)
     _promote_registered_handler(app.dp.callback_query, writers_moderation_callback)

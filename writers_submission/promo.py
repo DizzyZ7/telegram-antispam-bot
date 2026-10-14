@@ -9,10 +9,47 @@ import html
 import re
 import struct
 import zlib
+from importlib import metadata as package_metadata
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from .models import ModerationDeliveryContext, ValidationError
 from .uploads import normalize_extra_link
+
+PUBLICATION_TEMPLATE_VERSION = "ikf-format-guillemets-spoiler-ornament-v3"
+
+
+def quote_work_title(value: object) -> str:
+    """One pair of Russian guillemets for the actual title.
+
+    Users may omit quotes or type common straight/curly quotation marks.
+    Strip only complete outer pairs; preserve punctuation inside the title.
+    """
+    return f"« {unquoted_work_title(value)} »"
+
+
+def unquoted_work_title(value: object) -> str:
+    """Return title content without repeated outer quotation marks."""
+    title = " ".join(str(value or "").split()).strip()
+    pairs = {("«", "»"), ('"', '"'), ("“", "”"), ("„", "“"), ("‘", "’"), ("'", "'")}
+    while len(title) >= 2 and (title[0], title[-1]) in pairs:
+        title = title[1:-1].strip()
+    return title or "Название"
+
+
+def _visible_warnings(raw: object) -> list[str]:
+    """Deduplicate warnings before HTML escaping and spoiler rendering."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw if isinstance(raw, (list, tuple)) else ():
+        value = " ".join(str(item or "").split())
+        if not value or value.casefold() in seen:
+            continue
+        result.append(value)
+        seen.add(value.casefold())
+        if len(result) >= 10:
+            break
+    return result
 
 
 def _preview(value: object, limit: int) -> str:
@@ -33,9 +70,9 @@ def _link(url: str, label: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>'
 
 
-def render_owner_promo(context: ModerationDeliveryContext) -> str:
-    """HTML suitable for an ICФ-style copyable Telegram post."""
-    details = context.details or {}
+def render_owner_promo(context: ModerationDeliveryContext, *, compact: bool = False) -> str:
+    """HTML suitable for a copyable ICФ Telegram post or compact fallback."""
+    details = getattr(context, "details", None) or {}
     is_ficbook = details.get("form_version") in (2, 3)
     is_sketch = details.get("form_version") == 3 and context.work_type == "Зарисовка"
     tags = [
@@ -53,35 +90,40 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
             _tag(context.genre),
         ]
     lines = [
-        f"🎩 <b>{_preview(context.title, 250)}</b> 🎩",
+        f"« <b>{_preview(unquoted_work_title(context.title), 245)}</b> »",
         "",
-        _preview(context.description, 1650),
+        _preview(context.description, 550 if compact else 1650),
     ]
     if details.get("form_version") == 3:
         genres = details.get("main_genres") or []
         if genres:
             lines.extend(("", "• " + " • ".join(_preview(g, 70) for g in genres[:3]) + " •"))
         if details.get("warnings_present") == "yes":
-            warnings = details.get("warnings") or []
-            lines.extend(("", "🚨 <b>ПРЕДУПРЕЖДЕНИЯ (18+)</b>",
-                          "× " + " × ".join(_preview(w, 85) for w in warnings[:10])))
+            warnings = _visible_warnings(details.get("warnings"))[:8 if compact else 10]
+            if warnings:
+                lines.extend((
+                    "", "🚨 <b>ПРЕДУПРЕЖДЕНИЯ (18+)</b>",
+                    "<tg-spoiler>× " + " × ".join(_preview(w, 55 if compact else 85) for w in warnings) + " ×</tg-spoiler>",
+                ))
         if is_sketch:
             lines.extend(("", "🎨 Обложка для рубрики — от команды ИКФ."))
-    if not is_sketch and details.get("notes"):
-        lines += ["", f"<b>Примечания:</b>\n{_preview(details['notes'], 850)}"]
+    # Optional notes follow genres, ratings and characters, never break the
+    # headline/description/warnings/hashtags visual sequence.
     hashtags = [tag for tag in tags if tag]
     if hashtags:
         lines += ["", " | ".join(hashtags)]
     if not is_sketch and details.get("completion") == "завершен" and details.get("pages") and details.get("parts"):
         lines += ["", f"Объем: {int(details.get('size_words') or 0)} слов, {int(details['pages'])} страниц, {int(details['parts'])} частей"]
     if not is_sketch and details.get("characters"):
-        lines += ["", f"Основные персонажи / пейринг: {_preview(details['characters'], 350)}"]
+        lines += ["", f"Основные персонажи / пейринг: {_preview(details['characters'], 160 if compact else 350)}"]
+    if not is_sketch and details.get("notes"):
+        lines += ["", f"<b>Примечания:</b>\n{_preview(details['notes'], 210 if compact else 850)}"]
     if is_sketch:
         lines += ["", "👤 " + _link(details["sketch_profile_url"], "Профиль автора на Фикбуке")]
         lines += ["📖 " + _link(details["sketch_article_url"], "Читать зарисовку в Telegraph")]
     elif context.external_url:
-        lines += ["", "📖 " + _link(context.external_url, "Читать на Фикбуке")]
-    for i, raw in enumerate((details.get("extra_links") or [])[:5] if not is_sketch else []):
+        lines += ["", "8️⃣ " + _link(context.external_url, "Читать на Фикбук")]
+    for i, raw in enumerate((details.get("extra_links") or [])[:2 if compact else 5] if not is_sketch else []):
         # The sealed revision may still store Telegram's shorthand as typed
         # because submit validation does not rewrite the author's draft JSON.
         try:
@@ -94,11 +136,15 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
         is_telegram = domain in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}
         label = "ТГ-канал" if is_telegram else f"Дополнительная ссылка {i + 1}"
         lines.append(("💬 " if is_telegram else "🔗 ") + _link(url, label))
+    # Fixed ICФ ornamental divider at the very bottom, after every link.
+    lines += ["", "• • • • • • • • ✦ • • • • • • • •"]
     result = "\n".join(lines)
     # Telegram text is capped at 4096 chars. Use a conservative limit even
     # when HTML escaped entities and astral codepoints are counted.
     if len(result.encode("utf-16-le")) // 2 > 3900:
-        raise ValueError("ICФ post exceeds safe Telegram message size")
+        if not compact:
+            return render_owner_promo(context, compact=True)
+        raise ValueError("ICФ compact post exceeds safe Telegram message size")
     return result
 
 
@@ -116,15 +162,51 @@ def _foreground_color(hex_color: str) -> str:
     return "#161923" if luminance > 0.24 else "#F5F3ED"
 
 
-def _title_lines(draw: object, title: str, font_path: str | None, *, max_width: int) -> tuple[list[str], object]:
+def _title_font_path() -> str:
+    """Locate a font with REAL Cyrillic glyphs, even without system fonts.
+
+    Pillow's default Aileron fallback does not contain Cyrillic and renders
+    every Russian letter as the same missing-glyph rectangle. The pinned
+    font-roboto distribution supplies an independent TTF on direct Python
+    Bothost deployments; Docker additionally installs DejaVu.
+    """
+    from PIL import ImageFont
+
+    candidates = [
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Italic.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSerif-Italic.ttf"),
+    ]
+    try:
+        entries = package_metadata.files("font-roboto") or []
+        candidates.extend(
+            Path(entry.locate()) for entry in entries
+            if str(entry).lower().endswith((".ttf", ".otf"))
+        )
+    except (package_metadata.PackageNotFoundError, OSError):
+        pass
+
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            font = ImageFont.truetype(str(path), 32)
+            missing = bytes(font.getmask("\u0378"))  # Unicode unassigned codepoint.
+            if all(bytes(font.getmask(char)) != missing for char in "ЛегендаяёЖ«»"):
+                return str(path)
+        except (OSError, ValueError):
+            continue
+    raise RuntimeError("Cyrillic title font is not installed; refusing tofu glyphs")
+
+
+def _title_lines(draw: object, title: str, font_path: str, *, max_width: int) -> tuple[list[str], object]:
     from PIL import ImageFont
 
     def chosen_font(size: int):
-        # Pillow bundles a Unicode-capable default font. Bothost deployments
-        # that run Python directly may not have Debian's DejaVu font package.
-        return ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default(size=size)
+        return ImageFont.truetype(font_path, size)
 
-    title = "«" + (" ".join(str(title or "Название произведения").split())[:200]) + "»"
+    title = "« " + unquoted_work_title(title)[:200].strip() + " »"
     words = title.split()
     for size in range(66, 23, -2):
         font = chosen_font(size)
@@ -239,14 +321,7 @@ def render_palette_png(
             fill=line_color, width=3,
         )
 
-    font_path = next(
-        (str(p) for p in (
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Italic.ttf"),
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf"),
-        ) if p.is_file()),
-        None,
-    )
-    # Use Pillow's bundled font when system DejaVu is unavailable.
+    font_path = _title_font_path()
 
     max_width = 770
     lines, font = _title_lines(draw, title, font_path, max_width=max_width)
@@ -301,15 +376,7 @@ def render_custom_cover_png(photo_bytes: bytes, title: str) -> bytes:
                    fill=(241, 237, 231, 185), width=3)
     image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(image)
-    font_path = next(
-        (str(p) for p in (
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Italic.ttf"),
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf"),
-        ) if p.is_file()),
-        None,
-    )
-    if font_path is None:
-        raise RuntimeError("ICФ Cyrillic serif font is missing from the Docker image")
+    font_path = _title_font_path()
     lines, font = _title_lines(draw, title, font_path, max_width=770)
     line_height = font.size + 9
     y = 450 - 20 - len(lines) * line_height

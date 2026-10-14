@@ -35,11 +35,11 @@ class OwnerPreviewFormattingTests(unittest.TestCase):
 
     def test_original_work_matches_ikf_post_structure(self):
         post = render_owner_promo(self.context())
-        self.assertIn("<b>Однажды в Лост-Крике</b>", post)
+        self.assertIn("« <b>Однажды в Лост-Крике</b> »", post)
         self.assertIn("#Ориджиналы | #Макси | #Джен | #R | #ВПроцессе", post)
         self.assertIn("Основные персонажи", post)
         self.assertIn("Примечания:", post)
-        self.assertIn('<a href="https://ficbook.net/readfic/123">Читать на Фикбуке</a>', post)
+        self.assertIn('<a href="https://ficbook.net/readfic/123">Читать на Фикбук</a>', post)
         self.assertIn('<a href="https://t.me/rayskay_gavan">ТГ-канал</a>', post)
 
     def test_fanfic_escapes_untrusted_markup_and_hashtags(self):

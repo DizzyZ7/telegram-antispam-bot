@@ -42,6 +42,21 @@ def _outbox_from_row(row: asyncpg.Record) -> OutboxRecord:
         payload = json.loads(str(raw_payload or "{}"))
     except (TypeError, ValueError, json.JSONDecodeError):
         payload = {}
+    try:
+        raw_progress = (
+            row["delivery_progress_json"]
+            if "delivery_progress_json" in row else "{}"
+        )
+        progress = json.loads(str(raw_progress or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        progress = {}
+    if not isinstance(progress, dict):
+        progress = {}
+    progress = {
+        str(key): int(value)
+        for key, value in progress.items()
+        if isinstance(value, int) and value > 0
+    }
     if not isinstance(payload, dict):
         payload = {}
     return OutboxRecord(
@@ -67,6 +82,7 @@ def _outbox_from_row(row: asyncpg.Record) -> OutboxRecord:
         ),
         created_at=int(row["created_at"]),
         updated_at=int(row["updated_at"]),
+        progress=progress,
     )
 
 
@@ -479,6 +495,7 @@ class PostgresWritersSubmissionStorage:
                 last_error_code TEXT,
                 delivery_chat_id BIGINT,
                 delivery_message_ids_json TEXT NOT NULL DEFAULT '[]',
+                delivery_progress_json TEXT NOT NULL DEFAULT '{}',
                 payload_json TEXT NOT NULL DEFAULT '{}',
                 dedupe_key TEXT UNIQUE,
                 created_at BIGINT NOT NULL,
@@ -504,6 +521,12 @@ class PostgresWritersSubmissionStorage:
             """
             ALTER TABLE writers_submission_outbox
             ADD COLUMN IF NOT EXISTS delivery_chat_id BIGINT
+            """
+        )
+        await connection.execute(
+            """
+            ALTER TABLE writers_submission_outbox
+            ADD COLUMN IF NOT EXISTS delivery_progress_json TEXT NOT NULL DEFAULT '{}'
             """
         )
         await connection.execute(
@@ -2722,6 +2745,140 @@ class PostgresWritersSubmissionStorage:
                     )
                 return sub_id
 
+    async def list_author_moderation_delivery(
+        self,
+        *,
+        author_user_id: int,
+        submission_id: UUID | None = None,
+    ) -> list[dict[str, object]]:
+        """Return only the author's current submitted revision delivery state.
+
+        A single indexed query serves both the list and detail views. No
+        moderator chat IDs, message IDs or private Telegram errors leave the
+        storage boundary.
+        """
+        rows = await self._require_pool().fetch(
+            """
+            SELECT
+                s.id AS submission_id,
+                o.state AS outbox_state,
+                o.attempt_count,
+                o.created_at,
+                o.updated_at,
+                o.next_attempt_at
+            FROM writers_submissions AS s
+            LEFT JOIN writers_submission_outbox AS o
+              ON o.submission_id = s.id
+             AND o.revision_id = s.current_submitted_revision_id
+             AND o.event_type = 'MODERATION_CARD'
+            WHERE s.author_user_id = $1
+              AND s.current_submitted_revision_id IS NOT NULL
+              AND ($2::uuid IS NULL OR s.id = $2)
+            ORDER BY s.updated_at DESC
+            """,
+            int(author_user_id),
+            submission_id,
+        )
+        return [
+            {
+                "submission_id": str(row["submission_id"]),
+                "state": str(row["outbox_state"]) if row["outbox_state"] else None,
+                "attempt_count": int(row["attempt_count"] or 0),
+                "created_at": int(row["created_at"] or 0),
+                "updated_at": int(row["updated_at"] or 0),
+                "next_attempt_at": int(row["next_attempt_at"] or 0),
+            }
+            for row in rows
+        ]
+
+    async def list_moderation_delivery_admin(
+        self, *, limit: int = 20,
+    ) -> list[dict[str, object]]:
+        rows = await self._require_pool().fetch(
+            """
+            SELECT o.submission_id, o.state, o.attempt_count,
+                   o.last_error_code, o.created_at, o.updated_at
+            FROM writers_submission_outbox AS o
+            JOIN writers_submissions AS s ON s.id = o.submission_id
+            WHERE o.event_type = 'MODERATION_CARD'
+              AND o.revision_id = s.current_submitted_revision_id
+            ORDER BY
+                CASE WHEN o.state = 'PERMANENT_FAILED' THEN 0
+                     WHEN o.state = 'RETRYABLE_FAILED' THEN 1
+                     WHEN o.state = 'IN_FLIGHT' THEN 2
+                     WHEN o.state = 'PENDING' THEN 3
+                     ELSE 4 END,
+                o.updated_at DESC, o.id DESC
+            LIMIT $1
+            """,
+            max(1, min(50, int(limit))),
+        )
+        return [
+            {
+                "submission_id": str(row["submission_id"]),
+                "state": str(row["state"]),
+                "attempt_count": int(row["attempt_count"]),
+                "last_error_code": row["last_error_code"],
+                "created_at": int(row["created_at"]),
+                "updated_at": int(row["updated_at"]),
+            }
+            for row in rows
+        ]
+
+    async def retry_failed_moderation_delivery(
+        self, *, submission_id: UUID, now: int,
+    ) -> UUID | None:
+        """Owner-only caller requeues failures, never a delivered packet.
+
+        Preserve delivery_progress_json to avoid resending parts already
+        checkpointed during prior attempts.
+        """
+        return await self._require_pool().fetchval(
+            """
+            UPDATE writers_submission_outbox AS o
+            SET state = 'PENDING', attempt_count = 0,
+                next_attempt_at = $2, lease_until = NULL,
+                worker_id = NULL, last_error_code = NULL,
+                updated_at = $2
+            FROM writers_submissions AS s
+            WHERE s.id = $1 AND o.submission_id = s.id
+              AND o.revision_id = s.current_submitted_revision_id
+              AND o.event_type = 'MODERATION_CARD'
+              AND o.state IN ('RETRYABLE_FAILED', 'PERMANENT_FAILED')
+            RETURNING o.submission_id
+            """,
+            submission_id, int(now),
+        )
+
+    async def get_moderation_delivery_health(
+        self, *, now: int, stale_seconds: int = 300,
+    ) -> dict[str, object]:
+        """Aggregated watchdog snapshot; safe to log without author content."""
+        rows = await self._require_pool().fetch(
+            """
+            SELECT o.state, COUNT(*) AS quantity,
+                   MIN(o.created_at) AS oldest_at
+            FROM writers_submission_outbox AS o
+            WHERE o.event_type = 'MODERATION_CARD'
+              AND o.state <> 'DELIVERED'
+              AND (
+                o.state = 'PERMANENT_FAILED'
+                OR o.created_at <= $1::bigint - $2::bigint
+              )
+            GROUP BY o.state
+            """,
+            int(now), max(1, int(stale_seconds)),
+        )
+        return {
+            "problem_count": sum(int(row["quantity"]) for row in rows),
+            "by_state": {
+                str(row["state"]): int(row["quantity"]) for row in rows
+            },
+            "oldest_at": min(
+                (int(row["oldest_at"]) for row in rows), default=0,
+            ),
+        }
+
     async def claim_due_outbox(
         self,
         *,
@@ -2772,6 +2929,50 @@ class PostgresWritersSubmissionStorage:
             lease_seconds,
         )
         return [_outbox_from_row(row) for row in rows]
+
+    async def record_outbox_progress(
+        self,
+        *,
+        outbox_id: UUID,
+        worker_id: str,
+        now: int,
+        key: str,
+        message_id: int,
+        delivery_chat_id: int,
+    ) -> None:
+        """Checkpoint one Telegram message before sending the next.
+
+        A retry can resume from the last persisted moderation packet part.
+        The lease owner is checked to prevent stale workers recording progress.
+        """
+        key = str(key)
+        if not key or len(key) > 96 or not int(message_id) > 0:
+            raise ValueError("Invalid message progress checkpoint")
+        record = await self._require_pool().fetchval(
+            """
+            UPDATE writers_submission_outbox
+            SET delivery_progress_json = (
+                    COALESCE(delivery_progress_json::jsonb, '{}'::jsonb)
+                    || jsonb_build_object($4::text, $5::bigint)
+                )::text,
+                delivery_chat_id = $6,
+                updated_at = $3
+            WHERE id = $1
+              AND state = 'IN_FLIGHT'
+              AND worker_id = $2
+              AND lease_until > $3
+              AND event_type = 'MODERATION_CARD'
+            RETURNING id
+            """,
+            outbox_id,
+            str(worker_id),
+            int(now),
+            key,
+            int(message_id),
+            int(delivery_chat_id),
+        )
+        if record is None:
+            raise ConflictError("Outbox progress lease expired or was reassigned")
 
     async def mark_outbox_delivered(
         self,

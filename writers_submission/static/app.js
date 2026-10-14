@@ -16,6 +16,7 @@
     editSequence: 0,
     savedSequence: 0,
     createKey: null,
+    submitKey: null,
     uploadPending: false,
     uploadPreparing: false,
     submitting: false,
@@ -34,6 +35,20 @@
     REJECTED: "Отклонено",
     WITHDRAWN: "Отозвано",
   };
+
+  const deliveryLabels = {
+    QUEUED: "В очереди отправки модератору",
+    SENDING: "Передаем заявку в чат модерации",
+    RETRYING: "Временная ошибка Telegram, бот повторит доставку",
+    DELAYED: "Доставка задерживается, администрация получит предупреждение",
+    NEEDS_ATTENTION: "Ошибка доставки, требуется вмешательство администрации",
+    DELIVERED: "Комплект доставлен в чат модерации (не означает прочтение)",
+  };
+
+  function deliveryLabel(value) {
+    const code = value && value.status;
+    return deliveryLabels[code] || "Статус доставки пока неизвестен";
+  }
 
   const $ = (id) => document.getElementById(id);
 
@@ -128,6 +143,70 @@
     }
   }
 
+  // Keep protocol failures separate from validation failures. Do not expose
+  // HTML error pages, proxy traces or internal exceptions to the author.
+  function requestFailure(status, code, message = "", reference = "") {
+    const details = String(message || "").trim();
+    const lookup = {
+      unauthorized: "Сессия Telegram истекла. Закрой и снова открой Mini App через бота.",
+      not_found: "Черновик не найден или больше недоступен. Вернись к списку работ.",
+      conflict: "Черновик изменился в другой вкладке. Проверь сохраненные данные перед повтором.",
+      payload_too_large: "Файл или запрос слишком большой. Для вложения предел — 20 МБ.",
+      rate_limited: "Слишком много запросов. Подожди минуту и повтори действие.",
+      expected_version_required: "Версия черновика не передана. Переоткрой работу.",
+      idempotency_key_required: "Не передан идентификатор операции. Переоткрой Mini App.",
+    };
+    let explanation = lookup[code];
+    // Back-end validators use stable technical messages. Translate the most
+    // frequent ones so authors know exactly which field to correct.
+    if (status === 422 && details) {
+      const validationHints = [
+        [/work description needs at least three sentences/i, "Описание: нужно не менее трех законченных предложений с точкой, ! или ?."],
+        [/work description: max 110 words/i, "Описание: допускается максимум 110 слов."],
+        [/sketch description: max 35 words and 230 characters/i, "Описание зарисовки: максимум 35 слов и 230 символов."],
+        [/maximum file count reached/i, "К этой работе уже прикреплено максимальное число файлов (3). Удали лишний файл."],
+        [/file size exceeds maximum/i, "Размер вложения превышает лимит 20 МБ. Уменьши файл."],
+        [/file is empty/i, "Выбранный файл пустой. Выбери другой."],
+        [/unsupported file extension/i, "Формат файла не поддерживается. Допустимы PNG, JPG, PDF, DOCX и TXT."],
+        [/file extension and MIME type do not match|file extension, MIME type and detected file class do not match/i,
+          "Расширение файла не соответствует его содержимому. Сохрани файл в исходном формате и выбери заново."],
+        [/PNG header is invalid|JPEG ending is invalid/i, "Изображение повреждено или не соответствует формату. Сохрани его заново как PNG или JPG."],
+        [/TXT must be valid UTF-8 text/i, "Текстовый файл должен быть сохранен в кодировке UTF-8."],
+        [/DOCX (structure|container) is invalid/i, "Документ DOCX поврежден. Пересохрани документ и прикрепи заново."],
+        [/submission payload requires an HTTPS link, body text or a ready file/i,
+          "Добавь ссылку HTTPS на работу, текст или хотя бы один сохраненный файл."],
+        [/external_url must be an HTTPS URL/i, "Ссылка на произведение должна начинаться с https:// и не содержать логин или пароль."],
+        [/main_genres must have 1–3 entries/i, "Выбери от одного до трех основных жанров."],
+        [/warnings require yes selection|provide at least one content warning/i,
+          "Проверь предупреждения: выбери «Да» и укажи хотя бы одно предупреждение."],
+      ];
+      const hint = validationHints.find(([pattern]) => pattern.test(details));
+      if (hint) explanation = hint[1];
+    }
+    if (code === "telegram_file_staging_unavailable") {
+      explanation = details || "Не удалось передать файл в закрытое Telegram-хранилище. Повтори загрузку позднее.";
+    }
+    if (code === "eligibility_unavailable") {
+      explanation = details || "Telegram временно не может проверить подписку. Повтори отправку позднее.";
+    }
+    if (!explanation && status === 401) explanation = lookup.unauthorized;
+    if (!explanation && status === 403) explanation = details || "Нет разрешения на эту операцию.";
+    if (!explanation && status === 404) explanation = lookup.not_found;
+    if (!explanation && status === 409) explanation = lookup.conflict;
+    if (!explanation && status === 413) explanation = lookup.payload_too_large;
+    if (!explanation && status === 422) explanation = details || "Данные анкеты не прошли проверку.";
+    if (!explanation && status === 429) explanation = lookup.rate_limited;
+    if (!explanation && status >= 500) {
+      explanation = "Ошибка на стороне сервера. Текст черновика останется в форме; повтори позднее.";
+      if (reference) explanation += " Код обращения: " + String(reference).slice(0, 32) + ".";
+    }
+    if (!explanation) explanation = "Запрос не выполнен (HTTP " + status + "). Повтори действие.";
+    const error = new Error(explanation);
+    error.code = code || "request_failed";
+    error.status = status;
+    return error;
+  }
+
   async function api(path, options = {}) {
     const request = {
       method: options.method || "GET",
@@ -141,10 +220,26 @@
       request.body = options.body;
     }
 
-    const response = await fetch(path, request);
-    if (response.status === 204) {
-      return null;
+    const timeoutMs = options.timeoutMs || 30000;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timeout = controller
+      ? window.setTimeout(() => controller.abort(), timeoutMs)
+      : null;
+    if (controller) request.signal = controller.signal;
+    let response;
+    try {
+      response = await fetch(path, request);
+    } catch (cause) {
+      const timedOut = controller && controller.signal.aborted;
+      const error = new Error(timedOut
+        ? "Сервер не ответил за 30 секунд. Операция могла выполниться — проверь статус перед повтором."
+        : "Нет соединения с сервером. Проверь интернет и повтори действие.");
+      error.code = timedOut ? "request_timeout" : "network_error";
+      throw error;
+    } finally {
+      if (timeout !== null) window.clearTimeout(timeout);
     }
+    if (response.status === 204) return null;
 
     let payload = null;
     try {
@@ -152,25 +247,22 @@
     } catch (_error) {
       payload = null;
     }
-
     if (response.status === 409) {
       setReloadRequired(true);
-      const conflict = new Error("conflict");
-      conflict.code = "conflict";
-      conflict.status = 409;
-      throw conflict;
     }
-
     if (!response.ok) {
-      const error = new Error(
-        payload && payload.message
-          ? payload.message
-          : payload && payload.error
-            ? payload.error
-            : `HTTP ${response.status}`
+      throw requestFailure(
+        response.status,
+        payload && payload.error,
+        payload && payload.message,
+        payload && payload.reference
       );
-      error.code = payload && payload.error ? payload.error : "request_failed";
-      error.status = response.status;
+    }
+    if (!payload || typeof payload !== "object") {
+      const error = new Error(
+        "Сервер ответил без подтверждения. Проверь состояние черновика перед повтором."
+      );
+      error.code = "invalid_response";
       throw error;
     }
     return payload;
@@ -368,10 +460,214 @@
         : "Выбери фото. До отправки анкеты оно останется только на устройстве. Своя обложка — платная опция.";
   }
 
+  // Mini App WebViews may be killed without firing a close/unload event.
+  // Keep a short-lived, account-scoped TEXT-ONLY backup of edits that have
+  // not yet been confirmed by PostgreSQL. No files or Telegram credentials.
+  const LOCAL_BACKUP_TTL_MS = 48 * 60 * 60 * 1000;
+
+  function emergencyBackupKey() {
+    const user = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+    const id = user && Number(user.id);
+    return state.bootstrapped && Number.isSafeInteger(id) && id > 0
+      ? "ikf-writers-unsaved-v1:" + id : null;
+  }
+
+  function readEmergencyBackup() {
+    const key = emergencyBackupKey();
+    if (!key || typeof localStorage === "undefined") return null;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const saved = JSON.parse(raw);
+      const now = Date.now();
+      if (!saved || saved.schema !== 1 ||
+          !Number.isFinite(saved.savedAt) ||
+          saved.savedAt > now + 60000 ||
+          now - saved.savedAt > LOCAL_BACKUP_TTL_MS ||
+          !saved.fields || typeof saved.fields !== "object" ||
+          !saved.fields.details || typeof saved.fields.details !== "object" ||
+          (saved.id !== null && (
+            typeof saved.id !== "string" ||
+            !/^[0-9a-f-]{36}$/i.test(saved.id)
+          ))) {
+        localStorage.removeItem(key);
+        return null;
+      }
+      return saved;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function storeEmergencyBackup() {
+    const key = emergencyBackupKey();
+    if (!key || typeof localStorage === "undefined") return false;
+    if (state.current && state.current.status !== "DRAFT") return false;
+    if (!state.current) {
+      state.createKey ||= makeIdempotencyKey("create");
+    }
+    try {
+      const data = JSON.stringify({
+        schema: 1,
+        savedAt: Date.now(),
+        id: state.current ? String(state.current.id) : null,
+        revisionId: state.current && state.current.revision
+          ? String(state.current.revision.id) : null,
+        expectedVersion: state.current ? Number(state.current.version) : 0,
+        createKey: state.current ? null : state.createKey,
+        fields: currentFields(),
+      });
+      if (data.length > 250000) return false;
+      localStorage.setItem(key, data);
+      return true;
+    } catch (_error) {
+      // Storage can be disabled or full in Telegram's embedded WebView.
+      return false;
+    }
+  }
+
+  function promoteEmergencyBackupAfterCreate(createKey, submission) {
+    // A POST may finish while the author types more text. The original
+    // backup must follow the newly allocated draft ID without erasing the
+    // newer unsaved fields or the stable create key prematurely.
+    const key = emergencyBackupKey();
+    if (!key || typeof localStorage === "undefined") return;
+    try {
+      const saved = readEmergencyBackup();
+      if (!saved || saved.id !== null || saved.createKey !== createKey) return;
+      localStorage.setItem(key, JSON.stringify({
+        ...saved,
+        id: String(submission.id),
+        revisionId: submission.revision ? String(submission.revision.id) : null,
+        expectedVersion: Number(submission.version),
+        createKey: null,
+      }));
+    } catch (_error) {}
+  }
+
+  function clearEmergencyBackupIfSynced(force = false) {
+    const key = emergencyBackupKey();
+    if (!key || typeof localStorage === "undefined") return;
+    try {
+      const saved = readEmergencyBackup();
+      if (!saved) return;
+      if (!force) {
+        if (!state.current || state.editSequence > state.savedSequence ||
+            (saved.id && saved.id !== String(state.current.id)) ||
+            JSON.stringify(saved.fields) !== JSON.stringify(currentFields())) return;
+      } else if (!state.current || saved.id !== String(state.current.id)) {
+        // Never discard another tab's unnamed draft during a submit.
+        return;
+      }
+      localStorage.removeItem(key);
+    } catch (_error) {
+      // The server-confirmed draft remains authoritative.
+    }
+  }
+
+  function hideEmergencyRecovery() {
+    $("emergencyRecovery").classList.add("hidden");
+    $("emergencyRecoveryText").classList.add("hidden");
+    $("emergencyRecoveryText").value = "";
+  }
+
+  function showEmergencyRecovery() {
+    const saved = readEmergencyBackup();
+    if (!saved) return false;
+    $("emergencyRecovery").classList.remove("hidden");
+    $("emergencyRecoveryNotice").textContent =
+      "Найдены изменения, которые могли не сохраниться перед закрытием Telegram. " +
+      "Файлы не входят в резервную копию. Данные хранятся только на этом устройстве до 48 часов.";
+    return true;
+  }
+
+  async function restoreEmergencyBackup() {
+    // Avoid replacing a different work that the author is already editing.
+    if (typeof views !== "undefined" &&
+        !views.editor.classList.contains("hidden")) {
+      setBanner(
+        "Сначала вернись к списку работ, сохрани открытый черновик, " +
+        "а затем восстанови локальную копию.", "warning"
+      );
+      return false;
+    }
+    const saved = readEmergencyBackup();
+    if (!saved) {
+      hideEmergencyRecovery();
+      setBanner("Локальная резервная копия уже недоступна.", "warning");
+      return false;
+    }
+
+    const showManualCopy = (message) => {
+      const area = $("emergencyRecoveryText");
+      area.value = JSON.stringify(saved.fields, null, 2);
+      area.classList.remove("hidden");
+      $("emergencyRecoveryNotice").textContent =
+        message + " Ни один серверный черновик не изменен. " +
+        "Скопируй нужный текст из поля ниже перед закрытием приложения.";
+    };
+
+    if (!saved.id) {
+      if (!saved.createKey || typeof saved.createKey !== "string") {
+        showManualCopy("Ключ незавершенного создания черновика поврежден.");
+        return false;
+      }
+      await newDraft();
+      state.createKey = saved.createKey;
+      fillForm({ revision: { ...saved.fields, details: saved.fields.details } });
+      hideEmergencyRecovery();
+      markChanged();
+      setBanner("Локальный текст восстановлен. Сохраняем черновик на сервере.", "warning");
+      return true;
+    }
+
+    try {
+      // Server ownership is enforced by the authenticated GET. Never
+      // overwrite another device's edits or a submitted revision.
+      const response = await api(
+        "/api/writers/submissions/" + encodeURIComponent(saved.id)
+      );
+      const remote = response && response.submission;
+      if (!remote || remote.status !== "DRAFT" || !remote.revision ||
+          String(remote.revision.id) !== saved.revisionId) {
+        showManualCopy("Эта редакция больше недоступна для редактирования.");
+        return false;
+      }
+      if (Number(remote.version) !== saved.expectedVersion) {
+        if (draftMatchesSavedRequest(remote.revision, saved.fields)) {
+          await openSubmission(saved.id);
+          clearEmergencyBackupIfSynced(true);
+          hideEmergencyRecovery();
+          setBanner("Изменения уже сохранились на сервере.", "success");
+          return true;
+        }
+        showManualCopy("Серверный черновик обновлен с другого устройства.");
+        return false;
+      }
+      await openSubmission(saved.id);
+      if (!state.current || state.current.status !== "DRAFT" ||
+          String(state.current.id) !== saved.id ||
+          Number(state.current.version) !== saved.expectedVersion ||
+          String(state.current.revision && state.current.revision.id) !== saved.revisionId) {
+        showManualCopy("Версия черновика изменилась во время восстановления.");
+        return false;
+      }
+      fillForm({ revision: { ...saved.fields, details: saved.fields.details } });
+      hideEmergencyRecovery();
+      markChanged();
+      setBanner("Локальный текст восстановлен. Сохраняем его на сервере.", "warning");
+      return true;
+    } catch (_error) {
+      showManualCopy("Сервер пока недоступен или черновик нельзя открыть.");
+      return false;
+    }
+  }
+
   function markChanged() {
     refreshCounters();
     renderIkfCover();
     state.editSequence += 1;
+    storeEmergencyBackup();
     setSaveState("Есть несохраненные изменения");
     updateActionAvailability();
     // Create an actual server-side draft on the FIRST keystroke,
@@ -675,6 +971,9 @@
         safeTextElement("p", statusLabels[item.status] || item.status, "status-pill"),
         safeTextElement("h2", item.title || "Без названия")
       );
+      if (item.delivery && item.status !== "DRAFT") {
+        body.append(safeTextElement("p", "✉ " + deliveryLabel(item.delivery), "muted"));
+      }
 
       const updated = safeTextElement("span", formatDate(item.updated_at), "muted");
       top.append(body, updated);
@@ -814,6 +1113,9 @@
         ? ((revision.details || {}).palette_colors || []).join(" · ")
         : ((revision.details || {}).visual_mode === "image" ? "Картинка во вложениях" : "—")],
       ["Редакция", `№${revision.revision_number || 1}`],
+      ...(state.current.delivery
+        ? [["Доставка модератору", deliveryLabel(state.current.delivery)]]
+        : []),
       ["Обновлено", formatDate(state.current.updated_at) || "—"],
     ].forEach(([name, value]) => {
       meta.append(
@@ -840,7 +1142,14 @@
 
   async function loadWorkspace() {
     const payload = await api("/api/writers/submissions");
-    state.items = Array.isArray(payload.items) ? payload.items : [];
+    if (!payload || !Array.isArray(payload.items)) {
+      const error = new Error(
+        "Сервер вернул неполный список работ. Существующие черновики не удалены, повтори загрузку."
+      );
+      error.code = "invalid_response";
+      throw error;
+    }
+    state.items = payload.items;
     renderWorkspace();
   }
 
@@ -861,12 +1170,30 @@
       const payload = await api(
         `/api/writers/submissions/${encodeURIComponent(submissionId)}`
       );
+      const restored = payload && payload.submission;
+      if (!restored || String(restored.id) !== String(submissionId) ||
+          !["DRAFT", "SUBMITTED", "IN_REVIEW", "APPROVED", "CHANGES_REQUESTED", "REJECTED", "WITHDRAWN"].includes(restored.status) ||
+          !restored.revision || typeof restored.revision !== "object" ||
+          !Array.isArray(payload.files)) {
+        const error = new Error(
+          "Сервер вернул неполный черновик. Текст в текущей форме не изменен; повтори открытие."
+        );
+        error.code = "invalid_response";
+        throw error;
+      }
       if (state.pendingFiles.length) {
         setBanner("Локальные файлы не сохраняются в черновике. После повторного открытия их нужно выбрать заново.", "warning");
       }
+      const preserveSubmitKey = Boolean(
+        state.current && payload.submission &&
+        String(state.current.id) === String(payload.submission.id) &&
+        state.current.revision && payload.submission.revision &&
+        String(state.current.revision.id) === String(payload.submission.revision.id)
+      );
       state.pendingFiles = [];
       clearImagePreview();
       state.current = payload.submission;
+      if (!preserveSubmitKey) state.submitKey = null;
       state.attachments = Array.isArray(payload.files) ? payload.files : [];
       await loadHistory(submissionId);
 
@@ -910,6 +1237,7 @@
     state.editSequence = 0;
     state.savedSequence = 0;
     state.createKey = makeIdempotencyKey("create");
+    state.submitKey = null;
     setReloadRequired(false);
     fillForm({ revision: {} });
     renderAttachments();
@@ -917,6 +1245,22 @@
     setSaveState("Новый черновик — сохранится при вводе текста");
     show("editor");
     form.title.focus();
+  }
+
+  function verifiedDraftResponse(payload, expectedId = null, previousVersion = null) {
+    const item = payload && payload.submission;
+    if (!item || typeof item.id !== "string" || !item.id ||
+        item.status !== "DRAFT" || !Number.isSafeInteger(Number(item.version)) ||
+        Number(item.version) < 1 ||
+        (expectedId !== null && String(item.id) !== String(expectedId)) ||
+        (previousVersion !== null && Number(item.version) <= Number(previousVersion))) {
+      const error = new Error(
+        "Сервер вернул неполное подтверждение черновика. Не создавай новую заявку: проверь список работ."
+      );
+      error.code = "invalid_response";
+      throw error;
+    }
+    return item;
   }
 
   async function createDraft(fields) {
@@ -928,9 +1272,68 @@
       headers: { "Idempotency-Key": state.createKey },
       json: fields,
     });
-    state.current = payload.submission;
+    // A 2xx without a valid draft must never consume the idempotency key.
+    const created = verifiedDraftResponse(payload);
+    promoteEmergencyBackupAfterCreate(state.createKey, created);
+    state.current = created;
     state.createKey = null;
+    state.submitKey = null;
     return state.current;
+  }
+
+  function draftMatchesSavedRequest(revision, fields) {
+    // Detect a PATCH that committed before its HTTP response disappeared.
+    // Comparing *all* submitted fields prevents silently adopting another
+    // editor's revision and overwriting their changes.
+    if (!revision || !fields || !fields.details || !revision.details) return false;
+    const clean = (value) => String(value == null ? "" : value)
+      .replace(/\s+/gu, " ").trim();
+    for (const key of ["title", "work_type", "genre", "description"]) {
+      if (clean(revision[key]) !== clean(fields[key])) return false;
+    }
+    if (String(revision.body_text || "").trim() !== String(fields.body_text || "").trim()) return false;
+    if (clean(revision.external_url) !== clean(fields.external_url)) return false;
+    for (const [key, value] of Object.entries(fields.details)) {
+      const remote = revision.details[key];
+      if (Array.isArray(value)) {
+        if (!Array.isArray(remote)) return false;
+        const normalizeList = (items) => items.map((item) =>
+          key === "palette_colors" ? clean(item).toUpperCase() : clean(item)
+        ).filter(Boolean);
+        let expected = normalizeList(value);
+        if (key === "extra_links") expected = [...new Set(expected)];
+        if (JSON.stringify(expected) !== JSON.stringify(normalizeList(remote))) return false;
+      } else if (typeof value === "number" || value === null) {
+        if (value !== (remote === undefined ? null : remote)) return false;
+      } else if (clean(value) !== clean(remote)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async function reconcileDraftSave(fields, expectedVersion, revisionId, error) {
+    const uncertain = ["network_error", "request_timeout", "invalid_response", "conflict"].includes(error.code) ||
+      Number(error.status) >= 500;
+    if (!uncertain || !state.current) return false;
+    try {
+      const payload = await api(
+        "/api/writers/submissions/" + encodeURIComponent(state.current.id)
+      );
+      const remote = payload && payload.submission;
+      if (!remote || remote.status !== "DRAFT" ||
+          Number(remote.version) <= expectedVersion ||
+          String(remote.revision && remote.revision.id) !== String(revisionId) ||
+          !draftMatchesSavedRequest(remote.revision, fields)) {
+        return false;
+      }
+      state.current = remote;
+      setReloadRequired(false);
+      setSaveState("Сохранение подтверждено после восстановления связи");
+      return true;
+    } catch (_verificationFailure) {
+      return false;
+    }
   }
 
   async function autosave({ immediate = false } = {}) {
@@ -967,14 +1370,24 @@
           if (!state.current) {
             await createDraft(fields);
           } else {
-            const payload = await api(
-              `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
-              {
-                method: "PATCH",
-                json: { ...fields, expected_version: state.current.version },
+            const expectedVersion = Number(state.current.version);
+            const revisionId = state.current.revision && state.current.revision.id;
+            try {
+              const payload = await api(
+                `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
+                {
+                  method: "PATCH",
+                  json: { ...fields, expected_version: expectedVersion },
+                }
+              );
+              state.current = verifiedDraftResponse(
+                payload, state.current.id, expectedVersion
+              );
+            } catch (error) {
+              if (!await reconcileDraftSave(fields, expectedVersion, revisionId, error)) {
+                throw error;
               }
-            );
-            state.current = payload.submission;
+            }
           }
           state.savedSequence = capturedSequence;
           if (state.editSequence > capturedSequence) {
@@ -982,6 +1395,7 @@
           }
         }
         setSaveState("Сохранено на сервере");
+        clearEmergencyBackupIfSynced();
         return true;
       } catch (error) {
         setSaveState("Не сохранено");
@@ -1008,6 +1422,79 @@
     }
   }
 
+  async function showAcceptedSubmission(submission) {
+    // Once the submit endpoint or a recovery GET confirms acceptance, no
+    // subsequent list-refresh error may be represented as a failed submit.
+    state.current = {
+      ...submission,
+      delivery: submission.delivery || { status: "QUEUED" },
+    };
+    state.submitKey = null;
+    clearEmergencyBackupIfSynced(true);
+    setReloadRequired(false);
+    clearPendingFiles();
+    await loadHistory(submission.id);
+    try {
+      await loadWorkspace();
+      setBanner("");
+    } catch (_error) {
+      setBanner("Заявка принята, но список работ пока не обновился. Открой его позже.", "warning");
+    }
+    renderDetail();
+    show("detail");
+    if (tg && tg.HapticFeedback) {
+      tg.HapticFeedback.notificationOccurred("success");
+    }
+  }
+
+  async function confirmSubmissionAfterFailure(error) {
+    // The POST response may be lost *after* the database transaction commits.
+    // Read the actual status instead of inviting a duplicate POST.
+    const uncertain = ["network_error", "request_timeout", "invalid_response", "conflict"].includes(error.code) ||
+      Number(error.status) >= 500;
+    if (!uncertain || !state.current) return false;
+    try {
+      const payload = await api(
+        "/api/writers/submissions/" + encodeURIComponent(state.current.id)
+      );
+      const received = payload && payload.submission;
+      if (!received) throw new Error("Сервер не вернул состояние заявки.");
+      if (["SUBMITTED", "IN_REVIEW", "APPROVED", "CHANGES_REQUESTED", "REJECTED"].includes(received.status)) {
+        await showAcceptedSubmission(received);
+        return true;
+      }
+      // Keep the original idempotency key on an unconfirmed submission;
+      // never replace it with a new key for a retry.
+      if (received.status === "DRAFT") {
+        state.current = received;
+        if (error.code !== "conflict") setReloadRequired(false);
+      }
+      return false;
+    } catch (checkError) {
+      setEditorError(
+        "Не удалось подтвердить результат отправки: " + checkError.message +
+        " Не создавай вторую заявку. Открой черновик и проверь статус в списке работ."
+      );
+      return true;
+    }
+  }
+
+  async function saveDraftAndFiles() {
+    if (state.reloadRequired || state.autosavePending ||
+        state.uploadPending || state.uploadPreparing || state.submitting) return false;
+    if (!await autosave({ immediate: true })) return false;
+    if (!state.pendingFiles.length) return true;
+    // Authors can recover a chosen image even if the initial automatic
+    // upload failed because the draft was incomplete or offline.
+    return uploadQueuedFiles();
+  }
+
+  function lockFormDuringSubmission(locked) {
+    if (typeof document === "undefined") return;
+    document.querySelectorAll("#editorView input, #editorView textarea, #editorView select")
+      .forEach((input) => { input.disabled = Boolean(locked); });
+  }
+
   async function submitCurrent() {
     if (state.reloadRequired || state.autosavePending ||
         state.uploadPending || state.uploadPreparing || state.submitting) return;
@@ -1019,15 +1506,12 @@
       return;
     }
     state.submitting = true;
+    lockFormDuringSubmission(true);
     updateActionAvailability();
     try {
-      // No documents leave the user's device until the complete form passes
-      // validation AND its text has been saved in the draft.
       const saved = await autosave({ immediate: true });
       if (!saved || !state.current || state.reloadRequired) return;
       if (!await uploadQueuedFiles()) return;
-      // File staging increments the PostgreSQL submission version. Flush
-      // edits made while files were transferred using the refreshed version.
       if (!await autosave({ immediate: true }) || state.reloadRequired) return;
       try {
         validateReadyForm();
@@ -1035,32 +1519,37 @@
         setEditorError(error.message);
         return;
       }
+      state.submitKey ||= makeIdempotencyKey("submit");
       setBusy(true);
       try {
         const payload = await api(
           "/api/writers/submissions/" + encodeURIComponent(state.current.id) + "/submit",
           {
             method: "POST",
-            headers: { "Idempotency-Key": makeIdempotencyKey("submit") },
+            headers: { "Idempotency-Key": state.submitKey },
             json: { expected_version: state.current.version },
           }
         );
-        state.current = payload.submission;
-        clearPendingFiles();
-        await loadHistory(state.current.id);
-        await loadWorkspace();
-        renderDetail();
-        show("detail");
-        if (tg && tg.HapticFeedback) {
-          tg.HapticFeedback.notificationOccurred("success");
+        const accepted = payload && payload.submission;
+        if (!accepted || String(accepted.id) !== String(state.current.id) ||
+            !["SUBMITTED", "IN_REVIEW", "APPROVED", "CHANGES_REQUESTED", "REJECTED"].includes(accepted.status)) {
+          const error = new Error("Сервер не подтвердил изменение статуса заявки.");
+          error.code = "invalid_response";
+          throw error;
         }
+        await showAcceptedSubmission(accepted);
       } catch (error) {
-        setEditorError(error.message || "Не удалось отправить работу. Вложения останутся прикрепленными к черновику.");
+        if (await confirmSubmissionAfterFailure(error)) return;
+        setEditorError(
+          "Отправка не подтверждена: " + error.message +
+          " Черновик и уже загруженные вложения сохраняются. Не создавай вторую заявку."
+        );
       } finally {
         setBusy(false);
       }
     } finally {
       state.submitting = false;
+      lockFormDuringSubmission(false);
       updateActionAvailability();
     }
   }
@@ -1196,31 +1685,34 @@
         }
         if (xhr.status === 409) {
           setReloadRequired(true);
-          const conflict = new Error("Черновик изменился в другой вкладке.");
-          conflict.code = "conflict";
-          reject(conflict);
-          return;
         }
         if (xhr.status < 200 || xhr.status >= 300) {
-          const message = data && (data.message || data.error);
-          const error = new Error(message || `Ошибка сервера: HTTP ${xhr.status}`);
-          error.status = xhr.status;
-          error.code = data && data.error ? data.error : "request_failed";
-          reject(error);
+          reject(requestFailure(
+            xhr.status,
+            data && data.error,
+            data && data.message,
+            data && data.reference
+          ));
           return;
         }
         if (!data || !data.id) {
-          reject(new Error("Сервер не подтвердил сохранение файла."));
+          const error = new Error("Сервер не подтвердил сохранение файла.");
+          error.code = "upload_invalid_response";
+          reject(error);
           return;
         }
         resolve(data);
       };
-      xhr.onerror = () => reject(new Error(
-        "Не удалось передать файл: соединение прервано. Проверь интернет."
-      ));
-      xhr.ontimeout = () => reject(new Error(
-        "Сервер слишком долго обрабатывает файл. Проверь список вложений перед повтором."
-      ));
+      xhr.onerror = () => {
+        const error = new Error("Не удалось передать файл: соединение прервано. Проверь интернет.");
+        error.code = "upload_network_error";
+        reject(error);
+      };
+      xhr.ontimeout = () => {
+        const error = new Error("Сервер не подтвердил файл за пять минут.");
+        error.code = "upload_timeout";
+        reject(error);
+      };
       xhr.onabort = () => reject(new Error("Загрузка файла прервана."));
       try {
         xhr.send(formData);
@@ -1282,6 +1774,29 @@
     await uploadQueuedFiles();
   }
 
+  async function verifyAmbiguousFileUpload(entry, knownIds) {
+    // Never match by filename alone: two distinct photos often have the same
+    // name. A new server-side file must match the actual SHA-256 and size.
+    const subtle = typeof crypto !== "undefined" && crypto.subtle;
+    const digest = subtle && typeof entry.file.arrayBuffer === "function"
+      ? await subtle.digest("SHA-256", await entry.file.arrayBuffer())
+      : null;
+    const hash = digest
+      ? Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")
+      : null;
+    const payload = await api(
+      "/api/writers/submissions/" + encodeURIComponent(state.current.id)
+    );
+    if (payload && payload.submission) state.current = payload.submission;
+    const files = payload && Array.isArray(payload.files) ? payload.files : [];
+    if (!hash) return null;
+    return files.find((item) =>
+      !knownIds.has(String(item.id)) &&
+      String(item.sha256 || "").toLowerCase() === hash &&
+      Number(item.size) === entry.file.size
+    ) || null;
+  }
+
   async function uploadQueuedFiles() {
     if (state.reloadRequired || state.uploadPending || state.uploadPreparing) return false;
     if (!state.pendingFiles.length) return true;
@@ -1304,12 +1819,33 @@
         updateUploadProgress(source, "Передаю " + position + ": " + file.name, 0);
         const formData = new FormData();
         formData.append("file", file, file.name);
-        const uploaded = await sendFileWithProgress(
-          "/api/writers/submissions/" + encodeURIComponent(state.current.id) + "/files",
-          formData,
-          (percent) => updateUploadProgress(source, "Передаю " + position + ": " + file.name, percent),
-          () => updateUploadProgress(source, "Передано " + position + ". Сохраняем на сервере…", 100, "processing"),
-        );
+        const knownIds = new Set(state.attachments.map((item) => String(item.id)));
+        let uploaded;
+        try {
+          uploaded = await sendFileWithProgress(
+            "/api/writers/submissions/" + encodeURIComponent(state.current.id) + "/files",
+            formData,
+            (percent) => updateUploadProgress(source, "Передаю " + position + ": " + file.name, percent),
+            () => updateUploadProgress(source, "Передано " + position + ". Сохраняем на сервере…", 100, "processing"),
+          );
+        } catch (error) {
+          const ambiguous = ["upload_network_error", "upload_timeout", "upload_invalid_response"].includes(error.code) ||
+            (Number(error.status) >= 500 && error.code !== "telegram_file_staging_unavailable");
+          if (!ambiguous) throw error;
+          updateUploadProgress(source, "Проверяю, сохранился ли файл на сервере…", null, "processing");
+          try {
+            uploaded = await verifyAmbiguousFileUpload(entry, knownIds);
+          } catch (_checkError) {
+            uploaded = null;
+          }
+          if (!uploaded) {
+            setReloadRequired(true);
+            throw new Error(
+              "Сервер не подтвердил результат загрузки. Не загружай файл повторно вслепую: " +
+              "переоткрой черновик, проверь вложения и только затем повтори при необходимости."
+            );
+          }
+        }
         // HTTP 201 confirms storage. Remove locally before GET to avoid
         // re-sending a successfully stored file after interrupted refresh.
         state.pendingFiles = state.pendingFiles.filter((item) => item.id !== entry.id);
@@ -1437,6 +1973,7 @@
       state.editSequence = 0;
       state.savedSequence = 0;
       state.createKey = null;
+    state.submitKey = null;
       renderAttachments();
       setReloadRequired(false);
       show("editor");
@@ -1445,6 +1982,24 @@
     } finally {
       setBusy(false);
     }
+  }
+
+  async function reloadDraftSafely() {
+    if (!state.current) return false;
+    if (state.autosavePending || state.savePromise ||
+        state.uploadPending || state.uploadPreparing || state.submitting) {
+      setEditorError("Дождись завершения сохранения или загрузки перед обновлением черновика.");
+      return false;
+    }
+    const hasUnsaved = state.editSequence > state.savedSequence ||
+      state.pendingFiles.length > 0;
+    if (hasUnsaved && !window.confirm(
+      "В черновике есть несохраненный текст или незагруженные файлы. " +
+      "Обновление заменит текущие данные сохраненной версией. " +
+      "Сначала скопируй важный текст. Все равно обновить?"
+    )) return false;
+    await openSubmission(state.current.id);
+    return true;
   }
 
   function bindEvents() {
@@ -1469,7 +2024,11 @@
       await loadWorkspace();
       show("workspace");
     });
-    $("saveButton").addEventListener("click", () => autosave({ immediate: true }));
+    $("refreshDeliveryButton").addEventListener("click", async () => {
+      if (!state.current) return;
+      await openSubmission(state.current.id);
+    });
+    $("saveButton").addEventListener("click", () => { void saveDraftAndFiles(); });
     $("submitButton").addEventListener("click", submitCurrent);
     $("fileInput").addEventListener("change", (event) => {
       const chosen = Array.from(event.target.files || []);
@@ -1483,10 +2042,30 @@
     });
     $("withdrawButton").addEventListener("click", withdrawCurrent);
     $("revisionButton").addEventListener("click", createRevision);
-    $("reloadButton").addEventListener("click", () => {
-      if (state.current) {
-        openSubmission(state.current.id);
+    window.addEventListener("offline", () => {
+      setBanner("Нет интернета. Не закрывай Mini App: несохраненный текст и выбранные файлы остаются в этой форме.", "warning");
+    });
+    window.addEventListener("online", () => {
+      if (state.reloadRequired) return;
+      if (!views.editor.classList.contains("hidden") &&
+          (state.editSequence > state.savedSequence || state.pendingFiles.length)) {
+        void saveDraftAndFiles().then((saved) => {
+          if (saved) setBanner("");
+        });
+      } else {
+        setBanner("");
       }
+    });
+    $("reloadButton").addEventListener("click", () => { void reloadDraftSafely(); });
+    $("emergencyRestoreButton").addEventListener("click", () => {
+      void restoreEmergencyBackup();
+    });
+    $("emergencyDiscardButton").addEventListener("click", () => {
+      const key = emergencyBackupKey();
+      if (key && typeof localStorage !== "undefined") {
+        try { localStorage.removeItem(key); } catch (_error) {}
+      }
+      hideEmergencyRecovery();
     });
 
     Object.values(form).forEach((field) => {
@@ -1528,6 +2107,7 @@
       await loadWorkspace();
       show("workspace");
       setBanner("");
+      showEmergencyRecovery();
     } catch (error) {
       setBanner(
         error.message || "Не удалось открыть Writers Submission.",

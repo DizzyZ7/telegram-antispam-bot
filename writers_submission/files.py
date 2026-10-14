@@ -13,6 +13,10 @@ from .uploads import validate_staged_file
 LOGGER = logging.getLogger(__name__)
 
 
+class FileStagingUnavailableError(RuntimeError):
+    """Private Telegram storage failed before a file could be confirmed."""
+
+
 async def require_private_staging_chat(bot: Any, config: Any) -> None:
     """Never stage an author's private files in a public or shared chat.
 
@@ -114,18 +118,33 @@ class WritersFileService:
             # Wrong/changed chat IDs must never expose private artwork.
             await require_private_staging_chat(self.bot, self.config)
 
-            staging_message = await self.bot.send_document(
-                chat_id=int(self.config.file_chat_id),
-                document=FSInputFile(
-                    path,
-                    filename=upload.safe_filename,
-                ),
-                disable_notification=True,
-            )
+            try:
+                staging_message = await self.bot.send_document(
+                    chat_id=int(self.config.file_chat_id),
+                    document=FSInputFile(
+                        path,
+                        filename=upload.safe_filename,
+                    ),
+                    disable_notification=True,
+                )
+            except Exception as exc:
+                LOGGER.exception(
+                    "WRITERS_FILE_STAGING_SEND_FAILED type=%s",
+                    type(exc).__name__,
+                )
+                raise FileStagingUnavailableError(
+                    "Telegram не принял файл в закрытое хранилище. "
+                    "Выбранный файл остается в форме. Проверь подключение "
+                    "и повтори загрузку через некоторое время."
+                ) from exc
             document = getattr(staging_message, "document", None)
             telegram_file_id = getattr(document, "file_id", None)
             if not telegram_file_id:
-                raise RuntimeError("Telegram staging response has no document file_id")
+                LOGGER.error("WRITERS_FILE_STAGING_NO_DOCUMENT_ID")
+                raise FileStagingUnavailableError(
+                    "Telegram вернул ответ без идентификатора файла. "
+                    "Загрузка не подтверждена. Попробуй еще раз."
+                )
 
             try:
                 return await self.storage.add_ready_file(

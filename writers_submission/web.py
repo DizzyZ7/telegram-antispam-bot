@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from aiohttp import web
 
@@ -19,6 +19,7 @@ from .models import (
     NotFoundError,
     ValidationError,
 )
+from .files import FileStagingUnavailableError
 from .service import EligibilityUnavailableError
 LOGGER = logging.getLogger(__name__)
 
@@ -327,6 +328,10 @@ def create_writers_web_app(
                 status=422,
                 message=str(exc),
             )
+        except FileStagingUnavailableError as exc:
+            return _error(
+                "telegram_file_staging_unavailable", status=503, message=str(exc),
+            )
         except EligibilityUnavailableError as exc:
             return _error(
                 "eligibility_unavailable", status=503, message=str(exc),
@@ -351,6 +356,32 @@ def create_writers_web_app(
                     content_type="application/json",
                 )
             return _error("bad_request", status=400)
+        except web.HTTPException as exc:
+            # aiohttp's default HTML error pages are not useful to a Mini App.
+            if exc.status < 400:
+                raise
+            code = {
+                401: "unauthorized",
+                403: "forbidden",
+                404: "not_found",
+                408: "request_timeout",
+                413: "payload_too_large",
+                429: "rate_limited",
+                502: "upstream_unavailable",
+                503: "service_unavailable",
+                504: "gateway_timeout",
+            }.get(exc.status, "http_error")
+            return _error(code, status=exc.status)
+        except Exception:
+            reference = uuid4().hex[:12]
+            LOGGER.exception(
+                "WRITERS_FORM_UNHANDLED_ERROR reference=%s method=%s",
+                reference, request.method,
+            )
+            return _json_response(
+                {"error": "internal_error", "reference": reference},
+                status=500,
+            )
 
     app = web.Application(
         middlewares=[security_headers, domain_errors],
@@ -465,8 +496,23 @@ def create_writers_web_app(
     async def list_submissions(request: web.Request) -> web.Response:
         user_id = limited_actor(request, "read")
         items = await service.list_mine(user_id)
+        status_method = getattr(service, "moderation_delivery_statuses", None)
+        deliveries = {}
+        if callable(status_method):
+            try:
+                deliveries = await status_method(user_id, now=int(now_fn()))
+            except Exception:
+                LOGGER.exception("WRITERS_AUTHOR_DELIVERY_STATUS_LIST_FAILED")
         return _json_response(
-            {"items": [_json_value(item) for item in items]},
+            {
+                "items": [
+                    {
+                        **_json_value(item),
+                        "delivery": deliveries.get(str(item.id)),
+                    }
+                    for item in items
+                ],
+            },
         )
 
     async def create_submission(request: web.Request) -> web.Response:
@@ -493,9 +539,21 @@ def create_writers_web_app(
         files = []
         if callable(files_method):
             files = await files_method(user_id, submission_id)
+        status_method = getattr(service, "moderation_delivery_statuses", None)
+        deliveries = {}
+        if callable(status_method):
+            try:
+                deliveries = await status_method(
+                    user_id, now=int(now_fn()), submission_id=submission_id,
+                )
+            except Exception:
+                LOGGER.exception("WRITERS_AUTHOR_DELIVERY_STATUS_DETAIL_FAILED")
         return _json_response(
             {
-                "submission": _bundle_payload(result),
+                "submission": {
+                    **_bundle_payload(result),
+                    "delivery": deliveries.get(str(result.id)),
+                },
                 "files": [_file_payload(item) for item in files],
             }
         )

@@ -4,7 +4,8 @@ from __future__ import annotations
 import unittest
 
 from writers_submission.models import ModerationDeliveryContext, ValidationError
-from writers_submission.promo import render_owner_promo
+from writers_submission.promo import quote_work_title, render_owner_promo
+from writers_submission.delivery import _moderation_text
 from writers_submission.uploads import (
     normalize_submission_details, validate_description_for_format, count_description_sentences,
     validate_submission_fields,
@@ -125,9 +126,105 @@ class NewSubmissionFormTests(unittest.TestCase):
         self.assertLess(post.index(DESCRIPTION), post.index("• Романтика"))
         self.assertLess(post.index("• Романтика"), post.index("ПРЕДУПРЕЖДЕНИЯ"))
         self.assertIn("🚨 <b>ПРЕДУПРЕЖДЕНИЯ (18+)</b>", post)
-        self.assertIn("× Насилие × &lt;Спойлер&gt;", post)
+        self.assertIn(
+            "<tg-spoiler>× Насилие × &lt;Спойлер&gt; ×</tg-spoiler>", post
+        )
+        self.assertLess(post.index("ПРЕДУПРЕЖДЕНИЯ"), post.index("<tg-spoiler>"))
+        self.assertNotIn("🚨 <tg-spoiler>", post)
         self.assertIn("Фэнтези &amp; сказки", post)
         self.assertNotIn("<Спойлер>", post)
+
+    def test_titles_use_one_pair_of_russian_guillemets(self):
+        for original in (
+            "Название", '"Название"', "«Название»", "“Название”",
+            "„Название“", "'Название'", '«"Название"»',
+            "  « Название »  ",
+        ):
+            with self.subTest(original=original):
+                self.assertEqual(quote_work_title(original), "« Название »")
+        self.assertEqual(quote_work_title(""), "« Название »")
+        self.assertEqual(
+            quote_work_title("Название \"с кавычками\" внутри"),
+            '« Название "с кавычками" внутри »',
+        )
+
+    def test_approved_post_and_moderation_card_quote_titles_and_spoil_warnings(self):
+        for entered_title in ("Название", "«Название»", '"Название"'):
+            context = ModerationDeliveryContext(
+                author_user_id=10, title=entered_title, work_type="ФФ",
+                genre="Гет", description=DESCRIPTION, body_text="",
+                external_url="https://ficbook.net/readfic/12345", files=(),
+                details=common_details(warnings=[
+                    "Буллинг", " буллинг ", "<Опасный текст> & другое", "",
+                ]),
+            )
+            with self.subTest(title=entered_title):
+                post = render_owner_promo(context)
+                moderation = _moderation_text(context)
+                self.assertIn("« <b>Название</b> »", post)
+                self.assertIn("Название: « Название »", moderation)
+                self.assertNotIn("« « Название » »", post + moderation)
+                self.assertEqual(post.count("<tg-spoiler>"), 1)
+                self.assertIn(
+                    "<tg-spoiler>× Буллинг × &lt;Опасный текст&gt; &amp; другое ×</tg-spoiler>",
+                    post,
+                )
+                self.assertIn("<tg-spoiler>", moderation)
+                self.assertNotIn("<Опасный текст>", post + moderation)
+
+    def test_no_content_warnings_do_not_create_spoiler(self):
+        context = ModerationDeliveryContext(
+            author_user_id=10, title="Название", work_type="Оридж",
+            genre="Джен", description=DESCRIPTION, body_text="",
+            external_url="https://ficbook.net/readfic/12345", files=(),
+            details=common_details(warnings_present="no", warnings=[]),
+        )
+        post = render_owner_promo(context)
+        self.assertNotIn("ПРЕДУПРЕЖДЕНИЯ", post)
+        self.assertNotIn("<tg-spoiler>", post)
+        self.assertEqual(quote_work_title(context.title), "« Название »")
+
+
+    def test_copy_ready_owner_post_has_mandatory_ornament_and_spaced_bold_title(self):
+        context = ModerationDeliveryContext(
+            author_user_id=10, title='"Название"', work_type="ФФ",
+            genre="Фемслэш", description=DESCRIPTION, body_text="",
+            external_url="https://ficbook.net/readfic/12345", files=(),
+            details=common_details(
+                fandom="Приоритетчудояйца", size_category="макси", rating="NC-17",
+                main_genres=["Ангст", "Hurt/comfort", "Сюрреализм"],
+                warnings=["Буллинг", "нездоровые отношения"],
+                characters="Рика/Момои",
+                extra_links=["https://t.me/zippaket0514"],
+            ),
+        )
+        post = render_owner_promo(context)
+        self.assertTrue(post.startswith("« <b>Название</b> »\n\n"))
+        self.assertIn("• Ангст • Hurt/comfort • Сюрреализм •", post)
+        self.assertIn(
+            "🚨 <b>ПРЕДУПРЕЖДЕНИЯ (18+)</b>\n"
+            "<tg-spoiler>× Буллинг × нездоровые отношения ×</tg-spoiler>", post,
+        )
+        self.assertIn("#Приоритетчудояйца | #Макси | #Фемслэш | #NC17 | #ВПроцессе", post)
+        self.assertIn("Основные персонажи / пейринг: Рика/Момои", post)
+        self.assertIn('8️⃣ <a href="https://ficbook.net/readfic/12345">Читать на Фикбук</a>', post)
+        self.assertIn('💬 <a href="https://t.me/zippaket0514">ТГ-канал</a>', post)
+        self.assertTrue(post.endswith("• • • • • • • • ✦ • • • • • • • •"))
+        self.assertLess(post.index("« <b>Название</b> »"), post.index(DESCRIPTION))
+        self.assertLess(post.index("ПРЕДУПРЕЖДЕНИЯ"), post.index("#Приоритетчудояйца"))
+        self.assertLess(post.index("Читать на Фикбук"), post.index("✦"))
+
+    def test_ornament_is_present_without_warnings_or_external_links(self):
+        context = ModerationDeliveryContext(
+            author_user_id=10, title="Название", work_type="Оридж",
+            genre="Джен", description="История", body_text="",
+            external_url=None, files=(),
+            details={"form_version": 2, "warnings_present": "no"},
+        )
+        post = render_owner_promo(context)
+        self.assertIn("« <b>Название</b> »", post)
+        self.assertNotIn("ПРЕДУПРЕЖДЕНИЯ", post)
+        self.assertEqual(post.count("• • • • • • • • ✦ • • • • • • • •"), 1)
 
     def test_sketch_requires_ficbook_profile_and_telegraph_article(self):
         sketch_details = common_details(
