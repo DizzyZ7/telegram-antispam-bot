@@ -278,6 +278,49 @@ class WritersSubmissionServiceTests(unittest.IsolatedAsyncioTestCase):
             self.eligibility,
         )
 
+    async def test_assigned_non_owner_moderator_may_confirm_both_separate_payments(self):
+        # Owner 9001 is not the only authorized moderator; 9002 is allowlisted.
+        self.config.owner_user_id = 9001
+        self.storage.confirm_work_payment = AsyncMock(return_value=True)
+        self.storage.confirm_cover_payment = AsyncMock(return_value=True)
+        submission_id, revision_id = uuid4(), uuid4()
+        work = await self.service.confirm_work_payment(
+            reviewer_user_id=9002,
+            submission_id=submission_id, revision_id=revision_id, now=200,
+        )
+        cover = await self.service.confirm_cover_payment(
+            reviewer_user_id=9002,
+            submission_id=submission_id, revision_id=revision_id, now=201,
+        )
+        self.assertTrue(work)
+        self.assertTrue(cover)
+        self.storage.confirm_work_payment.assert_awaited_once_with(
+            reviewer_user_id=9002,
+            submission_id=submission_id, revision_id=revision_id, now=200,
+        )
+        self.storage.confirm_cover_payment.assert_awaited_once_with(
+            reviewer_user_id=9002,
+            submission_id=submission_id, revision_id=revision_id, now=201,
+        )
+
+    async def test_non_moderator_cannot_confirm_work_or_cover_even_with_valid_ids(self):
+        self.config.owner_user_id = 9001
+        self.storage.confirm_work_payment = AsyncMock(return_value=True)
+        self.storage.confirm_cover_payment = AsyncMock(return_value=True)
+        submission_id, revision_id = uuid4(), uuid4()
+        for method in (
+            self.service.confirm_work_payment,
+            self.service.confirm_cover_payment,
+        ):
+            with self.subTest(method=method.__name__):
+                with self.assertRaises(AuthorizationError):
+                    await method(
+                        reviewer_user_id=7777, submission_id=submission_id,
+                        revision_id=revision_id, now=123,
+                    )
+        self.storage.confirm_work_payment.assert_not_awaited()
+        self.storage.confirm_cover_payment.assert_not_awaited()
+
     async def test_create_saves_a_draft_even_when_membership_is_unavailable(self):
         # A draft is private and requires the signed Telegram session in web;
         # live membership must be enforced at submit, not on each keystroke.
