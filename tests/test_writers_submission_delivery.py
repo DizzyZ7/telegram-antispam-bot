@@ -437,7 +437,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("#Ориджиналы | #Макси | #Джен | #R | #ВПроцессе", kwargs["caption"])
         self.assertIn("Основные персонажи", kwargs["caption"])
         self.assertIn("&lt;без HTML&gt;", kwargs["caption"])
-        self.assertIn("Читать на Фикбуке", kwargs["caption"])
+        self.assertIn("Читать на Фикбук", kwargs["caption"])
         self.assertIn("ТГ-канал", kwargs["caption"])
         self.bot.send_message.assert_not_awaited()
         self.storage.mark_outbox_delivered.assert_awaited_once_with(
