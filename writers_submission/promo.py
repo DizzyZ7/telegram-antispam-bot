@@ -66,8 +66,8 @@ def _link(url: str, label: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>'
 
 
-def render_owner_promo(context: ModerationDeliveryContext) -> str:
-    """HTML suitable for an ICФ-style copyable Telegram post."""
+def render_owner_promo(context: ModerationDeliveryContext, *, compact: bool = False) -> str:
+    """HTML suitable for a copyable ICФ Telegram post or compact fallback."""
     details = context.details or {}
     is_ficbook = details.get("form_version") in (2, 3)
     is_sketch = details.get("form_version") == 3 and context.work_type == "Зарисовка"
@@ -88,36 +88,38 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
     lines = [
         f"« <b>{_preview(unquoted_work_title(context.title), 245)}</b> »",
         "",
-        _preview(context.description, 1650),
+        _preview(context.description, 550 if compact else 1650),
     ]
     if details.get("form_version") == 3:
         genres = details.get("main_genres") or []
         if genres:
             lines.extend(("", "• " + " • ".join(_preview(g, 70) for g in genres[:3]) + " •"))
         if details.get("warnings_present") == "yes":
-            warnings = _visible_warnings(details.get("warnings"))
+            warnings = _visible_warnings(details.get("warnings"))[:8 if compact else 10]
             if warnings:
                 lines.extend((
                     "", "🚨 <b>ПРЕДУПРЕЖДЕНИЯ (18+)</b>",
-                    "<tg-spoiler>× " + " × ".join(_preview(w, 85) for w in warnings) + " ×</tg-spoiler>",
+                    "<tg-spoiler>× " + " × ".join(_preview(w, 55 if compact else 85) for w in warnings) + " ×</tg-spoiler>",
                 ))
         if is_sketch:
             lines.extend(("", "🎨 Обложка для рубрики — от команды ИКФ."))
-    if not is_sketch and details.get("notes"):
-        lines += ["", f"<b>Примечания:</b>\n{_preview(details['notes'], 850)}"]
+    # Optional notes follow genres, ratings and characters, never break the
+    # headline/description/warnings/hashtags visual sequence.
     hashtags = [tag for tag in tags if tag]
     if hashtags:
         lines += ["", " | ".join(hashtags)]
     if not is_sketch and details.get("completion") == "завершен" and details.get("pages") and details.get("parts"):
         lines += ["", f"Объем: {int(details.get('size_words') or 0)} слов, {int(details['pages'])} страниц, {int(details['parts'])} частей"]
     if not is_sketch and details.get("characters"):
-        lines += ["", f"Основные персонажи / пейринг: {_preview(details['characters'], 350)}"]
+        lines += ["", f"Основные персонажи / пейринг: {_preview(details['characters'], 160 if compact else 350)}"]
+    if not is_sketch and details.get("notes"):
+        lines += ["", f"<b>Примечания:</b>\n{_preview(details['notes'], 210 if compact else 850)}"]
     if is_sketch:
         lines += ["", "👤 " + _link(details["sketch_profile_url"], "Профиль автора на Фикбуке")]
         lines += ["📖 " + _link(details["sketch_article_url"], "Читать зарисовку в Telegraph")]
     elif context.external_url:
         lines += ["", "8️⃣ " + _link(context.external_url, "Читать на Фикбук")]
-    for i, raw in enumerate((details.get("extra_links") or [])[:5] if not is_sketch else []):
+    for i, raw in enumerate((details.get("extra_links") or [])[:2 if compact else 5] if not is_sketch else []):
         # The sealed revision may still store Telegram's shorthand as typed
         # because submit validation does not rewrite the author's draft JSON.
         try:
@@ -136,7 +138,9 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
     # Telegram text is capped at 4096 chars. Use a conservative limit even
     # when HTML escaped entities and astral codepoints are counted.
     if len(result.encode("utf-16-le")) // 2 > 3900:
-        raise ValueError("ICФ post exceeds safe Telegram message size")
+        if not compact:
+            return render_owner_promo(context, compact=True)
+        raise ValueError("ICФ compact post exceeds safe Telegram message size")
     return result
 
 
