@@ -1905,7 +1905,8 @@ class PostgresWritersSubmissionStorage:
                 work_number = None
                 if not existing_charge:
                     work_number = int(await connection.fetchval(
-                        "SELECT COUNT(*) FROM writers_submission_work_charges WHERE author_user_id=$1",
+                        "SELECT COALESCE(MAX(work_number), 0) "
+                        "FROM writers_submission_work_charges WHERE author_user_id=$1",
                         author_user_id,
                     )) + 1
 
