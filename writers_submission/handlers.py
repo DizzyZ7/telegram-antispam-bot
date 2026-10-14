@@ -150,7 +150,7 @@ def _is_prompt_reply(message: Message, item: PendingModerationComment) -> bool:
     )
 
 
-def build_moderation_keyboard(token: str, *, paid_cover: bool = False) -> InlineKeyboardMarkup:
+def build_moderation_keyboard(token: str, *, paid_cover: bool = False, paid_work: bool = False) -> InlineKeyboardMarkup:
     if not _TOKEN_PATTERN.fullmatch(token):
         raise ValueError("Invalid moderation token")
     return InlineKeyboardMarkup(
@@ -181,6 +181,12 @@ def build_moderation_keyboard(token: str, *, paid_cover: bool = False) -> Inline
                     callback_data=f"{_CALLBACK_PREFIX}:p:{token}",
                 ),
             ]] if paid_cover else []),
+            *([[
+                InlineKeyboardButton(
+                    text="💳 Подтвердить 100 ₽ за работу",
+                    callback_data=f"{_CALLBACK_PREFIX}:w:{token}",
+                ),
+            ]] if paid_work else []),
         ]
     )
 
@@ -192,7 +198,7 @@ def _parse_callback(data: str | None) -> tuple[str, str] | None:
     if len(parts) != 3 or parts[0] != _CALLBACK_PREFIX:
         return None
     action, token = parts[1], parts[2]
-    if action not in {"c", "a", "x", "r", "p"}:
+    if action not in {"c", "a", "x", "r", "p", "w"}:
         return None
     if not _TOKEN_PATTERN.fullmatch(token):
         return None
@@ -578,6 +584,17 @@ def register_writers_submission_handlers(
                     "Оплата своей обложки подтверждена"
                     if applied else "Оплата уже подтверждена"
                 )
+            elif action_code == "w":
+                applied = await service.confirm_work_payment(
+                    reviewer_user_id=actor_id,
+                    submission_id=target.submission_id,
+                    revision_id=target.revision_id,
+                    now=now,
+                )
+                answer_text = (
+                    "Оплата 100 ₽ за работу подтверждена"
+                    if applied else "Оплата 100 ₽ уже подтверждена"
+                )
             elif action_code == "c":
                 result = await service.claim(
                     reviewer_user_id=actor_id,
@@ -633,16 +650,22 @@ def register_writers_submission_handlers(
             if action_code in {"a", "r"}:
                 await callback.message.edit_reply_markup(reply_markup=None)
             else:
+                current_charge = None
+                charge_method = getattr(service.storage, "get_submission_work_charge", None)
+                if callable(charge_method):
+                    current_charge = await charge_method(submission_id=target.submission_id)
+                reply_revision = getattr(
+                    getattr(locals().get("result"), "submission", None), "revision", None,
+                )
+                cover_flag = (
+                    getattr(reply_revision, "details", {}).get("visual_mode") == "image"
+                    if action_code == "c" else True
+                )
                 await callback.message.edit_reply_markup(
                     reply_markup=build_moderation_keyboard(
                         token,
-                        paid_cover=(
-                            getattr(
-                                getattr(result, "submission", None),
-                                "revision", None,
-                            ) is not None
-                            and getattr(result.submission.revision, "details", {}).get("visual_mode") == "image"
-                        ) if action_code == "c" else action_code == "p",
+                        paid_cover=cover_flag if action_code in {"c", "p"} else False,
+                        paid_work=bool(current_charge and current_charge["amount_rub"] > 0),
                     )
                 )
         except Exception as exc:
