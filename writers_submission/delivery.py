@@ -189,7 +189,7 @@ def _moderation_text(
             colors = details.get("palette_colors") or []
             lines.append(f"Палитра RGB: {_escaped_preview(', '.join(colors), max_units=120)}")
         elif details.get("visual_mode") == "image":
-            lines.append("Оформление: своя обложка — платная услуга, требуется подтверждение владельцем ИКФ")
+            lines.append("Оформление: своя обложка — платная услуга, требуется подтверждение администратором")
         links = details.get("extra_links") or []
         if links:
             lines.append(f"Доп. ссылки: {_escaped_preview(' | '.join(links), max_units=450)}")
