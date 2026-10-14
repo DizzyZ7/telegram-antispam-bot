@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Writers Submission</title>
-  <link rel="stylesheet" href="/writers/app.css?v=delivery-recovery-v6">
+  <link rel="stylesheet" href="/writers/app.css?v=draft-recovery-v7">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/writers/app.js?v=delivery-recovery-v6" defer></script>
+  <script src="/writers/app.js?v=draft-recovery-v7" defer></script>
 </head>
 <body>
   <main class="shell" aria-live="polite">
@@ -21,6 +21,17 @@
     </header>
 
     <section id="connectionBanner" class="banner hidden" role="status"></section>
+
+    <section id="emergencyRecovery" class="card hidden" aria-live="polite" aria-label="Восстановление черновика">
+      <h2>Есть несохраненный текст</h2>
+      <p id="emergencyRecoveryNotice" class="muted"></p>
+      <div class="view-toolbar">
+        <button id="emergencyRestoreButton" class="button button-primary" type="button">Восстановить текст</button>
+        <button id="emergencyDiscardButton" class="button button-secondary" type="button">Удалить локальную копию</button>
+      </div>
+      <textarea id="emergencyRecoveryText" class="hidden" readonly rows="9"
+                aria-label="Резервный текст для ручного копирования"></textarea>
+    </section>
 
     <nav class="tabs" aria-label="Фильтр работ">
       <button class="tab active" data-filter="all" type="button">Все</button>
@@ -47,7 +58,7 @@
       <form id="editorForm" novalidate>
         <div class="card form-card">
           <p class="eyebrow">Анкета произведения</p>
-          <p class="muted">Черновик автоматически сохраняется на сервере. Проверяй надпись «Сохранено на сервере» перед закрытием.</p>
+          <p class="muted">Черновик автоматически сохраняется на сервере. Несохраненный текст временно копируется на это устройство (до 48 часов, без файлов). Проверяй надпись «Сохранено на сервере» перед закрытием.</p>
           <label class="field">
             <span>1. Название</span>
             <input id="titleInput" name="title" maxlength="160" required autocomplete="off" placeholder="Название работы">
