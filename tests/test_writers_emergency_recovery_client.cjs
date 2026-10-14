@@ -79,7 +79,7 @@ function harness(userId = 77) {
     setBanner: (message) => events.push(["banner", message]),
     console,
   });
-  vm.runInContext(helpers + "\nthis.backup={readEmergencyBackup,storeEmergencyBackup,clearEmergencyBackupIfSynced,showEmergencyRecovery,restoreEmergencyBackup,hideEmergencyRecovery};", ctx);
+  vm.runInContext(helpers + "\nthis.backup={readEmergencyBackup,storeEmergencyBackup,promoteEmergencyBackupAfterCreate,clearEmergencyBackupIfSynced,showEmergencyRecovery,restoreEmergencyBackup,hideEmergencyRecovery};", ctx);
   const key = (id = userId) => "ikf-writers-unsaved-v1:" + id;
   return {
     ...ctx.backup, records, nodes, events, storage, key, state,
@@ -203,4 +203,31 @@ test("localStorage failures never prevent editing or throw", () => {
   h.storage.setItem = () => { throw Error("quota exceeded"); };
   assert.equal(h.storeEmergencyBackup(), false);
   assert.equal(h.readEmergencyBackup(), null);
+});
+
+test("server create response upgrades an unsaved backup without replacing later edits", () => {
+  const h = harness();
+  h.storeEmergencyBackup();
+  const later = { ...h.getFields(), description: "Новый текст во время POST." };
+  h.setFields(later);
+  h.storeEmergencyBackup();
+  const id = "11111111-1111-4111-8111-111111111111";
+  const revisionId = "22222222-2222-4222-8222-222222222222";
+  h.promoteEmergencyBackupAfterCreate("create-original", {
+    id, version: 1, revision: { id: revisionId },
+  });
+  const backup = h.readEmergencyBackup();
+  assert.equal(backup.id, id);
+  assert.equal(backup.revisionId, revisionId);
+  assert.equal(backup.expectedVersion, 1);
+  assert.equal(backup.createKey, null);
+  assert.equal(backup.fields.description, later.description);
+});
+
+test("acknowledging a different draft cannot delete an unnamed recovery backup", () => {
+  const h = harness();
+  h.storeEmergencyBackup();
+  h.state.current = {id:"11111111-1111-4111-8111-111111111111",status:"SUBMITTED"};
+  h.clearEmergencyBackupIfSynced(true);
+  assert.equal(h.records.size, 1);
 });
