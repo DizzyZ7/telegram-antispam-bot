@@ -34,19 +34,21 @@ class FicbookFormUiTests(unittest.TestCase):
             "palettePreview", "imageInput", "imagePreview",
             "saveButton", "submitButton",
             "sketchProfileUrlInput", "sketchArticleUrlInput",
+            "sketchCollectionUrlInput", "sketchCollectionUrlField",
+            "sketchSizeSection", "sketchArticleLabel",
             "mainGenre1Input", "mainGenre2Input", "mainGenre3Input",
             "genreProgress", "warningsInput", "warningsField",
         } <= parser.ids)
         self.assertEqual(parser.groups, {
             "workType", "sizeCategory", "completion", "visualMode",
-            "sketchOrigin", "warningsPresent",
+            "sketchOrigin", "sketchSize", "warningsPresent",
         })
 
     def test_photo_upload_picker_supports_mobile_photos_and_cache_busting(self):
         html = (ROOT / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn("image/*,.png,.jpg,.jpeg,.webp,.heic,.heif", html)
-        self.assertIn("app.js?v=draft-recovery-v7", html)
+        self.assertIn("app.js?v=sketch-collection-v8", html)
         self.assertIn("prepareUploadFile", script)
         self.assertIn("await autosave({ immediate: true })", script)
         self.assertIn("async function uploadQueuedFiles()", script)
@@ -65,6 +67,8 @@ class FicbookFormUiTests(unittest.TestCase):
         self.assertNotIn("cover_template:", script)
         self.assertNotIn("Стиль обложки", html)
         self.assertIn('setChoice("visualMode"', script)
+        self.assertIn('setChoice("sketchSize"', script)
+        self.assertIn('form.sketchCollection.required = isDrabbleCollection', script)
 
     def test_javascript_has_reversible_choices_and_persisted_palette(self):
         js = (ROOT / "app.js").read_text(encoding="utf-8")
