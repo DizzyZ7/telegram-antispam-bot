@@ -607,6 +607,7 @@ def register_writers_submission_handlers(
             await callback.answer("Жду ответ на сообщение")
             return
 
+        result = None
         try:
             if action_code == "p":
                 applied = await service.confirm_cover_payment(
@@ -690,16 +691,29 @@ def register_writers_submission_handlers(
                 if callable(charge_method):
                     current_charge = await charge_method(submission_id=target.submission_id)
                 reply_revision = getattr(
-                    getattr(locals().get("result"), "submission", None), "revision", None,
+                    getattr(result, "submission", None), "revision", None,
                 )
                 cover_flag = (
                     getattr(reply_revision, "details", {}).get("visual_mode") == "image"
-                    if action_code == "c" else True
+                    if action_code == "c" else action_code == "p"
                 )
+                if action_code == "w":
+                    fetch_context = getattr(
+                        service.storage, "get_moderation_delivery_context", None,
+                    )
+                    if callable(fetch_context):
+                        context = await fetch_context(
+                            submission_id=target.submission_id,
+                            revision_id=target.revision_id,
+                        )
+                        cover_flag = (
+                            (getattr(context, "details", None) or {}).get("visual_mode")
+                            == "image"
+                        )
                 await callback.message.edit_reply_markup(
                     reply_markup=build_moderation_keyboard(
                         token,
-                        paid_cover=cover_flag if action_code in {"c", "p"} else False,
+                        paid_cover=cover_flag,
                         paid_work=bool(current_charge and current_charge["amount_rub"] > 0),
                     )
                 )
