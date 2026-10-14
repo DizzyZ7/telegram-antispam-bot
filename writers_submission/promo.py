@@ -155,7 +155,8 @@ def _title_lines(draw: object, title: str, font_path: str | None, *, max_width: 
         # that run Python directly may not have Debian's DejaVu font package.
         return ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default(size=size)
 
-    title = quote_work_title(" ".join(str(title or "Название").split())[:200])
+    normalized_title = quote_work_title(title)
+    title = "«" + normalized_title[1:-1][:200].strip() + "»"
     words = title.split()
     for size in range(66, 23, -2):
         font = chosen_font(size)
