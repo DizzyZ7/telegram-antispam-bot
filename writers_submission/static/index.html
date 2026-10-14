@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Writers Submission</title>
-  <link rel="stylesheet" href="/writers/app.css?v=sketch-collection-v8">
+  <link rel="stylesheet" href="/writers/app.css?v=author-quota-v9">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/writers/app.js?v=sketch-collection-v8" defer></script>
+  <script src="/writers/app.js?v=author-quota-v9" defer></script>
 </head>
 <body>
   <main class="shell" aria-live="polite">
@@ -40,6 +40,11 @@
       <button class="tab" data-filter="finished" type="button">Решенные</button>
     </nav>
 
+    <p id="writersBillingNotice" class="muted" aria-live="polite">
+      Первые две разные отправленные работы бесплатно. Начиная с третьей — 100 ₽ за работу.
+      Своя обложка оплачивается отдельно; сумма согласуется с администрацией.
+      В форме деньги не списываются.
+    </p>
     <section id="workspaceView" class="view">
       <div id="workList" class="work-list"></div>
       <div id="emptyState" class="empty hidden">
