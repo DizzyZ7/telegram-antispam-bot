@@ -14,6 +14,7 @@ from writers_submission.handlers import (
     PendingModerationCommentFilter,
     WritersSubmissionStartFilter,
     register_writers_submission_handlers,
+    build_moderation_keyboard,
 )
 
 
@@ -470,6 +471,40 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
         owner_service.decide.assert_awaited_once()
         self.assertEqual(owner_service.decide.await_args.kwargs["comment"],
                          "Поправить описание")
+
+    async def test_fee_and_cover_confirmation_buttons_are_independent(self):
+        keyboard = build_moderation_keyboard(
+            "opaque-token", paid_work=True, paid_cover=True,
+        )
+        codes = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+        self.assertIn("ws:p:opaque-token", codes)
+        self.assertIn("ws:w:opaque-token", codes)
+        self.assertNotEqual(codes.index("ws:p:opaque-token"), codes.index("ws:w:opaque-token"))
+
+    async def test_moderator_work_payment_callback_targets_sealed_work(self):
+        self.service.confirm_work_payment = AsyncMock(return_value=True)
+        self.service.storage = SimpleNamespace(
+            get_submission_work_charge=AsyncMock(return_value={
+                "work_number": 3, "amount_rub": 100, "paid": True,
+            }),
+            get_moderation_delivery_context=AsyncMock(return_value=SimpleNamespace(
+                details={"visual_mode": "image"},
+            )),
+        )
+        callback = moderation_callback("ws:w:opaque-token")
+        await self.callback_handler(callback)
+        self.service.confirm_work_payment.assert_awaited_once_with(
+            reviewer_user_id=MODERATOR_ID,
+            submission_id=self.service.target.submission_id,
+            revision_id=self.service.target.revision_id,
+            now=100,
+        )
+        self.assertIn("100 ₽", callback.answer.await_args.args[0])
+        callback.message.edit_reply_markup.assert_awaited_once()
+        keys = callback.message.edit_reply_markup.await_args.kwargs["reply_markup"]
+        codes = [b.callback_data for row in keys.inline_keyboard for b in row]
+        self.assertIn("ws:p:opaque-token", codes)
+        self.assertIn("ws:w:opaque-token", codes)
 
     async def test_claim_uses_callback_actor_not_payload_identity(self):
         callback = moderation_callback("ws:c:opaque-token")
