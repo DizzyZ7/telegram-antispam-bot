@@ -160,6 +160,11 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
                  "attempt_count": 2, "last_error_code": "TelegramForbiddenError"}
             ]),
             retry_failed_moderation_delivery=AsyncMock(return_value=uuid4()),
+            get_author_work_billing=AsyncMock(return_value={
+                "submitted_works": 3, "free_works_used": 2,
+                "next_work_number": 4, "next_work_price_rub": 100,
+                "unpaid_works": 1, "unpaid_rub": 100,
+            }),
         )
         self.service = make_service()
         self.service.storage = self.storage
@@ -176,6 +181,7 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
         self.moderation_status = handlers["writers_moderation_delivery_status"]
         self.moderation_retry = handlers["writers_moderation_delivery_retry"]
         self.publication_format = handlers["writers_publication_template_version"]
+        self.author_ledger = handlers["writers_author_work_count"]
 
     def private_message(self, text, *, actor_id=None, private=True):
         actor_id = self.owner_id if actor_id is None else actor_id
@@ -188,6 +194,22 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
             text=text,
             answer=AsyncMock(),
         )
+
+    async def test_owner_can_inspect_by_telegram_id_but_other_users_cannot(self):
+        owner = self.private_message("/writers_author 1234567")
+        await self.author_ledger(owner)
+        self.storage.get_author_work_billing.assert_awaited_once_with(
+            author_user_id=1234567,
+        )
+        text = owner.answer.await_args.args[0]
+        self.assertIn("Отправлено работ: 3", text)
+        self.assertIn("Ожидают оплаты: 1 работ · 100 ₽", text)
+        for attempt in (
+            self.private_message("/writers_author 1234567", actor_id=777),
+            self.private_message("/writers_author 1234567", private=False),
+        ):
+            await self.author_ledger(attempt)
+            attempt.answer.assert_not_awaited()
 
     async def test_owner_can_verify_live_publication_style_and_font_support(self):
         owner = self.private_message("/writers_format")
@@ -621,7 +643,7 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         message_names = [
             item.callback.__name__
-            for item in app.dp.message.handlers[:7]
+            for item in app.dp.message.handlers[:8]
         ]
         callback_names = [
             item.callback.__name__
@@ -632,7 +654,7 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
             {"writers_submission_start", "writers_moderation_comment",
              "writers_delivery_status", "writers_retry_preview",
              "writers_moderation_delivery_status", "writers_moderation_delivery_retry",
-             "writers_publication_template_version"},
+             "writers_publication_template_version", "writers_author_work_count"},
         )
         self.assertEqual(
             callback_names,
