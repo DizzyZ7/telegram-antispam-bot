@@ -510,24 +510,37 @@ class PostgresWritersSubmissionStorage:
                     MIN(e.created_at) AS first_at
                 FROM writers_submission_events e
                 JOIN writers_submissions s ON s.id = e.submission_id
+                LEFT JOIN writers_submission_work_charges existing
+                  ON existing.submission_id = s.id
                 WHERE e.event_type = 'SUBMITTED'
+                  AND existing.submission_id IS NULL
                 GROUP BY s.id, s.author_user_id
             ), enumerated AS (
                 SELECT *,
                     ROW_NUMBER() OVER (
                         PARTITION BY author_user_id
                         ORDER BY first_at, submission_id
-                    ) AS work_number
+                    ) AS missing_index
                 FROM first_submitted
+            ), positions AS (
+                SELECT e.*,
+                    (
+                        COALESCE((
+                            SELECT MAX(w.work_number)
+                            FROM writers_submission_work_charges w
+                            WHERE w.author_user_id=e.author_user_id
+                        ), 0) + e.missing_index
+                    )::integer AS work_number
+                FROM enumerated e
             )
             INSERT INTO writers_submission_work_charges (
                 submission_id, author_user_id, work_number,
                 amount_rub, created_at
             )
-            SELECT submission_id, author_user_id, work_number::integer,
+            SELECT submission_id, author_user_id, work_number,
                    CASE WHEN work_number <= 2 THEN 0 ELSE 100 END,
                    first_at
-            FROM enumerated
+            FROM positions
             ON CONFLICT (submission_id) DO NOTHING
             """
         )
