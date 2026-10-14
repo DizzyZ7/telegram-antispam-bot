@@ -110,7 +110,10 @@ def _author_notification_text(context: Any) -> str:
     return "\n".join(lines)
 
 
-def _moderation_text(context: Any, *, author_contact: str = "") -> str:
+def _moderation_text(
+    context: Any, *, author_contact: str = "",
+    work_charge: dict[str, object] | None = None,
+) -> str:
     details = getattr(context, "details", None) or {}
     is_ficbook_form = details.get("form_version") in (2, 3)
     lines = [
@@ -123,6 +126,24 @@ def _moderation_text(context: Any, *, author_contact: str = "") -> str:
     ]
     if author_contact:
         lines.insert(3, author_contact)
+    if work_charge is not None:
+        number = int(work_charge["work_number"])
+        amount = int(work_charge["amount_rub"])
+        if amount == 0:
+            fee_label = "Бесплатно (одна из первых двух работ)"
+        else:
+            fee_label = (
+                "100 ₽ · оплата подтверждена ✅"
+                if bool(work_charge["paid"])
+                else "100 ₽ · ожидает подтверждения оплаты"
+            )
+        # Place the author's lifetime ordinal alongside their Telegram ID,
+        # above the title: moderators must not search the bottom of a card.
+        insert_at = 4 if author_contact else 3
+        lines[insert_at:insert_at] = [
+            f"📚 <b>Заявка автора №{number}</b> (за все время)",
+            f"💳 Публикация: {fee_label}",
+        ]
     if is_ficbook_form:
         for label, key in (
             ("Фандом", "fandom"),
@@ -509,14 +530,7 @@ class WritersDeliveryWorker:
                             saved_username=getattr(context, "author_username", None),
                             saved_first_name=getattr(context, "author_first_name", None),
                         ),
-                    )
-                    + (
-                        "\n\n💳 Учет работ: №" + str(charge["work_number"])
-                        + (" · Бесплатная работа (из первых двух)"
-                           if charge["amount_rub"] == 0 else
-                           " · 100 ₽ за отправку"
-                           + (" · оплачено ✅" if charge["paid"] else " · ожидает подтверждения"))
-                        if charge else ""
+                        work_charge=charge,
                     )
                     + "\n💎 Своя обложка оплачивается отдельно (если выбрана)."
                     + "\n\nОформленный пост, вложения и цветовой макет — ответами на эту карточку."
