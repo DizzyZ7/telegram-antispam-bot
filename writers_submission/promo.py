@@ -21,11 +21,16 @@ def quote_work_title(value: object) -> str:
     Users may omit quotes or type common straight/curly quotation marks.
     Strip only complete outer pairs; preserve punctuation inside the title.
     """
+    return f"« {unquoted_work_title(value)} »"
+
+
+def unquoted_work_title(value: object) -> str:
+    """Return title content without repeated outer quotation marks."""
     title = " ".join(str(value or "").split()).strip()
     pairs = {("«", "»"), ('"', '"'), ("“", "”"), ("„", "“"), ("‘", "’"), ("'", "'")}
     while len(title) >= 2 and (title[0], title[-1]) in pairs:
         title = title[1:-1].strip()
-    return f"«{title or 'Название'}»"
+    return title or "Название"
 
 
 def _visible_warnings(raw: object) -> list[str]:
@@ -81,7 +86,7 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
             _tag(context.genre),
         ]
     lines = [
-        f"🎩 <b>{_preview(quote_work_title(context.title), 250)}</b> 🎩",
+        f"« <b>{_preview(unquoted_work_title(context.title), 245)}</b> »",
         "",
         _preview(context.description, 1650),
     ]
@@ -94,7 +99,7 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
             if warnings:
                 lines.extend((
                     "", "🚨 <b>ПРЕДУПРЕЖДЕНИЯ (18+)</b>",
-                    "<tg-spoiler>" + " × ".join(_preview(w, 85) for w in warnings) + "</tg-spoiler>",
+                    "<tg-spoiler>× " + " × ".join(_preview(w, 85) for w in warnings) + " ×</tg-spoiler>",
                 ))
         if is_sketch:
             lines.extend(("", "🎨 Обложка для рубрики — от команды ИКФ."))
@@ -111,7 +116,7 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
         lines += ["", "👤 " + _link(details["sketch_profile_url"], "Профиль автора на Фикбуке")]
         lines += ["📖 " + _link(details["sketch_article_url"], "Читать зарисовку в Telegraph")]
     elif context.external_url:
-        lines += ["", "📖 " + _link(context.external_url, "Читать на Фикбуке")]
+        lines += ["", "8️⃣ " + _link(context.external_url, "Читать на Фикбук")]
     for i, raw in enumerate((details.get("extra_links") or [])[:5] if not is_sketch else []):
         # The sealed revision may still store Telegram's shorthand as typed
         # because submit validation does not rewrite the author's draft JSON.
@@ -125,6 +130,8 @@ def render_owner_promo(context: ModerationDeliveryContext) -> str:
         is_telegram = domain in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}
         label = "ТГ-канал" if is_telegram else f"Дополнительная ссылка {i + 1}"
         lines.append(("💬 " if is_telegram else "🔗 ") + _link(url, label))
+    # Fixed ICФ ornamental divider at the very bottom, after every link.
+    lines += ["", "• • • • • • • • ✦ • • • • • • • •"]
     result = "\n".join(lines)
     # Telegram text is capped at 4096 chars. Use a conservative limit even
     # when HTML escaped entities and astral codepoints are counted.
@@ -155,8 +162,7 @@ def _title_lines(draw: object, title: str, font_path: str | None, *, max_width: 
         # that run Python directly may not have Debian's DejaVu font package.
         return ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default(size=size)
 
-    normalized_title = quote_work_title(title)
-    title = "«" + normalized_title[1:-1][:200].strip() + "»"
+    title = "« " + unquoted_work_title(title)[:200].strip() + " »"
     words = title.split()
     for size in range(66, 23, -2):
         font = chosen_font(size)
