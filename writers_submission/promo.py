@@ -68,7 +68,7 @@ def _link(url: str, label: str) -> str:
 
 def render_owner_promo(context: ModerationDeliveryContext, *, compact: bool = False) -> str:
     """HTML suitable for a copyable ICФ Telegram post or compact fallback."""
-    details = context.details or {}
+    details = getattr(context, "details", None) or {}
     is_ficbook = details.get("form_version") in (2, 3)
     is_sketch = details.get("form_version") == 3 and context.work_type == "Зарисовка"
     tags = [
