@@ -231,3 +231,31 @@ test("acknowledging a different draft cannot delete an unnamed recovery backup",
   h.clearEmergencyBackupIfSynced(true);
   assert.equal(h.records.size, 1);
 });
+
+test("recovery does not overwrite another work currently open in the editor", async () => {
+  const h = harness();
+  h.storeEmergencyBackup();
+  const visibleEditor = {
+    classList: { contains: (className) => className === "hidden" ? false : true },
+  };
+  // Source helpers accept a normal views object from the Mini App.
+  h.nodes.clear();
+  // This assertion also guards that the recovery intent stays explicitly opt-in
+  // rather than a silent replacement of an active edit.
+  const context = vm.createContext({
+    views: { editor: visibleEditor },
+    setBanner: (message) => h.events.push(["banner", message]),
+    readEmergencyBackup: () => h.readEmergencyBackup(),
+    restoreEmergencyBackup: () => h.restoreEmergencyBackup(),
+  });
+  // Exercise the early guard in the original source, not a mock handler.
+  const restore = source.slice(
+    source.indexOf("  async function restoreEmergencyBackup() {"),
+    source.indexOf("  function markChanged() {")
+  );
+  vm.runInContext(restore + "\nthis.tryRestore=restoreEmergencyBackup;", context);
+  assert.equal(await context.tryRestore(), false);
+  assert.ok(h.events.some((event) =>
+    Array.isArray(event) && /вернись к списку работ/.test(event[1])
+  ));
+});
