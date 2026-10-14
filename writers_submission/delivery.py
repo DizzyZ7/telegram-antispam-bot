@@ -15,7 +15,8 @@ from typing import Any
 from .handlers import build_moderation_keyboard
 from .models import OutboxEventType, ReviewAction
 from .promo import (render_owner_promo, render_palette_png, quote_work_title,
-                    _visible_warnings, render_palette_fallback_png, render_custom_cover_png)
+                    unquoted_work_title, _visible_warnings, render_palette_fallback_png,
+                    render_custom_cover_png)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -522,7 +523,25 @@ class WritersDeliveryWorker:
         # an automatic publication in the public channel.
         preview_message_id = progress.get("preview")
         if not preview_message_id:
-            formatted_post = render_owner_promo(context)
+            try:
+                formatted_post = render_owner_promo(context)
+            except ValueError:
+                # Pathological legacy records may contain URLs far longer
+                # than Telegram's 4096-char message limit. Never lose the
+                # whole moderation packet because its preview is too big.
+                LOGGER.warning(
+                    "WRITERS_MODERATION_PREVIEW_COMPACT_FALLBACK submission_id=%s",
+                    item.submission_id,
+                )
+                formatted_post = (
+                    "« <b>" + _escaped_preview(
+                        unquoted_work_title(context.title), max_units=235
+                    ) + "</b> »\n\n"
+                    + _escaped_preview(context.description, max_units=600)
+                    + "\n\n⚠️ Полный текст не поместился. "
+                    "Проверь поля в карточке модерации.\n\n"
+                    "• • • • • • • • ✦ • • • • • • • •"
+                )
             preview = await self.bot.send_message(
                 **reply_kwargs,
                 text=formatted_post,
