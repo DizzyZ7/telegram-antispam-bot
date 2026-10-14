@@ -119,8 +119,17 @@ def render_owner_promo(context: ModerationDeliveryContext, *, compact: bool = Fa
     if not is_sketch and details.get("notes"):
         lines += ["", f"<b>Примечания:</b>\n{_preview(details['notes'], 210 if compact else 850)}"]
     if is_sketch:
+        sketch_size = details.get("sketch_size") or "Мини/драббл"
+        lines += ["", "<b>Размер:</b> " + _preview(sketch_size, 60)]
         lines += ["", "👤 " + _link(details["sketch_profile_url"], "Профиль автора на Фикбуке")]
-        lines += ["📖 " + _link(details["sketch_article_url"], "Читать зарисовку в Telegraph")]
+        if sketch_size == "Сборник драбблов" and details.get("sketch_collection_url"):
+            lines += ["📚 " + _link(details["sketch_collection_url"], "Сборник драбблов на Фикбуке")]
+        article_label = (
+            "Статья с текстом зарисовки в Telegraph (один из драбблов сборника)"
+            if sketch_size == "Сборник драбблов"
+            else "Читать зарисовку в Telegraph"
+        )
+        lines += ["📖 " + _link(details["sketch_article_url"], article_label)]
     elif context.external_url:
         lines += ["", "8️⃣ " + _link(context.external_url, "Читать на Фикбук")]
     for i, raw in enumerate((details.get("extra_links") or [])[:2 if compact else 5] if not is_sketch else []):
