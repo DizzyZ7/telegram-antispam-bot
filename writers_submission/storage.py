@@ -455,38 +455,6 @@ class PostgresWritersSubmissionStorage:
             ON writers_submission_work_charges(author_user_id, work_number)
             """
         )
-        # Backfill real historical SUBMITTED events once, without treating
-        # unsubmitted drafts as free slots or charging for editing/resubmitting.
-        await connection.execute(
-            """
-            WITH first_submitted AS (
-                SELECT
-                    s.id AS submission_id,
-                    s.author_user_id,
-                    MIN(e.created_at) AS first_at
-                FROM writers_submission_events e
-                JOIN writers_submissions s ON s.id = e.submission_id
-                WHERE e.event_type = 'SUBMITTED'
-                GROUP BY s.id, s.author_user_id
-            ), enumerated AS (
-                SELECT *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY author_user_id
-                        ORDER BY first_at, submission_id
-                    ) AS work_number
-                FROM first_submitted
-            )
-            INSERT INTO writers_submission_work_charges (
-                submission_id, author_user_id, work_number,
-                amount_rub, created_at
-            )
-            SELECT submission_id, author_user_id, work_number::integer,
-                   CASE WHEN work_number <= 2 THEN 0 ELSE 100 END,
-                   first_at
-            FROM enumerated
-            ON CONFLICT (submission_id) DO NOTHING
-            """
-        )
         await connection.execute(
             """
             CREATE TABLE IF NOT EXISTS writers_submission_reviews (
@@ -529,6 +497,38 @@ class PostgresWritersSubmissionStorage:
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 created_at BIGINT NOT NULL
             )
+            """
+        )
+        # Backfill real historical SUBMITTED events once, without treating
+        # unsubmitted drafts as free slots or charging for editing/resubmitting.
+        await connection.execute(
+            """
+            WITH first_submitted AS (
+                SELECT
+                    s.id AS submission_id,
+                    s.author_user_id,
+                    MIN(e.created_at) AS first_at
+                FROM writers_submission_events e
+                JOIN writers_submissions s ON s.id = e.submission_id
+                WHERE e.event_type = 'SUBMITTED'
+                GROUP BY s.id, s.author_user_id
+            ), enumerated AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY author_user_id
+                        ORDER BY first_at, submission_id
+                    ) AS work_number
+                FROM first_submitted
+            )
+            INSERT INTO writers_submission_work_charges (
+                submission_id, author_user_id, work_number,
+                amount_rub, created_at
+            )
+            SELECT submission_id, author_user_id, work_number::integer,
+                   CASE WHEN work_number <= 2 THEN 0 ELSE 100 END,
+                   first_at
+            FROM enumerated
+            ON CONFLICT (submission_id) DO NOTHING
             """
         )
         await connection.execute(
