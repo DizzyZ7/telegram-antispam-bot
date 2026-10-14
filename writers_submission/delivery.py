@@ -14,8 +14,8 @@ from typing import Any
 
 from .handlers import build_moderation_keyboard
 from .models import OutboxEventType, ReviewAction
-from .promo import (render_owner_promo, render_palette_png,
-                    render_palette_fallback_png, render_custom_cover_png)
+from .promo import (render_owner_promo, render_palette_png, quote_work_title,
+                    _visible_warnings, render_palette_fallback_png, render_custom_cover_png)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def _action_value(value: object) -> str:
 
 def _author_notification_text(context: Any) -> str:
     action = _action_value(context.action)
-    title = _escaped_preview(context.title, max_units=500)
+    title = _escaped_preview(quote_work_title(context.title), max_units=500)
     comment = getattr(context, "comment", None)
 
     if action in {"SUBMISSION_ACCEPTED"}:
@@ -116,7 +116,7 @@ def _moderation_text(context: Any, *, author_contact: str = "") -> str:
         "✒️ <b>Новая работа на модерацию</b>",
         "",
         f"Автор: <code>{int(context.author_user_id)}</code>",
-        f"Название: {_escaped_preview(context.title, max_units=300)}",
+        f"Название: {_escaped_preview(quote_work_title(context.title), max_units=300)}",
         f"Тип: {_escaped_preview(context.work_type, max_units=80)}",
         f"{'Направление' if is_ficbook_form else 'Жанр'}: {_escaped_preview(context.genre, max_units=130)}",
     ]
@@ -139,10 +139,15 @@ def _moderation_text(context: Any, *, author_contact: str = "") -> str:
             genres = details.get("main_genres") or []
             if genres:
                 lines.append("Основные жанры: " + _escaped_preview(" • ".join(genres), max_units=240))
-            lines.append("Предупреждения: " + (
-                _escaped_preview(" × ".join(details.get("warnings") or []), max_units=430)
-                if details.get("warnings_present") == "yes" else "нет"
-            ))
+            warnings = _visible_warnings(details.get("warnings"))
+            if details.get("warnings_present") == "yes" and warnings:
+                lines.append(
+                    "Предупреждения (18+): <tg-spoiler>"
+                    + _escaped_preview(" × ".join(warnings), max_units=430)
+                    + "</tg-spoiler>"
+                )
+            else:
+                lines.append("Предупреждения: нет")
             if context.work_type == "Зарисовка":
                 lines.append("Происхождение зарисовки: " +
                              _escaped_preview(details.get("sketch_origin"), max_units=100))
