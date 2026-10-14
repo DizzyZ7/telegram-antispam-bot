@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Writers Submission</title>
-  <link rel="stylesheet" href="/writers/app.css?v=draft-recovery-v7">
+  <link rel="stylesheet" href="/writers/app.css?v=sketch-collection-v8">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/writers/app.js?v=draft-recovery-v7" defer></script>
+  <script src="/writers/app.js?v=sketch-collection-v8" defer></script>
 </head>
 <body>
   <main class="shell" aria-live="polite">
@@ -80,6 +80,13 @@
               <label class="choice"><input type="checkbox" value="Ориджинал"> Ориджинал</label>
             </div>
           </fieldset>
+          <fieldset class="choice-field conditional hidden" id="sketchSizeSection">
+            <legend>Размер зарисовки</legend>
+            <div class="choice-row" data-choice-group="sketchSize">
+              <label class="choice"><input type="checkbox" value="Мини/драббл"> Мини/драббл</label>
+              <label class="choice"><input type="checkbox" value="Сборник драбблов"> Сборник драбблов</label>
+            </div>
+          </fieldset>
           <label class="field conditional hidden" id="fandomField">
             <span>Фандом <em>для фанфика</em></span>
             <input id="fandomInput" maxlength="160" placeholder="Название фандома">
@@ -135,8 +142,12 @@
               <span>Профиль автора на Фикбуке</span>
               <input id="sketchProfileUrlInput" type="url" maxlength="2048" placeholder="https://ficbook.net/authors/...">
             </label>
+            <label class="field conditional hidden" id="sketchCollectionUrlField">
+              <span>Ссылка на сборник драбблов на Фикбуке</span>
+              <input id="sketchCollectionUrlInput" type="url" maxlength="2048" placeholder="https://ficbook.net/readfic/...">
+            </label>
             <label class="field">
-              <span>Статья с текстом зарисовки в Telegraph</span>
+              <span id="sketchArticleLabel">Статья с текстом зарисовки в Telegraph</span>
               <input id="sketchArticleUrlInput" type="url" maxlength="2048" placeholder="https://telegra.ph/...">
             </label>
           </div>
