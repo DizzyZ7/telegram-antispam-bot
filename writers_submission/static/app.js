@@ -1125,13 +1125,17 @@
       ["Основные жанры", ((revision.details || {}).main_genres || []).join(" • ") || "—"],
       ["Предупреждения", (revision.details || {}).warnings_present === "no"
         ? "Нет" : ((revision.details || {}).warnings || []).join(" × ") || "—"],
-      ["Профиль Фикбука", (revision.details || {}).sketch_profile_url || "—"],
-      ["Сборник драбблов на Фикбуке", (revision.details || {}).sketch_collection_url || "—"],
-      ["Статья Telegraph", (revision.details || {}).sketch_article_url || "—"],
+      ...(revision.work_type === "Зарисовка" ? [
+        ["Профиль Фикбука", (revision.details || {}).sketch_profile_url || "—"],
+        ...((revision.details || {}).sketch_size === "Сборник драбблов"
+          ? [["Сборник драбблов на Фикбуке", (revision.details || {}).sketch_collection_url || "—"]]
+          : []),
+        ["Статья Telegraph", (revision.details || {}).sketch_article_url || "—"],
+      ] : []),
       ["Размер (слов)", (revision.details || {}).size_words || "—"],
       ["Страниц", (revision.details || {}).pages || "—"],
       ["Частей", (revision.details || {}).parts || "—"],
-      ["Фикбук", revision.external_url || "—"],
+      ...(revision.work_type === "Зарисовка" ? [] : [["Фикбук", revision.external_url || "—"]]),
       ["Персонажи", (revision.details || {}).characters || "—"],
       ["Примечания", (revision.details || {}).notes || "—"],
       ["Другие ссылки", ((revision.details || {}).extra_links || []).join(" · ") || "—"],
