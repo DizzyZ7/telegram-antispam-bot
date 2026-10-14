@@ -254,6 +254,24 @@ class WritersSubmissionService:
         )
 
 
+    async def author_work_billing(self, author_user_id: int) -> dict[str, int]:
+        """Only the caller's authenticated Telegram ID is accepted by the web layer."""
+        return await self.storage.get_author_work_billing(
+            author_user_id=int(author_user_id),
+        )
+
+    async def confirm_work_payment(
+        self, *, reviewer_user_id: int, submission_id: UUID,
+        revision_id: UUID, now: int,
+    ) -> bool:
+        self._require_reviewer(reviewer_user_id)
+        if int(reviewer_user_id) != int(self.config.owner_user_id):
+            raise AuthorizationError("Only IKF owner may confirm 100 RUB work payment")
+        return await self.storage.confirm_work_payment(
+            submission_id=submission_id, revision_id=revision_id,
+            reviewer_user_id=int(reviewer_user_id), now=int(now),
+        )
+
     async def confirm_cover_payment(
         self, *, reviewer_user_id: int, submission_id: UUID,
         revision_id: UUID, now: int,
