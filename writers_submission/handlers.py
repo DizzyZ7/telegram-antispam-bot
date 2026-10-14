@@ -729,6 +729,7 @@ def register_writers_submission_handlers(
     # moderator callback and pending-comment flow cannot be swallowed first.
     _promote_registered_handler(app.dp.message, writers_submission_start)
     _promote_registered_handler(app.dp.message, writers_delivery_status)
+    _promote_registered_handler(app.dp.message, writers_publication_template_version)
     _promote_registered_handler(app.dp.message, writers_retry_preview)
     _promote_registered_handler(app.dp.message, writers_moderation_comment)
     _promote_registered_handler(app.dp.callback_query, writers_moderation_callback)
