@@ -460,10 +460,187 @@
         : "Выбери фото. До отправки анкеты оно останется только на устройстве. Своя обложка — платная опция.";
   }
 
+  // Mini App WebViews may be killed without firing a close/unload event.
+  // Keep a short-lived, account-scoped TEXT-ONLY backup of edits that have
+  // not yet been confirmed by PostgreSQL. No files or Telegram credentials.
+  const LOCAL_BACKUP_TTL_MS = 48 * 60 * 60 * 1000;
+
+  function emergencyBackupKey() {
+    const user = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+    const id = user && Number(user.id);
+    return state.bootstrapped && Number.isSafeInteger(id) && id > 0
+      ? "ikf-writers-unsaved-v1:" + id : null;
+  }
+
+  function readEmergencyBackup() {
+    const key = emergencyBackupKey();
+    if (!key || typeof localStorage === "undefined") return null;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const saved = JSON.parse(raw);
+      const now = Date.now();
+      if (!saved || saved.schema !== 1 ||
+          !Number.isFinite(saved.savedAt) ||
+          saved.savedAt > now + 60000 ||
+          now - saved.savedAt > LOCAL_BACKUP_TTL_MS ||
+          !saved.fields || typeof saved.fields !== "object" ||
+          !saved.fields.details || typeof saved.fields.details !== "object" ||
+          (saved.id !== null && (
+            typeof saved.id !== "string" ||
+            !/^[0-9a-f-]{36}$/i.test(saved.id)
+          ))) {
+        localStorage.removeItem(key);
+        return null;
+      }
+      return saved;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function storeEmergencyBackup() {
+    const key = emergencyBackupKey();
+    if (!key || typeof localStorage === "undefined") return false;
+    if (state.current && state.current.status !== "DRAFT") return false;
+    if (!state.current) {
+      state.createKey ||= makeIdempotencyKey("create");
+    }
+    try {
+      const data = JSON.stringify({
+        schema: 1,
+        savedAt: Date.now(),
+        id: state.current ? String(state.current.id) : null,
+        revisionId: state.current && state.current.revision
+          ? String(state.current.revision.id) : null,
+        expectedVersion: state.current ? Number(state.current.version) : 0,
+        createKey: state.current ? null : state.createKey,
+        fields: currentFields(),
+      });
+      if (data.length > 250000) return false;
+      localStorage.setItem(key, data);
+      return true;
+    } catch (_error) {
+      // Storage can be disabled or full in Telegram's embedded WebView.
+      return false;
+    }
+  }
+
+  function clearEmergencyBackupIfSynced(force = false) {
+    const key = emergencyBackupKey();
+    if (!key || typeof localStorage === "undefined") return;
+    try {
+      const saved = readEmergencyBackup();
+      if (!saved) return;
+      if (!force) {
+        if (!state.current || state.editSequence > state.savedSequence ||
+            (saved.id && saved.id !== String(state.current.id)) ||
+            JSON.stringify(saved.fields) !== JSON.stringify(currentFields())) return;
+      } else if (!state.current || (
+        saved.id && saved.id !== String(state.current.id)
+      )) {
+        return;
+      }
+      localStorage.removeItem(key);
+    } catch (_error) {
+      // The server-confirmed draft remains authoritative.
+    }
+  }
+
+  function hideEmergencyRecovery() {
+    $("emergencyRecovery").classList.add("hidden");
+    $("emergencyRecoveryText").classList.add("hidden");
+    $("emergencyRecoveryText").value = "";
+  }
+
+  function showEmergencyRecovery() {
+    const saved = readEmergencyBackup();
+    if (!saved) return false;
+    $("emergencyRecovery").classList.remove("hidden");
+    $("emergencyRecoveryNotice").textContent =
+      "Найдены изменения, которые могли не сохраниться перед закрытием Telegram. " +
+      "Файлы не входят в резервную копию. Данные хранятся только на этом устройстве до 48 часов.";
+    return true;
+  }
+
+  async function restoreEmergencyBackup() {
+    const saved = readEmergencyBackup();
+    if (!saved) {
+      hideEmergencyRecovery();
+      setBanner("Локальная резервная копия уже недоступна.", "warning");
+      return false;
+    }
+
+    const showManualCopy = (message) => {
+      const area = $("emergencyRecoveryText");
+      area.value = JSON.stringify(saved.fields, null, 2);
+      area.classList.remove("hidden");
+      $("emergencyRecoveryNotice").textContent =
+        message + " Ни один серверный черновик не изменен. " +
+        "Скопируй нужный текст из поля ниже перед закрытием приложения.";
+    };
+
+    if (!saved.id) {
+      if (!saved.createKey || typeof saved.createKey !== "string") {
+        showManualCopy("Ключ незавершенного создания черновика поврежден.");
+        return false;
+      }
+      await newDraft();
+      state.createKey = saved.createKey;
+      fillForm({ revision: { ...saved.fields, details: saved.fields.details } });
+      hideEmergencyRecovery();
+      markChanged();
+      setBanner("Локальный текст восстановлен. Сохраняем черновик на сервере.", "warning");
+      return true;
+    }
+
+    try {
+      // Server ownership is enforced by the authenticated GET. Never
+      // overwrite another device's edits or a submitted revision.
+      const response = await api(
+        "/api/writers/submissions/" + encodeURIComponent(saved.id)
+      );
+      const remote = response && response.submission;
+      if (!remote || remote.status !== "DRAFT" || !remote.revision ||
+          String(remote.revision.id) !== saved.revisionId) {
+        showManualCopy("Эта редакция больше недоступна для редактирования.");
+        return false;
+      }
+      if (Number(remote.version) !== saved.expectedVersion) {
+        if (draftMatchesSavedRequest(remote.revision, saved.fields)) {
+          await openSubmission(saved.id);
+          clearEmergencyBackupIfSynced(true);
+          hideEmergencyRecovery();
+          setBanner("Изменения уже сохранились на сервере.", "success");
+          return true;
+        }
+        showManualCopy("Серверный черновик обновлен с другого устройства.");
+        return false;
+      }
+      await openSubmission(saved.id);
+      if (!state.current || state.current.status !== "DRAFT" ||
+          String(state.current.id) !== saved.id ||
+          Number(state.current.version) !== saved.expectedVersion ||
+          String(state.current.revision && state.current.revision.id) !== saved.revisionId) {
+        showManualCopy("Версия черновика изменилась во время восстановления.");
+        return false;
+      }
+      fillForm({ revision: { ...saved.fields, details: saved.fields.details } });
+      hideEmergencyRecovery();
+      markChanged();
+      setBanner("Локальный текст восстановлен. Сохраняем его на сервере.", "warning");
+      return true;
+    } catch (_error) {
+      showManualCopy("Сервер пока недоступен или черновик нельзя открыть.");
+      return false;
+    }
+  }
+
   function markChanged() {
     refreshCounters();
     renderIkfCover();
     state.editSequence += 1;
+    storeEmergencyBackup();
     setSaveState("Есть несохраненные изменения");
     updateActionAvailability();
     // Create an actual server-side draft on the FIRST keystroke,
@@ -1190,6 +1367,7 @@
           }
         }
         setSaveState("Сохранено на сервере");
+        clearEmergencyBackupIfSynced();
         return true;
       } catch (error) {
         setSaveState("Не сохранено");
@@ -1224,6 +1402,7 @@
       delivery: submission.delivery || { status: "QUEUED" },
     };
     state.submitKey = null;
+    clearEmergencyBackupIfSynced(true);
     setReloadRequired(false);
     clearPendingFiles();
     await loadHistory(submission.id);
@@ -1850,6 +2029,16 @@
       }
     });
     $("reloadButton").addEventListener("click", () => { void reloadDraftSafely(); });
+    $("emergencyRestoreButton").addEventListener("click", () => {
+      void restoreEmergencyBackup();
+    });
+    $("emergencyDiscardButton").addEventListener("click", () => {
+      const key = emergencyBackupKey();
+      if (key && typeof localStorage !== "undefined") {
+        try { localStorage.removeItem(key); } catch (_error) {}
+      }
+      hideEmergencyRecovery();
+    });
 
     Object.values(form).forEach((field) => {
       field.addEventListener("input", markChanged);
@@ -1890,6 +2079,7 @@
       await loadWorkspace();
       show("workspace");
       setBanner("");
+      showEmergencyRecovery();
     } catch (error) {
       setBanner(
         error.message || "Не удалось открыть Writers Submission.",
