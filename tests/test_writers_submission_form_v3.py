@@ -231,6 +231,7 @@ class NewSubmissionFormTests(unittest.TestCase):
             size_category="", completion="", visual_mode="editorial",
             palette_colors=[], fandom="",
             sketch_origin="Ориджинал",
+            sketch_size="Мини/драббл",
             sketch_profile_url="https://ficbook.net/authors/1234",
             sketch_article_url="https://telegra.ph/First-Sketch-10-13",
         )
@@ -255,6 +256,8 @@ class NewSubmissionFormTests(unittest.TestCase):
         self.assertIn("Обложка для рубрики", post)
         self.assertIn("Профиль автора на Фикбуке", post)
         self.assertIn("Читать зарисовку в Telegraph", post)
+        self.assertIn("Размер:</b> Мини/драббл", post)
+        self.assertNotIn("Сборник драбблов на Фикбуке", post)
         self.assertNotIn("Объем:", post)
         self.assertNotIn("цветов", post)
         self.assertLess(post.index(fields.description), post.index("• Романтика"))
@@ -274,6 +277,73 @@ class NewSubmissionFormTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "must match"):
             full_submission(details=sketch_details, work_type="Зарисовка",
                             description="Одна встреча.", external_url="https://ficbook.net/readfic/2")
+
+    def test_drabble_collection_has_required_ficbook_link_after_profile(self):
+        details = common_details(
+            size_category="", completion="", visual_mode="editorial",
+            palette_colors=[], fandom="", sketch_origin="Ориджинал",
+            sketch_size="Сборник драбблов",
+            sketch_profile_url="https://ficbook.net/authors/1234",
+            sketch_collection_url="https://ficbook.net/readfic/45678",
+            sketch_article_url="https://telegra.ph/One-Drabble-10-14",
+        )
+        fields = full_submission(
+            details=details, work_type="Зарисовка",
+            description="Одна зарисовка из сборника.",
+            external_url=details["sketch_article_url"],
+        )
+        self.assertEqual(fields.details["sketch_size"], "Сборник драбблов")
+        self.assertEqual(fields.details["sketch_collection_url"], details["sketch_collection_url"])
+        ctx = ModerationDeliveryContext(
+            author_user_id=10, title="Название", work_type=fields.work_type,
+            genre=fields.genre, description=fields.description,
+            body_text="", external_url=fields.external_url,
+            files=(), details=fields.details,
+        )
+        post = render_owner_promo(ctx)
+        self.assertIn("Размер:</b> Сборник драбблов", post)
+        profile_at = post.index("Профиль автора на Фикбуке")
+        collection_at = post.index("Сборник драбблов на Фикбуке")
+        article_at = post.index("Статья с текстом зарисовки в Telegraph (один из драбблов сборника)")
+        self.assertLess(profile_at, collection_at)
+        self.assertLess(collection_at, article_at)
+        self.assertIn('href="https://ficbook.net/readfic/45678"', post)
+        self.assertTrue(post.endswith("• • • • • • • • ✦ • • • • • • • •"))
+
+    def test_drabble_collection_url_and_size_are_enforced_only_for_sketches(self):
+        base = common_details(
+            size_category="", completion="", visual_mode="editorial",
+            palette_colors=[], fandom="", sketch_origin="Ориджинал",
+            sketch_size="Сборник драбблов",
+            sketch_profile_url="https://ficbook.net/authors/1234",
+            sketch_collection_url="https://ficbook.net/readfic/45678",
+            sketch_article_url="https://telegra.ph/One-Drabble-10-14",
+        )
+        def submit(details):
+            return full_submission(
+                details=details, work_type="Зарисовка",
+                description="Короткая история.",
+                external_url=base["sketch_article_url"],
+            )
+        for details, expected in (
+            ({**base, "sketch_size": ""}, "sketch_size"),
+            ({**base, "sketch_size": "Миди"}, "sketch_size"),
+            ({**base, "sketch_collection_url": ""}, "sketch_collection_url"),
+            ({**base, "sketch_collection_url": "https://evil.test/readfic/5"}, "sketch_collection_url"),
+            ({**base, "sketch_collection_url": "https://ficbook.net/authors/5"}, "sketch_collection_url"),
+            ({**base, "sketch_collection_url": "http://ficbook.net/readfic/5"}, "HTTPS"),
+            ({**base, "sketch_size": "Мини/драббл"}, "sketch_collection_url"),
+        ):
+            with self.subTest(details=details):
+                with self.assertRaisesRegex(ValidationError, expected):
+                    submit(details)
+        standalone = submit({**base, "sketch_size": "Мини/драббл", "sketch_collection_url": ""})
+        self.assertEqual(standalone.details["sketch_collection_url"], "")
+        partial = normalize_submission_details(
+            {**base, "sketch_collection_url": "https://ficbook.net/rea"}, complete=False,
+            work_type="Зарисовка",
+        )
+        self.assertEqual(partial["sketch_collection_url"], "https://ficbook.net/rea")
 
     def test_sketch_description_stays_within_35_words_and_230_chars(self):
         validate_description_for_format("Ночь меняет все.", "Зарисовка")
