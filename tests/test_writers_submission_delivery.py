@@ -131,6 +131,31 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.storage.mark_outbox_retryable.assert_not_awaited()
         self.storage.mark_outbox_permanent_failure.assert_not_awaited()
 
+    async def test_third_work_has_100_rub_fee_and_separate_cover_confirmation(self):
+        item = moderation_item()
+        self.storage.claim_due_outbox.return_value = [item]
+        self.storage.get_submission_work_charge = AsyncMock(return_value={
+            "submission_id": str(item.submission_id),
+            "work_number": 3, "amount_rub": 100, "paid": False,
+        })
+        context = self.storage.get_moderation_delivery_context.return_value
+        context.details = {"form_version": 3, "visual_mode": "image"}
+        await self.worker.run_once(now=133)
+        card = self.bot.send_message.await_args_list[0].kwargs
+        self.assertIn("Учет работ: №3", card["text"])
+        self.assertIn("100 ₽ за отправку", card["text"])
+        self.assertIn("ожидает подтверждения", card["text"])
+        callbacks = [
+            button.callback_data
+            for row in card["reply_markup"].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("ws:w:opaque-token", callbacks)
+        self.assertIn("ws:p:opaque-token", callbacks)
+        self.storage.get_submission_work_charge.assert_awaited_once_with(
+            submission_id=item.submission_id,
+        )
+
     async def test_moderator_sees_live_username_and_profile_link(self):
         item = moderation_item()
         self.storage.claim_due_outbox.return_value = [item]
