@@ -40,6 +40,7 @@ function harness() {
     setSaveState: () => {},
     clearImagePreview: () => {},
     clearPendingFiles: () => { state.pendingFiles = []; state.coverFileId = null; },
+    clearEmergencyBackupIfSynced: () => {},
     setReloadRequired: v => { state.reloadRequired = v; },
     setBusy: () => {},
     setBanner: () => {},
