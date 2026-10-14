@@ -69,6 +69,7 @@
     mainGenre3: $("mainGenre3Input"),
     warnings: $("warningsInput"),
     sketchProfile: $("sketchProfileUrlInput"),
+    sketchCollection: $("sketchCollectionUrlInput"),
     sketchArticle: $("sketchArticleUrlInput"),
     body: $("bodyInput"),
     url: $("urlInput"),
@@ -343,7 +344,10 @@
         fandom: (selectedChoice("workType") === "ФФ" || (sketch && selectedChoice("sketchOrigin") === "Фандом"))
           ? form.fandom.value.trim() : "",
         sketch_origin: sketch ? selectedChoice("sketchOrigin") : "",
+        sketch_size: sketch ? selectedChoice("sketchSize") : "",
         sketch_profile_url: sketch ? form.sketchProfile.value.trim() : "",
+        sketch_collection_url: sketch && selectedChoice("sketchSize") === "Сборник драбблов"
+          ? form.sketchCollection.value.trim() : "",
         sketch_article_url: sketch ? form.sketchArticle.value.trim() : "",
         main_genres: genres,
         warnings_present: selectedChoice("warningsPresent"),
@@ -371,7 +375,13 @@
     const visual = selectedChoice("visualMode");
     $("fandomField").classList.toggle("hidden", !ff);
     $("sketchOriginField").classList.toggle("hidden", !sketch);
+    $("sketchSizeSection").classList.toggle("hidden", !sketch);
     $("sketchLinksFields").classList.toggle("hidden", !sketch);
+    const isDrabbleCollection = sketch && selectedChoice("sketchSize") === "Сборник драбблов";
+    $("sketchCollectionUrlField").classList.toggle("hidden", !isDrabbleCollection);
+    $("sketchArticleLabel").textContent = isDrabbleCollection
+      ? "Статья с текстом зарисовки в Telegraph (один из драбблов сборника)"
+      : "Статья с текстом зарисовки в Telegraph";
     $("sketchCoverNotice").classList.toggle("hidden", !sketch);
     ["sizeCategorySection", "completionSection", "regularWorkUrlField", "extraLinksField",
      "charactersField", "notesField", "visualModeSection", "bodySection"].forEach((id) => {
@@ -384,6 +394,7 @@
       : "Для большой работы: минимум 3 предложения, до 110 слов.";
     form.description.maxLength = sketch ? 230 : 2000;
     form.sketchProfile.required = sketch;
+    form.sketchCollection.required = isDrabbleCollection;
     form.sketchArticle.required = sketch;
     form.url.required = !sketch;
     $("finishedFields").classList.toggle("hidden", sketch || !finished);
@@ -415,12 +426,16 @@
     form.title.value = revision.title || "";
     setChoice("workType", ["ФФ", "Оридж", "Зарисовка"].includes(revision.work_type) ? revision.work_type : "");
     setChoice("sketchOrigin", details.sketch_origin || "");
+    // Legacy v3 sketches had no size selector; interpret them as standalone.
+    setChoice("sketchSize", details.sketch_size ||
+      (revision.work_type === "Зарисовка" ? "Мини/драббл" : ""));
     setChoice("warningsPresent", details.warnings_present || "");
     [form.mainGenre1, form.mainGenre2, form.mainGenre3].forEach((field, index) => {
       field.value = Array.isArray(details.main_genres) ? (details.main_genres[index] || "") : "";
     });
     form.warnings.value = Array.isArray(details.warnings) ? details.warnings.join(", ") : "";
     form.sketchProfile.value = details.sketch_profile_url || "";
+    form.sketchCollection.value = details.sketch_collection_url || "";
     form.sketchArticle.value = details.sketch_article_url || (revision.work_type === "Зарисовка" ? revision.external_url || "" : "");
     setChoice("sizeCategory", details.size_category || "");
     setChoice("completion", details.completion || "");
@@ -859,6 +874,14 @@
       throw new Error("Для большой работы выбери размер, статус и оформление.");
     }
     if (sketch) {
+      if (!["Мини/драббл", "Сборник драбблов"].includes(details.sketch_size)) {
+        throw new Error("Для зарисовки выбери размер: Мини/драббл или Сборник драбблов.");
+      }
+      if (details.sketch_size === "Сборник драбблов" &&
+          (!validDomain(details.sketch_collection_url, "ficbook.net") ||
+           !/^\/readfic\/[^/?#]+/i.test(new URL(details.sketch_collection_url).pathname))) {
+        throw new Error("Для сборника нужна HTTPS-ссылка на ficbook.net/readfic/...");
+      }
       if (!details.sketch_origin || (details.sketch_origin === "Фандом" && !details.fandom)) {
         throw new Error("Для зарисовки укажи фандом или ориджинал.");
       }
@@ -1097,10 +1120,13 @@
       ["Статус произведения", (revision.details || {}).completion || "—"],
       ["Фандом", (revision.details || {}).fandom || "—"],
       ["Основа зарисовки", (revision.details || {}).sketch_origin || "—"],
+      ["Размер зарисовки", (revision.details || {}).sketch_size ||
+        (revision.work_type === "Зарисовка" ? "Мини/драббл" : "—")],
       ["Основные жанры", ((revision.details || {}).main_genres || []).join(" • ") || "—"],
       ["Предупреждения", (revision.details || {}).warnings_present === "no"
         ? "Нет" : ((revision.details || {}).warnings || []).join(" × ") || "—"],
       ["Профиль Фикбука", (revision.details || {}).sketch_profile_url || "—"],
+      ["Сборник драбблов на Фикбуке", (revision.details || {}).sketch_collection_url || "—"],
       ["Статья Telegraph", (revision.details || {}).sketch_article_url || "—"],
       ["Размер (слов)", (revision.details || {}).size_words || "—"],
       ["Страниц", (revision.details || {}).pages || "—"],
