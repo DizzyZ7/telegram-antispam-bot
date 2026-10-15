@@ -32,7 +32,15 @@ _SENSITIVE = re.compile(r"\b(?:умер|умерла|похорон|насили
 _LINK = re.compile(r"https?://|www\.|t\.me/|@", re.I)
 _NEXT = re.compile(r"\b(?:а\s+дальше|что\s+дальше|дальше|продолж|что\s+потом|ну\s+и\s+что|чем\s+кончилось|и\s+что\s+же)\b", re.I)
 _WHY = re.compile(r"\b(?:почему|зачем|откуда|с\s+чего|как\s+так|из-за\s+чего)\b", re.I)
-_LAUGH = re.compile(r"ахах|хаха|хех|лол|ржу|смешн|😂|🤣|😭", re.I)
+_LAUGH = re.compile(r"ахах|хаха|пха+ха|пхах|хех|лол|ржу|смешн|😂|🤣|😭", re.I)
+_EXCITED_LAUGH = re.compile(r"(?:АХАХ|ХАХА|ПХАХ|ПХААХ|🤣|😂)", re.I)
+_CAPS_LAUGH_LINES = (
+    "АХАХАХ, все, это уже канон 😂",
+    "ПХАХА, кажется, у этой шутки появился второй сезон.",
+    "АХАХА, внезапно даже мой внутренний кот засмеялся.",
+    "ПХАХАХ, стоп, я не был готов к такому повороту.",
+)
+
 _NO = re.compile(r"^(?:нет|неа|не\s+совсем|неправда|не\s+согласен|сомневаюсь)[!?.\s]*$", re.I)
 _YES = re.compile(r"^(?:да|ага|точно|верно|согласен|конечно|ну\s+да|именно)[!?.\s]*$", re.I)
 _THANKS = re.compile(r"^(?:спасибо|благодарю|спасибки)[!?.\s]*$", re.I)
@@ -355,7 +363,11 @@ def classify_reply(text: str | None) -> str | None:
 
 def all_curated_lines() -> tuple[str, ...]:
     authored = (text for groups in _LINES.values() for lines in groups.values() for text in lines)
-    return (*authored, *(text for lines in _SOCIAL_LINES.values() for text in lines))
+    return (
+        *authored,
+        *(text for lines in _SOCIAL_LINES.values() for text in lines),
+        *_CAPS_LAUGH_LINES,
+    )
 
 
 def choose_continuation(
@@ -405,6 +417,26 @@ def choose_continuation(
     ]
     if diverse:
         candidates = diverse
+    # Echo the chat's excitement occasionally, never on every laugh.
+    # A remembered caps-laugh from the recent bot history prevents bursts.
+    # All candidates pass the same output safety checks as ordinary phrases.
+    recent_loud = any(
+        _EXCITED_LAUGH.search(text) and text[:10].isupper()
+        for text in recent_outputs[-8:]
+    )
+    if (
+        intent == "laugh"
+        and _EXCITED_LAUGH.search(incoming_text)
+        and not recent_loud
+        and rng.random() < 0.24
+    ):
+        excited = [
+            line for line in _CAPS_LAUGH_LINES
+            if " ".join(line.casefold().split()) not in recent
+            and is_safe_entertainment_reply(line)
+        ]
+        if excited:
+            return DialogueChoice(rng.choice(excited), scene, intent, previous_stage + 1)
     # Change style across turns but retain the same scene; randomness only
     # selects from original fully authored, independently safety-checked lines.
     chosen = rng.choice(candidates)
