@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import random
 import re
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -49,7 +50,15 @@ def _quoted_echo(message: str, phrase: str) -> bool:
 def could_recall_meme(text: str | None) -> bool:
     if not isinstance(text, str) or not text.strip():
         return False
-    return bool(_CUE.search(text)) or len(_terms(text)) >= 2
+    if _CUE.search(text):
+        return True
+    # A couple of arbitrary words are not worth a database query.
+    # Direct reordered quotes often include distinctive long tokens or a
+    # laughter marker; these are still detected without hard-coded memes.
+    words = _terms(text)
+    return len(words) >= 2 and (
+        bool(_REACTION.search(text)) or any(len(word) >= 10 for word in words)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +101,10 @@ def rank_local_memes(
         return ()
 
     # Aggregate by original bot phrase; only one positive vote per person.
+    # Index actions by creation time to avoid comparing every archived message
+    # against every bot action (important for Bothost's CPU budget).
+    verified.sort(key=lambda item: item[2])
+    action_times = [item[2] for item in verified]
     scores: dict[str, dict[int, tuple[int, int]]] = {}
     for event in events:
         if (int(event.chat_id) != int(chat_id) or int(event.topic_id) != int(topic_id)
@@ -101,9 +114,10 @@ def rank_local_memes(
         message = event.text or ""
         if not message or len(message) > 400:
             continue
-        for phrase, bot_msg_id, created, _action_id in verified:
-            if not 0 <= int(event.created_at) - created <= MEME_REACTION_WINDOW_SECONDS:
-                continue
+        at = int(event.created_at)
+        start = bisect_left(action_times, at - MEME_REACTION_WINDOW_SECONDS)
+        stop = bisect_right(action_times, at)
+        for phrase, bot_msg_id, created, _action_id in verified[start:stop]:
             is_reply = event.reply_to_message_id == bot_msg_id
             is_echo = _quoted_echo(message, phrase)
             if not is_reply and not is_echo:
