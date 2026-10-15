@@ -294,6 +294,16 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
         try:
             async with self.storage.lock:
                 await self._ensure_source_claims_locked()
+                # A failed legacy score/archive write can leave this shared
+                # SQLite connection inside an open transaction. Rolling it
+                # back under the storage lock preserves durable history and
+                # allows the next reservation to start cleanly.
+                if connection.in_transaction:
+                    LOGGER.warning(
+                        "LEXICON_STALE_TRANSACTION_ROLLBACK phase=source_claim "
+                        "chat_id=%s thread_id=%s", chat_id, message_thread_id,
+                    )
+                    await connection.rollback()
                 await connection.execute("BEGIN IMMEDIATE")
                 try:
                     async with connection.execute(
