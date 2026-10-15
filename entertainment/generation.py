@@ -217,6 +217,10 @@ def _candidate_is_sane(
     min_words: int,
     originals: set[str],
 ) -> bool:
+    from .coherence import generated_text_defect
+
+    if generated_text_defect(text):
+        return False
     words = _word_tokens(tokens)
     if len(words) < min_words or len(words) > 24:
         return False
