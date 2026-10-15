@@ -578,17 +578,29 @@ def register_writers_submission_handlers(
                 detail.append(
                     f"Чат назначения: <code>{int(row['delivery_chat_id'])}</code>"
                 )
+            raw_ids = row.get("delivery_message_ids_json")
+            try:
+                saved_ids = json.loads(raw_ids) if raw_ids else []
+                if not isinstance(saved_ids, list):
+                    saved_ids = []
+            except (ValueError, TypeError):
+                saved_ids = []
+            if saved_ids:
+                detail.append(
+                    "Сообщения: "
+                    + ", ".join(str(int(item)) for item in saved_ids[:4])
+                )
             code = row.get("last_error_code")
             if code:
                 detail.append("Ошибка: " + html.escape(str(code)[:64]))
-            result.append("\\n".join(detail))
+            result.append("\n".join(detail))
         result.append(
             "Это фактические записи PostgreSQL. DELIVERED означает "
-            "подтверждение приема Telegram, но не прочтение модератором.\\n"
+            "подтверждение приема Telegram, но не прочтение модератором.\n"
             "Поиск: <code>/writers_audit Telegram_ID</code> или "
             "<code>/writers_audit UUID</code>."
         )
-        await message.answer("\\n\\n".join(result), parse_mode="HTML")
+        await message.answer("\n\n".join(result), parse_mode="HTML")
 
     @app.dp.message(Command("writers_moderation_retry"))
     async def writers_moderation_delivery_retry(message: Message) -> None:
