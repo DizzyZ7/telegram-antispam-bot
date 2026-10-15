@@ -53,6 +53,62 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.storage.close()
 
+    async def test_owner_audit_finds_saved_draft_and_delivered_moderation_packet(self):
+        unsent = await self.storage.create_submission(
+            author_user_id=707, writers_chat_id=-1002619489118,
+            fields=fields("Черновик без отправки"), now=100,
+            idempotency_key="audit-draft",
+        )
+        draft = await self.storage.create_submission(
+            author_user_id=708, writers_chat_id=-1002619489118,
+            fields=fields("Поданная работа"), now=110,
+            idempotency_key="audit-submission",
+        )
+        sent = await self.storage.seal_and_submit(
+            submission_id=draft.id, author_user_id=708,
+            expected_version=draft.version, now=200,
+            idempotency_key="audit-submit",
+        )
+        claims = await self.storage.claim_due_outbox(
+            worker_id="audit-worker", now=201, lease_seconds=900, limit=10,
+        )
+        cards = [
+            item for item in claims
+            if item.submission_id == sent.id
+            and item.event_type.value == "MODERATION_CARD"
+        ]
+        self.assertEqual(len(cards), 1)
+        await self.storage.mark_outbox_delivered(
+            outbox_id=cards[0].id, worker_id="audit-worker", now=202,
+            delivery_chat_id=2039781854, delivery_message_ids=(98765,),
+        )
+
+        items = await self.storage.audit_recent_submissions(limit=10)
+        mapping = {row["submission_id"]: row for row in items}
+        self.assertEqual(mapping[unsent.id]["status"], "DRAFT")
+        self.assertIsNone(mapping[unsent.id]["delivery_state"])
+        self.assertIsNone(mapping[unsent.id]["submitted_at"])
+        self.assertEqual(mapping[sent.id]["delivery_state"], "DELIVERED")
+        self.assertEqual(mapping[sent.id]["delivery_chat_id"], 2039781854)
+        self.assertEqual(mapping[sent.id]["delivery_message_ids_json"], "[98765]")
+        self.assertEqual(mapping[sent.id]["title"], "Поданная работа")
+        self.assertIsNotNone(mapping[sent.id]["submitted_at"])
+
+        by_author = await self.storage.audit_recent_submissions(
+            author_user_id=707,
+        )
+        self.assertEqual([row["submission_id"] for row in by_author], [unsent.id])
+        by_uuid = await self.storage.audit_recent_submissions(
+            submission_id=sent.id,
+        )
+        self.assertEqual([row["submission_id"] for row in by_uuid], [sent.id])
+        self.assertEqual(
+            await self.storage.audit_recent_submissions(
+                author_user_id=707, submission_id=sent.id,
+            ),
+            [],
+        )
+
     async def test_initialize_creates_schema_v1_tables_and_indexes(self):
         assert self.storage.pool is not None
         for table in (
