@@ -721,6 +721,12 @@ def create_writers_web_app(
         items = await history_method(user_id, submission_id)
         return _json_response({"items": items})
 
+    # Safe for platform health probes: no credentials, actor data or database
+    # details are returned. If DNS fails, this endpoint is unreachable too.
+    async def healthz(request: web.Request) -> web.Response:
+        return _json_response({"status": "ok"})
+
+    app.router.add_get("/healthz", healthz)
     app.router.add_get("/writers/", mini_app)
     app.router.add_get("/writers/{asset:app\\.(?:js|css)}", static_asset)
     app.router.add_post("/api/writers/session", create_session)
