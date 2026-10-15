@@ -750,7 +750,7 @@ def create_writers_web_app(
             return _json_response({"status": "degraded"}, status=503)
         try:
             healthy = await asyncio.wait_for(pool.fetchval("SELECT 1"), timeout=3.0)
-        except (Exception, asyncio.TimeoutError):
+        except Exception:
             return _json_response({"status": "degraded"}, status=503)
         return _json_response(
             {"status": "ready" if healthy == 1 else "degraded"},
