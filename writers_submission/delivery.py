@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import asyncpg
 import html
 import logging
 import re
@@ -19,6 +20,20 @@ from .promo import (render_owner_promo, render_palette_png, quote_work_title,
                     render_custom_cover_png)
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _database_connection_failed(exc: BaseException) -> bool:
+    """Only retry connectivity errors as a database outage, not application bugs."""
+    return isinstance(
+        exc,
+        (
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            asyncpg.exceptions.PostgresConnectionError,
+            asyncpg.exceptions.InterfaceError,
+        ),
+    ) or str(getattr(exc, "sqlstate", "") or "").startswith("08")
 
 
 def _escape(value: object) -> str:
@@ -268,6 +283,7 @@ class WritersDeliveryWorker:
         )
         self._last_health_check_at = 0
         self._last_alert_at = 0
+        self._db_outage_failures = 0
         self.now_fn = now_fn
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -293,17 +309,36 @@ class WritersDeliveryWorker:
 
     async def _run_forever(self) -> None:
         while not self._stop_event.is_set():
+            retry_delay = self.poll_seconds
             try:
                 now = int(self.now_fn())
                 await self.run_once(now=now)
+                if self._db_outage_failures:
+                    LOGGER.info(
+                        "WRITERS_DELIVERY_DATABASE_RECOVERED attempts=%s",
+                        self._db_outage_failures,
+                    )
+                    self._db_outage_failures = 0
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                LOGGER.exception("WRITERS_DELIVERY_LOOP_FAILED")
+            except Exception as exc:
+                if _database_connection_failed(exc):
+                    self._db_outage_failures = min(64, self._db_outage_failures + 1)
+                    retry_delay = min(60, max(self.poll_seconds, 2 ** min(self._db_outage_failures, 6)))
+                    # During a long provider outage, do not flood Postgres
+                    # with new connections every two seconds, or flood logs.
+                    if self._db_outage_failures in (1, 3, 6):
+                        LOGGER.warning(
+                            "WRITERS_DELIVERY_DATABASE_UNAVAILABLE "
+                            "failures=%s retry_in_seconds=%s error_type=%s",
+                            self._db_outage_failures, retry_delay, type(exc).__name__,
+                        )
+                else:
+                    LOGGER.exception("WRITERS_DELIVERY_LOOP_FAILED")
             try:
                 await asyncio.wait_for(
                     self._stop_event.wait(),
-                    timeout=self.poll_seconds,
+                    timeout=retry_delay,
                 )
             except TimeoutError:
                 pass

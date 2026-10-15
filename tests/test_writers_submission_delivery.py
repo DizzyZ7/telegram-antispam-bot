@@ -733,6 +733,33 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_photo.assert_not_awaited()
         self.storage.get_moderation_delivery_context.assert_not_awaited()
 
+    async def test_background_loop_backs_off_on_database_outage_and_recovers(self):
+        worker = WritersDeliveryWorker(
+            self.bot, self.storage, self.config, worker_id="pg-outage-test",
+            poll_seconds=2, now_fn=lambda: 123456,
+        )
+        seen = []
+
+        async def outcome(**kwargs):
+            seen.append(kwargs["now"])
+            if len(seen) <= 2:
+                raise TimeoutError("DB connection timed out")
+            worker._stop_event.set()
+            return 0
+
+        worker.run_once = AsyncMock(side_effect=outcome)
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "writers_submission.delivery.asyncio.wait_for",
+            side_effect=TimeoutError,
+        ) as waiter:
+            await worker._run_forever()
+        self.assertEqual(seen, [123456, 123456, 123456])
+        self.assertEqual(worker._db_outage_failures, 0)
+        self.assertEqual(
+            [call.kwargs["timeout"] for call in waiter.call_args_list],
+            [2, 4, 2],
+        )
+
     async def test_background_loop_uses_restart_stable_epoch_clock(self):
         epoch_now = 1_800_000_000
         worker = WritersDeliveryWorker(

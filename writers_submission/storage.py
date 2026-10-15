@@ -218,6 +218,8 @@ class PostgresWritersSubmissionStorage:
             dsn=self.database_url,
             min_size=self.min_pool_size,
             max_size=self.max_pool_size,
+            # Avoid minute-long hangs when the external pghost endpoint fails.
+            timeout=5,
             command_timeout=15,
         )
         pool = self._require_pool()

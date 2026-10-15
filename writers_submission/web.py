@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import logging
@@ -11,6 +12,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
+import asyncpg
 from aiohttp import web
 
 from .models import (
@@ -328,6 +330,19 @@ def create_writers_web_app(
                 status=422,
                 message=str(exc),
             )
+        except (
+            TimeoutError,
+            ConnectionError,
+            asyncpg.exceptions.PostgresConnectionError,
+            asyncpg.exceptions.InterfaceError,
+        ) as exc:
+            LOGGER.warning(
+                "WRITERS_FORM_DATABASE_UNAVAILABLE method=%s error_type=%s",
+                request.method, type(exc).__name__,
+            )
+            response = _error("database_unavailable", status=503)
+            response.headers["Retry-After"] = "5"
+            return response
         except FileStagingUnavailableError as exc:
             return _error(
                 "telegram_file_staging_unavailable", status=503, message=str(exc),
@@ -727,6 +742,22 @@ def create_writers_web_app(
         return _json_response({"status": "ok"})
 
     app.router.add_get("/healthz", healthz)
+    async def readyz(request: web.Request) -> web.Response:
+        # This checks the writer DB, whereas /healthz only checks aiohttp.
+        # No database credentials, account data or exception details leak.
+        pool = getattr(getattr(service, "storage", None), "pool", None)
+        if pool is None:
+            return _json_response({"status": "degraded"}, status=503)
+        try:
+            healthy = await asyncio.wait_for(pool.fetchval("SELECT 1"), timeout=3.0)
+        except Exception:
+            return _json_response({"status": "degraded"}, status=503)
+        return _json_response(
+            {"status": "ready" if healthy == 1 else "degraded"},
+            status=200 if healthy == 1 else 503,
+        )
+
+    app.router.add_get("/readyz", readyz)
     app.router.add_get("/writers/", mini_app)
     app.router.add_get("/writers/{asset:app\\.(?:js|css)}", static_asset)
     app.router.add_post("/api/writers/session", create_session)

@@ -169,6 +169,30 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
             headers["Origin"] = origin
         return headers
 
+    async def test_readyz_probes_the_actual_writers_database_without_secrets(self):
+        pool = SimpleNamespace(fetchval=AsyncMock(return_value=1))
+        self.service.storage = SimpleNamespace(pool=pool)
+        healthy = await self.client.get("/readyz")
+        self.assertEqual(healthy.status, 200)
+        self.assertEqual(await healthy.json(), {"status": "ready"})
+        pool.fetchval.assert_awaited_once_with("SELECT 1")
+
+        pool.fetchval.side_effect = TimeoutError("sensitive database host")
+        degraded = await self.client.get("/readyz")
+        self.assertEqual(degraded.status, 503)
+        self.assertEqual(await degraded.json(), {"status": "degraded"})
+        self.assertNotIn("sensitive", await degraded.text())
+
+    async def test_writer_database_outage_is_retryable_http_503_not_generic_500(self):
+        self.service.list_mine.side_effect = TimeoutError("secret DSN")
+        response = await self.client.get(
+            "/api/writers/submissions", headers=self.auth_headers(),
+        )
+        self.assertEqual(response.status, 503)
+        self.assertEqual((await response.json())["error"], "database_unavailable")
+        self.assertEqual(response.headers["Retry-After"], "5")
+        self.assertNotIn("secret", await response.text())
+
     async def test_healthz_is_public_and_does_not_expose_secrets(self):
         response = await self.client.get("/healthz")
         self.assertEqual(response.status, 200)
