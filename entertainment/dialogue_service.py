@@ -16,9 +16,14 @@ from aiogram.types import Message
 
 from .dialogue import (
     DIALOGUE_BURST_LIMIT, DIALOGUE_BURST_SECONDS, DIALOGUE_COOLDOWN_SECONDS,
-    MAX_DIALOGUE_TURNS, SESSION_SECONDS, choose_continuation,
+    MAX_DIALOGUE_TURNS, SESSION_SECONDS, DialogueChoice,
+    choose_continuation, classify_reply,
 )
 from .greetings import detect_greeting
+from .meme_memory import (
+    MEME_ACTION_LIMIT, MEME_EVENT_LIMIT, MEME_LOOKBACK_SECONDS,
+    choose_meme_callback, could_recall_meme,
+)
 from .models import EntertainmentActionRecord, EntertainmentActionType
 from .moderation_safety import is_safe_entertainment_reply, is_safe_entertainment_source
 from .moderation_safety_service import EntertainmentService as SafetyEntertainmentService
@@ -165,19 +170,57 @@ class EntertainmentService(SafetyEntertainmentService):
                 for action in sorted_actions
                 if isinstance(action.metadata.get("output"), str)
             ]
-            choice = choose_continuation(
-                incoming_text=message.text,
-                previous_text=str(parent.metadata.get("output", "")),
-                previous_scene=(
-                    str(parent.metadata["dialogue_scene"])
-                    if parent.metadata.get("source") == "dialogue_v1"
-                    and isinstance(parent.metadata.get("dialogue_scene"), str)
-                    else None
-                ),
-                previous_stage=old_stage,
-                recent_outputs=recent_outputs,
-                rng=random.Random(self.rng.getrandbits(64)),
+            scene = (
+                str(parent.metadata["dialogue_scene"])
+                if parent.metadata.get("source") == "dialogue_v1"
+                and isinstance(parent.metadata.get("dialogue_scene"), str)
+                else None
             )
+            choice = None
+            # Read the existing consented Culture Memory only if a direct
+            # reply contains a recognizable callback/quote. Never reuse
+            # arbitrary user texts as memes, store user text in action
+            # metadata, or add a new unsolicited posting path.
+            if (
+                classify_reply(message.text) != "silence"
+                and could_recall_meme(message.text)
+                and callable(getattr(self.storage, "recent_events", None))
+            ):
+                try:
+                    old_actions = await self.storage.recent_actions(
+                        chat_id, topic_id,
+                        since=now - MEME_LOOKBACK_SECONDS,
+                        limit=MEME_ACTION_LIMIT,
+                    )
+                    consented_events = await self.storage.recent_events(
+                        chat_id, topic_id, MEME_EVENT_LIMIT,
+                    )
+                    callback = choose_meme_callback(
+                        old_actions, consented_events,
+                        chat_id=chat_id, topic_id=topic_id, now=now,
+                        trigger_text=message.text,
+                        recent_outputs=recent_outputs,
+                        rng=random.Random(self.rng.getrandbits(64)),
+                    )
+                    if callback:
+                        choice = DialogueChoice(
+                            text=callback, scene=scene or "general",
+                            intent="meme", stage=old_stage + 1,
+                        )
+                except Exception:
+                    LOGGER.exception(
+                        "FOSGEN_MEME_RECALL_FAILED chat_id=%s topic_id=%s",
+                        chat_id, topic_id,
+                    )
+            if choice is None:
+                choice = choose_continuation(
+                    incoming_text=message.text,
+                    previous_text=str(parent.metadata.get("output", "")),
+                    previous_scene=scene,
+                    previous_stage=old_stage,
+                    recent_outputs=recent_outputs,
+                    rng=random.Random(self.rng.getrandbits(64)),
+                )
             if choice is None or not is_safe_entertainment_reply(choice.text):
                 return True, None
             sent = await message.reply(html.escape(choice.text))

@@ -13,6 +13,7 @@ from entertainment.dialogue import (
 )
 from entertainment.models import (
     EntertainmentActionRecord, EntertainmentActionType, EntertainmentSettings,
+    MemoryEvent, MemoryEventType,
 )
 from entertainment.moderation_safety import is_safe_entertainment_reply
 from entertainment.moderation_safety_service import EntertainmentService as SafetyEntertainmentService
@@ -106,6 +107,40 @@ class DialoguePhraseTests(unittest.TestCase):
                 recent_outputs=[], rng=random.Random(5),
             ))
 
+    def test_caps_laugh_can_join_hype_but_is_not_the_default(self):
+        texts = []
+        for seed in range(150):
+            choice = choose_continuation(
+                incoming_text="ОНО САМОЕ ПХАХАХА",
+                previous_text="В протокол внесены внеплановые овации.",
+                previous_scene="general", previous_stage=1,
+                recent_outputs=[], rng=random.Random(seed),
+            )
+            self.assertIsNotNone(choice)
+            self.assertEqual(choice.intent, "laugh")
+            self.assertTrue(is_safe_entertainment_reply(choice.text))
+            texts.append(choice.text)
+        hyped = [t for t in texts if t.startswith(("АХАХА", "ПХАХА"))]
+        self.assertGreater(len(hyped), 10)
+        self.assertLess(len(hyped), 90)
+        self.assertTrue(any(not t.startswith(("АХАХА", "ПХАХА")) for t in texts))
+
+    def test_caps_laugh_is_suppressed_if_bot_recently_shouted(self):
+        for seed in range(30):
+            choice = choose_continuation(
+                incoming_text="АХАХАХА",
+                previous_text="В протокол внесены внеплановые овации.",
+                previous_scene="general", previous_stage=1,
+                recent_outputs=["АХАХАХ, все, это уже канон 😂"],
+                rng=random.Random(seed),
+            )
+            self.assertIsNotNone(choice)
+            self.assertFalse(choice.text.startswith(("АХАХА", "ПХАХА")))
+
+    def test_sample_chat_excitement_is_classified_as_laughter(self):
+        for text in ("ОНО АХАХАХА", "ПХААХАХАХАХА", "Овации внеплановые... ХАХАХАХ"):
+            self.assertEqual(classify_reply(text), "laugh")
+
     def test_scene_continues_without_random_topic_splicing(self):
         first = choose_continuation(
             incoming_text="а дальше?", previous_text="Рукопись уже готова",
@@ -159,6 +194,7 @@ class FakeStore:
         self.actions = []
         self.consent = True
         self.recorded = []
+        self.meme_events = []
 
     async def get_settings(self, chat_id): return self.settings
     async def get_remember_enabled(self, chat_id, user_id): return self.consent
@@ -169,6 +205,10 @@ class FakeStore:
             if action.chat_id == chat_id and action.topic_id == topic_id
             and action.created_at >= since
         ][:limit]
+
+    async def recent_events(self, chat_id, topic_id, limit):
+        return [e for e in self.meme_events
+                if e.chat_id == chat_id and e.topic_id == topic_id][-limit:]
 
     async def record_action(self, action):
         self.recorded.append(action)
@@ -230,6 +270,53 @@ class DialogueRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.store, {CHAT}, now_fn=lambda: self.clock[0],
             rng=random.Random(13),
         )
+
+    async def test_real_chat_meme_recall_uses_verified_prior_bot_phrase_and_consented_votes(self):
+        phrase = "В протокол внесены внеплановые овации."
+        self.store.actions.append(EntertainmentActionRecord(
+            id=18, chat_id=CHAT, topic_id=TOPIC,
+            action_type=EntertainmentActionType.CONTEXTUAL_REPLY,
+            trigger_message_id=45, created_at=NOW-7200,
+            metadata={"source": "dialogue_v1", "output_kind": "text",
+                      "output": phrase, "bot_message_id": 505},
+        ))
+        self.store.meme_events = [
+            MemoryEvent(
+                id=i, chat_id=CHAT, topic_id=TOPIC, message_id=1000+i,
+                user_id=i, event_type=MemoryEventType.TEXT, created_at=NOW-7000+i,
+                text=text, reply_to_message_id=505,
+            )
+            for i, text in ((10, "АХАХАХ"), (11, "Овации внеплановые, ПХАХАХ"))
+        ]
+        msg = FakeMessage("Овации внеплановые, помнишь?", reply_to=bot_reply())
+        record = await self.service.evaluate_topic(msg)
+        self.assertIsNotNone(record)
+        self.assertEqual(record.metadata["dialogue_intent"], "meme")
+        self.assertIn(phrase, record.metadata["output"])
+        self.assertIn(phrase, msg.replies[0])
+        self.assertNotIn("Овации внеплановые, помнишь?", record.metadata["output"])
+        self.assertNotIn("incoming_text", record.metadata)
+
+    async def test_deleted_meme_votes_do_not_trick_runtime_into_recalling(self):
+        phrase = "В протокол внесены внеплановые овации."
+        self.store.actions.append(EntertainmentActionRecord(
+            id=18, chat_id=CHAT, topic_id=TOPIC,
+            action_type=EntertainmentActionType.CONTEXTUAL_REPLY,
+            trigger_message_id=45, created_at=NOW-7200,
+            metadata={"source": "dialogue_v1", "output_kind": "text",
+                      "output": phrase, "bot_message_id": 505},
+        ))
+        self.store.meme_events = [
+            MemoryEvent(
+                id=10, chat_id=CHAT, topic_id=TOPIC, message_id=1010,
+                user_id=10, event_type=MemoryEventType.TEXT, created_at=NOW-7000,
+                text="АХАХАХ", reply_to_message_id=505,
+            )
+        ]
+        msg = FakeMessage("Овации внеплановые, помнишь?", reply_to=bot_reply())
+        record = await self.service.evaluate_topic(msg)
+        if record:
+            self.assertNotEqual(record.metadata.get("dialogue_intent"), "meme")
 
     async def test_direct_reply_drives_four_turns_then_stops(self):
         parent = bot_reply()
