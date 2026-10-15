@@ -106,6 +106,40 @@ class DialoguePhraseTests(unittest.TestCase):
                 recent_outputs=[], rng=random.Random(5),
             ))
 
+    def test_caps_laugh_can_join_hype_but_is_not_the_default(self):
+        texts = []
+        for seed in range(150):
+            choice = choose_continuation(
+                incoming_text="ОНО САМОЕ ПХАХАХА",
+                previous_text="В протокол внесены внеплановые овации.",
+                previous_scene="general", previous_stage=1,
+                recent_outputs=[], rng=random.Random(seed),
+            )
+            self.assertIsNotNone(choice)
+            self.assertEqual(choice.intent, "laugh")
+            self.assertTrue(is_safe_entertainment_reply(choice.text))
+            texts.append(choice.text)
+        hyped = [t for t in texts if t.startswith(("АХАХА", "ПХАХА"))]
+        self.assertGreater(len(hyped), 10)
+        self.assertLess(len(hyped), 90)
+        self.assertTrue(any(not t.startswith(("АХАХА", "ПХАХА")) for t in texts))
+
+    def test_caps_laugh_is_suppressed_if_bot_recently_shouted(self):
+        for seed in range(30):
+            choice = choose_continuation(
+                incoming_text="АХАХАХА",
+                previous_text="В протокол внесены внеплановые овации.",
+                previous_scene="general", previous_stage=1,
+                recent_outputs=["АХАХАХ, все, это уже канон 😂"],
+                rng=random.Random(seed),
+            )
+            self.assertIsNotNone(choice)
+            self.assertFalse(choice.text.startswith(("АХАХА", "ПХАХА")))
+
+    def test_sample_chat_excitement_is_classified_as_laughter(self):
+        for text in ("ОНО АХАХАХА", "ПХААХАХАХАХА", "Овации внеплановые... ХАХАХАХ"):
+            self.assertEqual(classify_reply(text), "laugh")
+
     def test_scene_continues_without_random_topic_splicing(self):
         first = choose_continuation(
             incoming_text="а дальше?", previous_text="Рукопись уже готова",
