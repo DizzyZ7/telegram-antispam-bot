@@ -6,10 +6,13 @@ how a new round winner is selected when players finish with equal points.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 from lexicon_scoring import player_rank_key
+
+LOGGER = logging.getLogger(__name__)
 
 
 async def save_balanced_round(
@@ -36,54 +39,65 @@ async def save_balanced_round(
     now_ts = int(time.time())
 
     async with storage.lock:
-        for player in ordered_players:
-            is_winner = player.user_id == winner.user_id and winner.points > 0
-            await storage._upsert_score(
-                table_name="wordgame_scores",
-                key_name=None,
-                key_value=None,
-                chat_id=chat_id,
-                player=player,
-                is_winner=is_winner,
-                now_ts=now_ts,
+        # All writes share one connection. A failed previous round from an older
+        # deployment may have left an uncommitted SQLite transaction behind.
+        if connection.in_transaction:
+            LOGGER.warning("LEXICON_STALE_TRANSACTION_ROLLBACK phase=score_save")
+            await connection.rollback()
+        try:
+            await connection.execute("BEGIN IMMEDIATE")
+            for player in ordered_players:
+                is_winner = player.user_id == winner.user_id and winner.points > 0
+                await storage._upsert_score(
+                    table_name="wordgame_scores",
+                    key_name=None,
+                    key_value=None,
+                    chat_id=chat_id,
+                    player=player,
+                    is_winner=is_winner,
+                    now_ts=now_ts,
+                )
+                await storage._upsert_score(
+                    table_name="wordgame_daily_scores",
+                    key_name="day_key",
+                    key_value=day_key,
+                    chat_id=chat_id,
+                    player=player,
+                    is_winner=is_winner,
+                    now_ts=now_ts,
+                )
+                await storage._upsert_score(
+                    table_name="wordgame_weekly_scores",
+                    key_name="week_key",
+                    key_value=week_key,
+                    chat_id=chat_id,
+                    player=player,
+                    is_winner=is_winner,
+                    now_ts=now_ts,
+                )
+    
+            await connection.execute(
+                """
+                INSERT INTO wordgame_round_archive(
+                    chat_id, day_key, week_key, round_code, base_word,
+                    found_count, total_words, winner_name, winner_points, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    chat_id,
+                    day_key,
+                    week_key,
+                    round_code,
+                    base_word,
+                    found_count,
+                    total_words,
+                    winner.name,
+                    winner.points,
+                    now_ts,
+                ),
             )
-            await storage._upsert_score(
-                table_name="wordgame_daily_scores",
-                key_name="day_key",
-                key_value=day_key,
-                chat_id=chat_id,
-                player=player,
-                is_winner=is_winner,
-                now_ts=now_ts,
-            )
-            await storage._upsert_score(
-                table_name="wordgame_weekly_scores",
-                key_name="week_key",
-                key_value=week_key,
-                chat_id=chat_id,
-                player=player,
-                is_winner=is_winner,
-                now_ts=now_ts,
-            )
-
-        await connection.execute(
-            """
-            INSERT INTO wordgame_round_archive(
-                chat_id, day_key, week_key, round_code, base_word,
-                found_count, total_words, winner_name, winner_points, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                chat_id,
-                day_key,
-                week_key,
-                round_code,
-                base_word,
-                found_count,
-                total_words,
-                winner.name,
-                winner.points,
-                now_ts,
-            ),
-        )
-        await connection.commit()
+            await connection.commit()
+        except BaseException:
+            # Never leak a half-written scoreboard into the next /minigame.
+            await connection.rollback()
+            raise
