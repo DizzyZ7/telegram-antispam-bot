@@ -51,6 +51,61 @@ class DialoguePhraseTests(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertEqual(classify_reply(message), expected)
 
+    def test_real_chat_sleep_affection_and_playful_followup_have_specific_intents(self):
+        cases = (
+            ("Не выспался, друг мой?", "sleep"),
+            ("Ахаха, я обожаю тебя, Фоси! Умеешь ответить 🥰", "affection"),
+            ("Эпизода наших с тобой отношений?", "relationship"),
+            ("Препод вообще не хочет к экзамену готовить", "update"),
+        )
+        for incoming, intent in cases:
+            with self.subTest(incoming=incoming):
+                self.assertEqual(classify_reply(incoming), intent)
+                choice = choose_continuation(
+                    incoming_text=incoming,
+                    previous_text="Это уже звучит как название отдельного эпизода.",
+                    previous_scene="general", previous_stage=1,
+                    recent_outputs=["Это уже звучит как название отдельного эпизода."],
+                    rng=random.Random(11),
+                )
+                self.assertIsNotNone(choice)
+                self.assertEqual(choice.intent, intent)
+                self.assertTrue(is_safe_entertainment_reply(choice.text))
+                self.assertNotEqual(choice.text, "Следствие подозревает неожиданный поворот.")
+
+    def test_study_context_has_specific_local_reply_not_generic_protocol(self):
+        self.assertEqual(infer_scene("Бухучет опять и завтра экзамен"), "study")
+        for incoming, expected in (
+            ("почему?", "why"), ("ахаха", "laugh"), ("а дальше?", "next"),
+        ):
+            choice = choose_continuation(
+                incoming_text=incoming, previous_text="Учеба и бухучет",
+                previous_scene="study", previous_stage=1,
+                recent_outputs=[], rng=random.Random(7),
+            )
+            self.assertIsNotNone(choice)
+            self.assertEqual(choice.scene, "study")
+            self.assertEqual(choice.intent, expected)
+
+    def test_social_callbacks_respect_stop_repeat_and_turn_limit(self):
+        for incoming in ("обожаю тебя", "Не выспался?", "Наших отношений?"):
+            first = choose_continuation(
+                incoming_text=incoming, previous_text="У нашей истории новый сезон.",
+                previous_scene=None, previous_stage=0,
+                recent_outputs=[], rng=random.Random(5),
+            )
+            self.assertIsNotNone(first)
+            self.assertIsNone(choose_continuation(
+                incoming_text=incoming, previous_text=first.text,
+                previous_scene=first.scene, previous_stage=MAX_DIALOGUE_TURNS,
+                recent_outputs=[], rng=random.Random(5),
+            ))
+            self.assertIsNone(choose_continuation(
+                incoming_text="хватит", previous_text=first.text,
+                previous_scene=first.scene, previous_stage=first.stage,
+                recent_outputs=[], rng=random.Random(5),
+            ))
+
     def test_scene_continues_without_random_topic_splicing(self):
         first = choose_continuation(
             incoming_text="а дальше?", previous_text="Рукопись уже готова",

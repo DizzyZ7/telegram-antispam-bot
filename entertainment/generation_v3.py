@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable, Mapping
 
+from .coherence import generated_text_defect
 from .language import TopicAnchor, analyze_token, build_topic_anchor
 
 _WORD_RE = re.compile(
@@ -255,6 +256,9 @@ def _rejection_reason(
     records: list[_SourceRecord],
     recent_outputs: set[str],
 ) -> str | None:
+    defect = generated_text_defect(candidate)
+    if defect:
+        return defect
     normalized = normalize_source_text(candidate)
     words = normalized.split()
     if len(words) < _MIN_WORDS:

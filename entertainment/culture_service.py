@@ -24,6 +24,7 @@ from .config import (
     MEDIA_REPEAT_COOLDOWN_SECONDS,
     MIN_MESSAGES_TO_GENERATE,
 )
+from .coherence import generated_text_defect
 from .culture import (
     CultureGenerationContext,
     CultureMemorySnapshot,
@@ -290,6 +291,8 @@ class EntertainmentService(PhaseBEntertainmentService):
             if result is None:
                 continue
             generated = result.text
+            if generated_text_defect(generated):
+                continue
             if not is_novel_generated_text(
                 generated,
                 context.source_messages,
