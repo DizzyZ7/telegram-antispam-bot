@@ -156,6 +156,7 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
                  "last_error_code": "TelegramForbiddenError", "title": "Тест"}
             ]),
             retry_failed_owner_preview=AsyncMock(return_value=uuid4()),
+            audit_recent_submissions=AsyncMock(return_value=[]),
             list_moderation_delivery_admin=AsyncMock(return_value=[
                 {"submission_id": uuid4(), "state": "PERMANENT_FAILED",
                  "attempt_count": 2, "last_error_code": "TelegramForbiddenError"}
@@ -180,6 +181,7 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
         self.status = handlers["writers_delivery_status"]
         self.retry = handlers["writers_retry_preview"]
         self.moderation_status = handlers["writers_moderation_delivery_status"]
+        self.audit = handlers["writers_submission_audit"]
         self.moderation_retry = handlers["writers_moderation_delivery_retry"]
         self.publication_format = handlers["writers_publication_template_version"]
         self.author_ledger = handlers["writers_author_work_count"]
@@ -280,6 +282,71 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
         self.assertIn("PERMANENT_FAILED", body)
         self.assertIn("нет доступа к чату", body)
         self.assertIn("/writers_moderation_retry", body)
+
+    async def test_writers_audit_shows_drafts_and_delivered_destination(self):
+        draft_id = uuid4()
+        accepted_id = uuid4()
+        self.storage.audit_recent_submissions.return_value = [
+            {
+                "submission_id": accepted_id, "author_user_id": 4321,
+                "title": "Первая <работа>", "status": "SUBMITTED",
+                "created_at": 1700000000, "updated_at": 1700000020,
+                "submitted_at": 1700000010,
+                "delivery_state": "DELIVERED", "attempt_count": 1,
+                "delivery_chat_id": 2039781854,
+                "delivery_message_ids_json": "[456,457]",
+                "last_error_code": None,
+            },
+            {
+                "submission_id": draft_id, "author_user_id": 4321,
+                "title": "Недописанная", "status": "DRAFT",
+                "created_at": 1700000000, "updated_at": 1700000030,
+                "submitted_at": None,
+                "delivery_state": None, "attempt_count": None,
+                "delivery_chat_id": None,
+                "delivery_message_ids_json": None,
+                "last_error_code": None,
+            },
+        ]
+        msg = self.private_message("/writers_audit")
+        await self.audit(msg)
+        self.storage.audit_recent_submissions.assert_awaited_once_with(
+            author_user_id=None, submission_id=None, limit=12,
+        )
+        answer = msg.answer.await_args.args[0]
+        self.assertIn("Первая &lt;работа&gt;", answer)
+        self.assertIn("Не отправлена (черновик)", answer)
+        self.assertIn("DELIVERED", answer)
+        self.assertIn("Сообщения: 456, 457", answer)
+        self.assertIn("Чат назначения: <code>2039781854</code>", answer)
+        self.assertIn("\n\n", answer)
+
+    async def test_writers_audit_can_find_by_author_or_submission(self):
+        uid = self.private_message("/writers_audit 4321")
+        await self.audit(uid)
+        self.storage.audit_recent_submissions.assert_awaited_with(
+            author_user_id=4321, submission_id=None, limit=12,
+        )
+        target = uuid4()
+        by_uuid = self.private_message(f"/writers_audit {target}")
+        await self.audit(by_uuid)
+        self.storage.audit_recent_submissions.assert_awaited_with(
+            author_user_id=None, submission_id=target, limit=12,
+        )
+        self.assertIn("нет подходящих заявок", by_uuid.answer.await_args.args[0])
+
+    async def test_writers_audit_is_owner_only_and_rejects_invalid_input(self):
+        for msg in (
+            self.private_message("/writers_audit", actor_id=444),
+            self.private_message("/writers_audit", private=False),
+        ):
+            await self.audit(msg)
+            msg.answer.assert_not_awaited()
+        self.storage.audit_recent_submissions.assert_not_awaited()
+        bad = self.private_message("/writers_audit nonsense")
+        await self.audit(bad)
+        self.assertIn("Формат", bad.answer.await_args.args[0])
+        self.storage.audit_recent_submissions.assert_not_awaited()
 
     async def test_moderation_retry_is_owner_private_only(self):
         for msg in (
@@ -678,7 +745,7 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         message_names = [
             item.callback.__name__
-            for item in app.dp.message.handlers[:8]
+            for item in app.dp.message.handlers[:9]
         ]
         callback_names = [
             item.callback.__name__
@@ -689,6 +756,7 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
             {"writers_submission_start", "writers_moderation_comment",
              "writers_delivery_status", "writers_retry_preview",
              "writers_moderation_delivery_status", "writers_moderation_delivery_retry",
+             "writers_submission_audit",
              "writers_publication_template_version", "writers_author_work_count"},
         )
         self.assertEqual(

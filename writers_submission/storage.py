@@ -3049,6 +3049,49 @@ class PostgresWritersSubmissionStorage:
             for row in rows
         ]
 
+    async def audit_recent_submissions(
+        self,
+        *,
+        author_user_id: int | None = None,
+        submission_id: UUID | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, object]]:
+        """Read-only owner audit including drafts and missing outbox records.
+
+        Unlike the moderation outbox status page, start from submissions so
+        an unfinished draft or missing moderation job cannot disappear from
+        diagnostics. No body, description, attachments or credentials are read.
+        """
+        author = None if author_user_id is None else int(author_user_id)
+        if author is not None and author <= 0:
+            raise ValueError("author_user_id must be positive")
+        rows = await self._require_pool().fetch(
+            """
+            SELECT s.id AS submission_id, s.author_user_id, s.status,
+                   s.created_at, s.updated_at,
+                   r.title, r.sealed_at AS submitted_at,
+                   o.state AS delivery_state, o.attempt_count,
+                   o.last_error_code, o.delivery_chat_id,
+                   o.delivery_message_ids_json, o.updated_at AS delivery_updated_at
+            FROM writers_submissions AS s
+            LEFT JOIN writers_submission_revisions AS r
+              ON r.id = COALESCE(
+                  s.current_submitted_revision_id,
+                  s.current_draft_revision_id
+              )
+            LEFT JOIN writers_submission_outbox AS o
+              ON o.submission_id = s.id
+             AND o.revision_id = s.current_submitted_revision_id
+             AND o.event_type = 'MODERATION_CARD'
+            WHERE ($1::bigint IS NULL OR s.author_user_id = $1)
+              AND ($2::uuid IS NULL OR s.id = $2)
+            ORDER BY s.updated_at DESC, s.id DESC
+            LIMIT $3
+            """,
+            author, submission_id, max(1, min(20, int(limit))),
+        )
+        return [dict(row) for row in rows]
+
     async def retry_failed_moderation_delivery(
         self, *, submission_id: UUID, now: int,
     ) -> UUID | None:
