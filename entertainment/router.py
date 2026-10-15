@@ -81,6 +81,9 @@ class EntertainmentLearningMiddleware(BaseMiddleware):
         event: Message,
         data: dict[str, Any],
     ) -> Any:
+        chat_id = int(getattr(getattr(event, "chat", None), "id", 0) or 0)
+        if chat_id not in self.service.chat_ids:
+            return await handler(event, data)
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(
                 self._drain(), name="entertainment-learning",
