@@ -49,10 +49,9 @@ class LearningIsolationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, "handler-completed")
         self.handler.assert_awaited_once()
-        await asyncio.sleep(0)
-        self.assertEqual(self.observed, [1])
         self.release.set()
         await asyncio.wait_for(self.middleware._queue.join(), timeout=1)
+        self.assertEqual(self.observed, [1])
 
     async def test_unrelated_chats_are_not_queued_or_observed(self):
         response = await self.middleware(
