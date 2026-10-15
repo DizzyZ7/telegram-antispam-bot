@@ -165,6 +165,8 @@ class MiniGameStorage:
         self.connection = await aiosqlite.connect(self.database_path)
         await self.connection.execute("PRAGMA journal_mode=WAL;")
         await self.connection.execute("PRAGMA synchronous=NORMAL;")
+        # Shared SQLite storage can briefly contend with filesystem readers.
+        await self.connection.execute("PRAGMA busy_timeout=15000;")
         await self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS wordgame_scores (
@@ -321,57 +323,65 @@ class MiniGameStorage:
         winner = max(players, key=lambda player: (player.points, len(player.words), player.name))
         now_ts = int(time.time())
         async with self.lock:
-            for player in players:
-                is_winner = player.points == best_score and best_score > 0
-                await self._upsert_score(
-                    table_name="wordgame_scores",
-                    key_name=None,
-                    key_value=None,
-                    chat_id=chat_id,
-                    player=player,
-                    is_winner=is_winner,
-                    now_ts=now_ts,
+            if self.connection.in_transaction:
+                LOGGER.warning("LEXICON_STALE_TRANSACTION_ROLLBACK phase=legacy_score_save")
+                await self.connection.rollback()
+            try:
+                await self.connection.execute("BEGIN IMMEDIATE")
+                for player in players:
+                    is_winner = player.points == best_score and best_score > 0
+                    await self._upsert_score(
+                        table_name="wordgame_scores",
+                        key_name=None,
+                        key_value=None,
+                        chat_id=chat_id,
+                        player=player,
+                        is_winner=is_winner,
+                        now_ts=now_ts,
+                    )
+                    await self._upsert_score(
+                        table_name="wordgame_daily_scores",
+                        key_name="day_key",
+                        key_value=day_key,
+                        chat_id=chat_id,
+                        player=player,
+                        is_winner=is_winner,
+                        now_ts=now_ts,
+                    )
+                    await self._upsert_score(
+                        table_name="wordgame_weekly_scores",
+                        key_name="week_key",
+                        key_value=week_key,
+                        chat_id=chat_id,
+                        player=player,
+                        is_winner=is_winner,
+                        now_ts=now_ts,
+                    )
+    
+                await self.connection.execute(
+                    """
+                    INSERT INTO wordgame_round_archive(
+                        chat_id, day_key, week_key, round_code, base_word,
+                        found_count, total_words, winner_name, winner_points, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        chat_id,
+                        day_key,
+                        week_key,
+                        round_code,
+                        base_word,
+                        found_count,
+                        total_words,
+                        winner.name,
+                        winner.points,
+                        now_ts,
+                    ),
                 )
-                await self._upsert_score(
-                    table_name="wordgame_daily_scores",
-                    key_name="day_key",
-                    key_value=day_key,
-                    chat_id=chat_id,
-                    player=player,
-                    is_winner=is_winner,
-                    now_ts=now_ts,
-                )
-                await self._upsert_score(
-                    table_name="wordgame_weekly_scores",
-                    key_name="week_key",
-                    key_value=week_key,
-                    chat_id=chat_id,
-                    player=player,
-                    is_winner=is_winner,
-                    now_ts=now_ts,
-                )
-
-            await self.connection.execute(
-                """
-                INSERT INTO wordgame_round_archive(
-                    chat_id, day_key, week_key, round_code, base_word,
-                    found_count, total_words, winner_name, winner_points, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    chat_id,
-                    day_key,
-                    week_key,
-                    round_code,
-                    base_word,
-                    found_count,
-                    total_words,
-                    winner.name,
-                    winner.points,
-                    now_ts,
-                ),
-            )
-            await self.connection.commit()
+                await self.connection.commit()
+            except BaseException:
+                await self.connection.rollback()
+                raise
 
     async def leaderboard(self, chat_id: int, limit: int = 7) -> list[tuple[str, int, int, int]]:
         assert self.connection is not None
