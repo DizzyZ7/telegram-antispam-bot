@@ -41,7 +41,9 @@ def _terms(value: str) -> set[str]:
 def _quoted_echo(message: str, phrase: str) -> bool:
     phrase_terms = _terms(phrase)
     shared = phrase_terms & _terms(message)
-    return len(shared) >= 2 and len(shared) >= min(3, len(phrase_terms))
+    # Two distinctive shared words are enough for short reordered quotes
+    # like "Овации внеплановые", without full exact-sentence matching.
+    return len(shared) >= 2 and len(shared) / min(max(len(phrase_terms), 1), 4) >= 0.5
 
 
 def could_recall_meme(text: str | None) -> bool:
