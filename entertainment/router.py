@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -28,10 +30,50 @@ class EntertainmentChatFilter(BaseFilter):
 
 
 class EntertainmentLearningMiddleware(BaseMiddleware):
-    """Observe allowlisted chat messages without consuming other bot handlers."""
+    """Keep PostgreSQL culture-memory outages off the Telegram polling path.
 
-    def __init__(self, service: EntertainmentService) -> None:
+    Work is serialized to preserve per-chat observation order, and bounded
+    so a prolonged database outage cannot consume unbounded process memory.
+    Commands and moderation always continue, even if learning is degraded.
+    """
+
+    def __init__(
+        self,
+        service: EntertainmentService,
+        *,
+        max_pending: int = 128,
+        observe_timeout: float = 8.0,
+    ) -> None:
         self.service = service
+        self._queue: asyncio.Queue[Message] = asyncio.Queue(maxsize=max(1, max_pending))
+        self._worker: asyncio.Task[None] | None = None
+        self._last_warning_at = -60.0
+        self._observe_timeout = max(1.0, float(observe_timeout))
+
+    async def _drain(self) -> None:
+        while True:
+            event = await self._queue.get()
+            try:
+                await asyncio.wait_for(
+                    self.service.observe_message(event),
+                    timeout=self._observe_timeout,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                now = time.monotonic()
+                if now - self._last_warning_at >= 60.0:
+                    self._last_warning_at = now
+                    LOGGER.warning(
+                        "ENTERTAINMENT_LEARNING_DEGRADED error_type=%s "
+                        "queued=%s",
+                        type(exc).__name__, self._queue.qsize(),
+                    )
+                # Slow repeated connection attempts should not monopolize
+                # the provider's limited Postgres connection capacity.
+                await asyncio.sleep(3)
+            finally:
+                self._queue.task_done()
 
     async def __call__(
         self,
@@ -39,13 +81,21 @@ class EntertainmentLearningMiddleware(BaseMiddleware):
         event: Message,
         data: dict[str, Any],
     ) -> Any:
-        try:
-            await self.service.observe_message(event)
-        except Exception:
-            LOGGER.exception(
-                "Could not process entertainment learning chat_id=%s",
-                getattr(getattr(event, "chat", None), "id", None),
+        if self._worker is None or self._worker.done():
+            self._worker = asyncio.create_task(
+                self._drain(), name="entertainment-learning",
             )
+        try:
+            self._queue.put_nowait(event)
+        except asyncio.QueueFull:
+            now = time.monotonic()
+            if now - self._last_warning_at >= 60.0:
+                self._last_warning_at = now
+                LOGGER.warning(
+                    "ENTERTAINMENT_LEARNING_QUEUE_FULL "
+                    "max_pending=%s; learning temporarily skipped",
+                    self._queue.maxsize,
+                )
         return await handler(event, data)
 
 
