@@ -20,6 +20,7 @@ DIALOGUE_BURST_SECONDS = 120
 DIALOGUE_BURST_LIMIT = 6
 
 _SCENE_PATTERNS = {
+    "study": re.compile(r"учеб|уч[её]б|школ|студент|пар[аыу]|экзамен|зач[её]т|бухуч[её]т|препод|домашк|диплом|курсов|сесси|конспект", re.I),
     "writing": re.compile(r"глав|сюжет|роман|черновик|редактор|книг|писат|персонаж|концовк|абзац|рукопис|истори|эпилог|геро[йя]|текст", re.I),
     "coding": re.compile(r"код|баг|сервер|депло|коммит|тест|сборк|релиз|проект|разработ|ветк|программ|ошибк", re.I),
     "cats": re.compile(r"кот|кошк|енот|мяу|лапк|хвост", re.I),
@@ -36,9 +37,75 @@ _NO = re.compile(r"^(?:нет|неа|не\s+совсем|неправда|не\s
 _YES = re.compile(r"^(?:да|ага|точно|верно|согласен|конечно|ну\s+да|именно)[!?.\s]*$", re.I)
 _THANKS = re.compile(r"^(?:спасибо|благодарю|спасибки)[!?.\s]*$", re.I)
 _QUESTION = re.compile(r"\b(?:серьезно|правда|реально|что|как|когда|а\s+что|это\s+как)\b|\?", re.I)
+_SLEEP = re.compile(r"\b(?:не\s+выспал(?:ся|ась|ись)|спал\s+ли|сонн(?:ый|ая|ое)|хоч(?:у|ется)\s+спать|как\s+спал|спишь)\b", re.I)
+_AFFECTION = re.compile(r"\b(?:обожаю|люблю|молодец|красавчик|лапочк|милый|лучший|умничк)\b", re.I)
+_RELATIONSHIP = re.compile(r"\b(?:наших\s+(?:с\s+тобой\s+)?отношени[йях]|между\s+нами\s+что|мы\s+с\s+тобой\s+(?:пара|вместе)|наш\s+роман)\b", re.I)
+_MOTIF_RE = re.compile(r"\b(?:протокол\w*|следств\w*|комисси\w*|эпизод\w*|сери\w*|сезон\w*)\b", re.I)
+
+# Authored reactions to unmistakable social intents. These are deliberately
+# short, do not claim an actual romantic relationship, and are not synthesized
+# from personal messages. The outgoing moderation gate still applies.
+_SOCIAL_LINES: dict[str, tuple[str, ...]] = {
+    "sleep": (
+        "Похоже, мой внутренний будильник опять решил поработать за сценариста.",
+        "Режим сна сегодня в бета-тесте. Исправления обещали к понедельнику.",
+        "Сон ушел на перерыв, а чувство юмора осталось дежурить.",
+        "Будильник явно проснулся раньше здравого смысла.",
+    ),
+    "affection": (
+        "Уровень милоты в чате неожиданно вырос. Сохраняю момент.",
+        "Это самая приятная ошибка в моей системе за сегодня.",
+        "Кажется, сейчас даже мой сарказм немного смутился.",
+        "Внутренний кот довольно мурчит. Подробности засекречены.",
+    ),
+    "relationship": (
+        "Звучит как спин-офф, который чат уже готов смотреть.",
+        "Так, это уже романтическая комедия с непредсказуемым финалом.",
+        "Сценарий такой поворот не согласовал, но зрители явно за.",
+        "Главное, чтобы титры не появились посреди разговора.",
+    ),
+}
+
 
 # Each scenario reuses a coherent image, not token-by-token Markov synthesis.
 _LINES: dict[str, dict[str, tuple[str, ...]]] = {
+    "study": {
+        "next": (
+            "Следующая серия: тетрадь просит отпуск, а сессия не согласна.",
+            "У конспектов вышел новый сезон. Студенты опять без спойлеров.",
+            "Бухучет уже готовит сюжетный поворот с дебетом и кредитом.",
+        ),
+        "why": (
+            "Потому что дедлайн и сон давно состоят в сложных отношениях.",
+            "Преподавательская логика пока проходит независимую экспертизу.",
+            "Расписание опять придумал человек, который никогда не хотел спать.",
+        ),
+        "laugh": (
+            "Бухучет услышал смех и сразу добавил контрольную.",
+            "Кажется, у сессии появился собственный комедийный жанр.",
+            "Конспект тоже хотел посмеяться, но его открыли на экзамене.",
+        ),
+        "agree": (
+            "Согласен. Дебет с кредитом хотя бы однажды могли бы встретиться.",
+            "После такого даже расписание должно выдать выходной.",
+            "Учебный план кивнул и сделал вид, что ничего не произошло.",
+        ),
+        "disagree": (
+            "Ладно, пересдача у этой шутки без права на шпаргалку.",
+            "Тогда переделаем ответ без кафедральной бюрократии.",
+            "Пусть учебный план попробует объяснить свою позицию.",
+        ),
+        "question": (
+            "Вот бы преподаватели раздавали подсказки так же щедро, как задания.",
+            "Если найти логику в расписании, можно сразу писать диссертацию.",
+            "На этот вопрос даже калькулятор задумчиво смотрит в окно.",
+        ),
+        "update": (
+            "Бухучет без подготовки к экзамену — уже сюжет для триллера.",
+            "Когда препод не готовит к экзамену, тревожность пишет конспект сама.",
+            "Сессия опять делает вид, что у всех бесконечная батарейка.",
+        ),
+    },
     "writing": {
         "next": (
             "Следующая серия: восстание последнего абзаца.",
@@ -259,6 +326,14 @@ def classify_reply(text: str | None) -> str | None:
         return None
     if _STOP.search(value) or _SENSITIVE.search(value):
         return "silence"
+    # Prefer a concrete social response over generic question templates;
+    # reply intent is recognized only after opt-out and safety checks.
+    if _RELATIONSHIP.search(value):
+        return "relationship"
+    if _SLEEP.search(value):
+        return "sleep"
+    if _AFFECTION.search(value):
+        return "affection"
     if _NEXT.search(value):
         return "next"
     if _WHY.search(value):
@@ -279,7 +354,8 @@ def classify_reply(text: str | None) -> str | None:
 
 
 def all_curated_lines() -> tuple[str, ...]:
-    return tuple(text for groups in _LINES.values() for lines in groups.values() for text in lines)
+    authored = (text for groups in _LINES.values() for lines in groups.values() for text in lines)
+    return (*authored, *(text for lines in _SOCIAL_LINES.values() for text in lines))
 
 
 def choose_continuation(
@@ -303,13 +379,32 @@ def choose_continuation(
     )
     if scene not in _LINES:
         scene = "general"
-    options = _LINES[scene][intent]
+    options = _SOCIAL_LINES[intent] if intent in _SOCIAL_LINES else _LINES[scene][intent]
     recent = {" ".join(value.casefold().split()) for value in recent_outputs}
-    candidates = [line for line in options
-                  if " ".join(line.casefold().split()) not in recent
-                  and is_safe_entertainment_reply(line)]
+    candidates = [
+        line for line in options
+        if " ".join(line.casefold().split()) not in recent
+        and is_safe_entertainment_reply(line)
+    ]
     if not candidates:
         return None
+    # "Протокол / следствие / эпизод" is part of Fosgen's personality,
+    # but repeated motifs in every reply make the conversation robotic.
+    # Prefer a different motif when available; keep silence as fallback.
+    used_motifs = {
+        motif.group().casefold()[:5]
+        for text in recent_outputs[-8:]
+        for motif in _MOTIF_RE.finditer(text)
+    }
+    diverse = [
+        line for line in candidates
+        if not any(
+            motif.group().casefold()[:5] in used_motifs
+            for motif in _MOTIF_RE.finditer(line)
+        )
+    ]
+    if diverse:
+        candidates = diverse
     # Change style across turns but retain the same scene; randomness only
     # selects from original fully authored, independently safety-checked lines.
     chosen = rng.choice(candidates)
