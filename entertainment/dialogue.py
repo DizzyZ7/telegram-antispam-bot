@@ -421,7 +421,7 @@ def choose_continuation(
     # A remembered caps-laugh from the recent bot history prevents bursts.
     # All candidates pass the same output safety checks as ordinary phrases.
     recent_loud = any(
-        _EXCITED_LAUGH.search(text) and text[:10].isupper()
+        _EXCITED_LAUGH.search(text) and text.split(",", 1)[0].strip().isupper()
         for text in recent_outputs[-8:]
     )
     if (
