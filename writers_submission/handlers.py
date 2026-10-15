@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import UUID
 
@@ -488,6 +490,106 @@ def register_writers_submission_handlers(
         )
         await message.answer("\n\n".join(lines), parse_mode="HTML")
 
+    @app.dp.message(Command("writers_audit"))
+    async def writers_submission_audit(message: Message) -> None:
+        """Owner-only, read-only audit of actual submissions, including drafts."""
+        if (
+            _chat_type_value(message.chat) != "private"
+            or getattr(message, "from_user", None) is None
+            or int(message.from_user.id) != int(config.owner_user_id)
+        ):
+            return
+
+        parts = str(message.text or "").split(maxsplit=1)
+        author_user_id: int | None = None
+        submission_id: UUID | None = None
+        if len(parts) == 2:
+            target = parts[1].strip()
+            if target.isdecimal() and int(target) > 0:
+                author_user_id = int(target)
+            else:
+                try:
+                    submission_id = UUID(target)
+                except (ValueError, TypeError):
+                    await message.answer(
+                        "Формат: /writers_audit [Telegram_ID или UUID_заявки]"
+                    )
+                    return
+
+        try:
+            rows = await service.storage.audit_recent_submissions(
+                author_user_id=author_user_id,
+                submission_id=submission_id,
+                limit=12,
+            )
+        except Exception:
+            LOGGER.exception("WRITERS_SUBMISSION_AUDIT_FAILED")
+            await message.answer("Не удалось прочитать заявки из PostgreSQL. Попробуй позже.")
+            return
+
+        if not rows:
+            await message.answer(
+                "📭 В PostgreSQL нет подходящих заявок. "
+                "Если автор уверен, что нажал «Отправить», ему нужно "
+                "проверить статус прежней работы в Mini App, "
+                "не создавая новую заявку вслепую."
+            )
+            return
+
+        def when(stamp: object) -> str:
+            if not stamp:
+                return "—"
+            return datetime.fromtimestamp(
+                int(stamp), timezone.utc,
+            ).strftime("%d.%m %H:%M UTC")
+
+        icons = {
+            "DELIVERED": "✅", "PENDING": "🕐", "IN_FLIGHT": "🚚",
+            "RETRYABLE_FAILED": "🔄", "PERMANENT_FAILED": "❌",
+        }
+        statuses = {
+            "DRAFT": "Черновик", "SUBMITTED": "Отправлена",
+            "IN_REVIEW": "На рассмотрении", "APPROVED": "Одобрена",
+            "CHANGES_REQUESTED": "Запрошены правки",
+            "REJECTED": "Отклонена", "WITHDRAWN": "Отозвана",
+        }
+        result = ["🔎 <b>Аудит заявок ИКФ</b> · последние обновления"]
+        for row in rows:
+            state = str(row["status"])
+            delivery = str(row.get("delivery_state") or "")
+            title = html.escape(str(row.get("title") or "Без названия")[:45])
+            author = int(row["author_user_id"])
+            sub_id = html.escape(str(row["submission_id"]))
+            if state == "DRAFT":
+                label = "📝 Не отправлена (черновик)"
+            elif delivery:
+                label = f"{icons.get(delivery, '❔')} {html.escape(delivery)}"
+            else:
+                label = "⚠️ Отсутствует запись доставки"
+            detail = [
+                f"<b>{title}</b> · {html.escape(statuses.get(state, state))}",
+                f"<code>{sub_id}</code>",
+                f"Автор: <code>{author}</code> · Изменена: {when(row.get('updated_at'))}",
+                f"Модерация: {label}",
+            ]
+            if row.get("submitted_at"):
+                detail.append(f"Подана: {when(row['submitted_at'])}")
+            if row.get("delivery_chat_id") is not None:
+                detail.append(
+                    f"Чат назначения: <code>{int(row['delivery_chat_id'])}</code>"
+                )
+            code = row.get("last_error_code")
+            if code:
+                detail.append("Ошибка: " + html.escape(str(code)[:64]))
+            result.append("\\n".join(detail))
+        result.append(
+            "Это фактические записи PostgreSQL. DELIVERED означает "
+            "подтверждение приема Telegram, но не прочтение модератором.\\n"
+            "Поиск: <code>/writers_audit Telegram_ID</code> или "
+            "<code>/writers_audit UUID</code>."
+        )
+        await message.answer("\\n\\n".join(result), parse_mode="HTML")
+
     @app.dp.message(Command("writers_moderation_retry"))
     async def writers_moderation_delivery_retry(message: Message) -> None:
         if (
@@ -801,6 +903,7 @@ def register_writers_submission_handlers(
     # moderator callback and pending-comment flow cannot be swallowed first.
     _promote_registered_handler(app.dp.message, writers_submission_start)
     _promote_registered_handler(app.dp.message, writers_delivery_status)
+    _promote_registered_handler(app.dp.message, writers_submission_audit)
     _promote_registered_handler(app.dp.message, writers_author_work_count)
     _promote_registered_handler(app.dp.message, writers_publication_template_version)
     _promote_registered_handler(app.dp.message, writers_retry_preview)
