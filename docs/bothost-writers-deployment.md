@@ -88,3 +88,40 @@ not terminate the otherwise healthy bot process.
 
 If the bot is still built from `node:20-alpine`, its startup template is
 not yet corrected. Resolve that in Bothost before modifying application code.
+
+## Incident triage: DNS failure and stalled /minigame
+
+The mini-app and the chat game use **different stores and failure paths**:
+
+1. If Telegram's browser says **server IP address could not be found** for
+   `bot-1783536415-4824-dizzy.bothost.tech`, DNS failed **before** reaching
+   Python, SQLite or the upload handler. In the Bothost control panel check
+   whether the app's published hostname has changed and whether the HTTP
+   service has an active public domain. Compare the panel's actual HTTPS
+   address against `WRITERS_SUBMISSION_PUBLIC_URL` (including `/writers/`);
+   update the setting and the bot menu URL if they differ. Do not guess or
+   hardcode a replacement hostname. Verify with a browser using Wi-Fi and
+   cellular data before concluding the client's connection is at fault.
+2. If DNS resolves but `GET https://<assigned-host>/healthz` fails, inspect
+   startup logs for `WRITERS_SUBMISSION_READY bind=0.0.0.0:<port>`. Verify
+   the proxy's `PORT` matches the actual aiohttp listener. Unless you
+   intentionally override the port, remove `WRITERS_SUBMISSION_PORT` from
+   Bothost variables so the application follows `PORT`. A green health
+   check confirms that the web server is reachable, not that Telegram
+   authentication or PostgreSQL work correctly.
+3. If `/minigame` replies that it cannot check the starting-word history,
+   search the **runtime** logs for `Lexicon source cycle reservation failed`,
+   `sqlite3.OperationalError`, `database is locked`, `disk I/O error`,
+   and `LEXICON_STALE_TRANSACTION_ROLLBACK`. The global source ledger is
+   in `$DATA_DIR/minigames.db` (SQLite), **not** in PostgreSQL.
+   The recovery changes roll back incomplete writes, while committed
+   source claims and score data remain intact. Never delete `minigames.db`
+   or its `-wal`/`-shm` companions as a routine fix.
+4. The release must be **rebuilt** from the new main commit (not merely
+   restarted on an old image); keep `/app/data` persistent. After rollout,
+   start a round, complete it with scored words, then start another one to
+   confirm both persistence and new-cycle selection.
+
+If the hostname does not resolve for multiple networks even though the
+application is running and listening, the issue needs a domain/routing
+correction in Bothost; an app-code change alone cannot publish missing DNS.

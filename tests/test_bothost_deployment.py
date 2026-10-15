@@ -22,6 +22,7 @@ class BothostDeploymentContractTests(unittest.TestCase):
         self.assertIn("FROM python:3.12-slim", dockerfile)
         self.assertIn("CMD [\"python\", \"main.py\"]", dockerfile)
         self.assertIn("EXPOSE 3000", dockerfile)
+        self.assertNotIn("WRITERS_SUBMISSION_PORT=3000", dockerfile)
         self.assertNotIn('CMD ["node",', dockerfile)
 
 

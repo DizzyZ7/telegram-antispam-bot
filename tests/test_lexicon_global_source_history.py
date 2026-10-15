@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from lexicon_balanced_storage import save_balanced_round
 from lexicon_dictionary_patch import (
     DictionaryBackedLexiconService,
     LexiconSourceExhausted,
@@ -14,7 +15,7 @@ from lexicon_dictionary_patch import (
 )
 from lexicon_source_words import LONG_SOURCE_WORDS
 from lexicon_source_words_extra3 import LONG_SOURCE_WORDS_EXTRA3
-from minigames import MiniGameStorage, WordGameRound
+from minigames import MiniGameStorage, PlayerResult, WordGameRound
 from writers_moderation import contains_prohibited_language
 
 
@@ -255,6 +256,67 @@ class GlobalSourceLedgerTests(unittest.IsolatedAsyncioTestCase):
                 await self.service._claim_next_source((-1001, 10))
         finally:
             self.service.storage.connection = original
+
+
+    async def test_failed_score_update_rolls_back_and_game_can_restart(self):
+        # Regression: a failed round save left an open SQLite transaction,
+        # causing every later /minigame to fail with a nested BEGIN.
+        original_upsert = self.storage._upsert_score
+        calls = 0
+
+        async def interrupted_upsert(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("simulated interrupted score storage")
+            return await original_upsert(**kwargs)
+
+        self.storage._upsert_score = interrupted_upsert
+        try:
+            with self.assertRaises(OSError):
+                await save_balanced_round(
+                    self.storage,
+                    chat_id=-1001,
+                    players=[PlayerResult(user_id=11, name="Alice", points=9)],
+                    day_key="2026-10-15",
+                    week_key="2026-W42",
+                    round_code="FAIL",
+                    base_word="радиостанция",
+                    found_count=1,
+                    total_words=28,
+                )
+        finally:
+            self.storage._upsert_score = original_upsert
+
+        self.assertFalse(self.storage.connection.in_transaction)
+        async with self.storage.connection.execute(
+            "SELECT COUNT(*) FROM wordgame_scores"
+        ) as cursor:
+            self.assertEqual((await cursor.fetchone())[0], 0)
+        source, _ = await self.service._claim_next_source((-1001, 10))
+        self.assertIn(source, {"радиостанция", "хроматография", "полимеризация"})
+
+    async def test_claim_recovers_stale_legacy_transaction_without_erasing_history(self):
+        first, _ = await self.service._claim_next_source((-1001, 10))
+        # Emulate old-version partial write on the shared connection.
+        await self.storage.connection.execute(
+            "INSERT INTO wordgame_scores "
+            "(chat_id,user_id,name,rounds,wins,total_points,best_points,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (-1001, 876, "stale", 1, 0, 5, 5, 100),
+        )
+        self.assertTrue(self.storage.connection.in_transaction)
+        second, _ = await self.service._claim_next_source((-1001, 11))
+        self.assertNotEqual(first, second)
+        self.assertFalse(self.storage.connection.in_transaction)
+        async with self.storage.connection.execute(
+            "SELECT COUNT(*) FROM wordgame_scores WHERE user_id = ?", (876,)
+        ) as cursor:
+            self.assertEqual((await cursor.fetchone())[0], 0)
+        async with self.storage.connection.execute(
+            "SELECT COUNT(*) FROM wordgame_source_claims"
+        ) as cursor:
+            self.assertEqual((await cursor.fetchone())[0], 2)
 
 
 

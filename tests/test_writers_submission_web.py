@@ -169,6 +169,13 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
             headers["Origin"] = origin
         return headers
 
+    async def test_healthz_is_public_and_does_not_expose_secrets(self):
+        response = await self.client.get("/healthz")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.json(), {"status": "ok"})
+        self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+        self.assertNotIn("BOT_TOKEN", await response.text())
+
     async def test_session_bootstrap_sets_strict_secure_httponly_cookie(self):
         response = await self.client.post(
             "/api/writers/session",
