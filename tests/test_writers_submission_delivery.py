@@ -742,7 +742,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         async def outcome(**kwargs):
             seen.append(kwargs["now"])
-            if len(seen) == 1:
+            if len(seen) <= 2:
                 raise TimeoutError("DB connection timed out")
             worker._stop_event.set()
             return 0
@@ -753,11 +753,11 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             side_effect=TimeoutError,
         ) as waiter:
             await worker._run_forever()
-        self.assertEqual(seen, [123456, 123456])
+        self.assertEqual(seen, [123456, 123456, 123456])
         self.assertEqual(worker._db_outage_failures, 0)
         self.assertEqual(
             [call.kwargs["timeout"] for call in waiter.call_args_list],
-            [2, 2],
+            [2, 4, 2],
         )
 
     async def test_background_loop_uses_restart_stable_epoch_clock(self):
