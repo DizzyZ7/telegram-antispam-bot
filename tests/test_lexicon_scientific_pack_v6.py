@@ -54,7 +54,7 @@ class LongSourceScienceV6Tests(unittest.TestCase):
         # Representative areas, validated by the same live compiler.
         for stem in (
             "электро", "гидро", "бактери", "кристалл",
-            "медицин", "астро", "радио", "информац",
+            "психо", "астро", "радио", "водо",
         ):
             with self.subTest(stem=stem):
                 self.assertTrue(
