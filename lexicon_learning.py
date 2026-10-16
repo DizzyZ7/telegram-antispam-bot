@@ -37,7 +37,7 @@ MAX_PENDING_LINES = 25
 LEXICON_RAW_WORD_RE = re.compile(r"^[а-яА-ЯеЕёЁ-]{4,32}$")
 LEXICON_STORED_WORD_RE = re.compile(r"^[а-яе]{4,32}$")
 LEXICON_TEXT_COMMAND_RE = re.compile(
-    r"^/(lex_add|lexicon_add|lex_pending|lexicon_pending|lex_check|lexicon_check)(?:@[A-Za-z0-9_]{1,32})?(?:\s+(.+))?$",
+    r"^/(lex_add|lexadd|lexicon_add|lex_pending|lexicon_pending|lex_check|lexicon_check)(?:@[A-Za-z0-9_]{1,32})?(?:\s+(.+))?$",
     re.IGNORECASE,
 )
 
@@ -274,7 +274,7 @@ async def _reply_add(app: Any, service: LearningLexiconService, message: Message
     if not raw_word:
         await message.reply("Формат: <code>/lex_add слово</code>")
         return
-    ok, result = service.add_approved_word(raw_word, admin_override=True)
+    ok, result = await service.add_approved_word_durable(raw_word, admin_override=True)
     if not ok:
         await message.reply(f"📖 Не добавил: {app.safe_output_text(result)}")
         return
@@ -314,7 +314,7 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
 
         if command in {"lex_check", "lexicon_check"}:
             await _reply_check(app, service, message, argument)
-        elif command in {"lex_add", "lexicon_add"}:
+        elif command in {"lex_add", "lexadd", "lexicon_add"}:
             await _reply_add(app, service, message, argument)
         elif command in {"lex_pending", "lexicon_pending"}:
             await _reply_pending(app, service, message)
