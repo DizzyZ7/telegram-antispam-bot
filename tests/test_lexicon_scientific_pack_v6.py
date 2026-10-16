@@ -7,6 +7,7 @@ live gameplay; pack entries do not override production safety checks.
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from lexicon_curated_words import CURATED_ANSWER_WORDS
 from lexicon_learning_unpin import LearningLexiconService
@@ -37,7 +38,10 @@ class LongSourceScienceV6Tests(unittest.TestCase):
         # This tests actual production filters, not just vocabulary size.
         # It runs only during CI, not bot startup or a Telegram guess.
         service = object.__new__(LearningLexiconService)
-        service.dictionary_words = LearningLexiconService.load_dictionary_words()
+        # No /app/data writes in the GitHub Actions runner; production
+        # lexicon validation otherwise remains exactly the same.
+        with patch.object(LearningLexiconService, "load_approved_words", return_value=set()):
+            service.dictionary_words = LearningLexiconService.load_dictionary_words()
         compiled = service.build_round_candidates()
         new_sources = set(LONG_SOURCE_WORDS_EXTRA5)
         playable_new = {
