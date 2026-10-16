@@ -6,15 +6,15 @@ The additional `lexicon_source_words_extra5.py` data is a subset of the noun
 headwords in [Harrix/Russian-Nouns](https://github.com/Harrix/Russian-Nouns),
 `dist/russian_nouns.txt`, licensed under MIT by Sergienko Anton (2018-present).
 
-The source distribution contains 51,300 lines. We took **1,785 distinct words**
-not in the first five internal starter packs. Of those, **425** were
+The source distribution contains 51,300 lines. We took **1,779 distinct words**
+not in the first five internal starter packs. Of those, **421** were
 prioritized from science/technology/humanities prefixes; the others come from
 additional fields of language. Selection uses only alphabetical word forms
 and letter counts; no third-party Python library is needed at runtime.
 
 The selection process normalizes е/ё; requires Cyrillic-only, 10–24 characters,
 seven different letters, no duplicate letter bags, and excludes obvious
-sensitive/inappropriate words. Of the new candidates, **1,462** had at
+sensitive/inappropriate words. Of the new candidates, **about 1,460** had at
 least 38 combinable words in the repository's current static answer set
 during development; these numbers measure candidate potential, **not** the
 final number of live rounds.
