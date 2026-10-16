@@ -180,6 +180,8 @@ from lexicon_game_scope import (
     report_lexicon_delete_permission,
 )
 from lexicon_learning_unpin import LearningLexiconService, register_lexicon_learning_handlers
+from lexicon_postgres_config import LexiconPostgresConfig
+from lexicon_raccoon_sticker import save_raccoon_sticker_file_id
 from minigames import MiniGameStorage, register_minigame_handlers
 from writers_guard_history import WritersModerationLedger
 from writers_guard_reports import WritersReportQueue
@@ -282,6 +284,39 @@ async def main() -> None:
         # remains unchanged, so all unrelated handlers stay disabled in these chats.
         lexicon_app = LexiconGameAppScope(app, LEXICON_ONLY_CHAT_IDS)
         minigames = LearningLexiconService(lexicon_app, minigame_storage)
+
+        # /app/data may be replaced by BotHost deployments. PostgreSQL is the
+        # source of truth, with a non-destructive migration of existing files.
+        lexicon_database_url = os.getenv("DATABASE_URL", "").strip()
+        if lexicon_database_url:
+            lexicon_config = LexiconPostgresConfig(lexicon_database_url)
+            approved_words, raccoon_sticker = await lexicon_config.bootstrap(
+                minigames.approved_words,
+                minigames.raccoon_sticker_file_id,
+            )
+            minigames.lexicon_pg_storage = lexicon_config
+            minigames.restore_approved_words(approved_words)
+            minigames.raccoon_sticker_file_id = raccoon_sticker
+            if raccoon_sticker:
+                try:
+                    save_raccoon_sticker_file_id(raccoon_sticker)
+                except Exception:
+                    logging.exception("Failed to refresh local raccoon sticker mirror")
+            print(
+                "LEXICON_CONFIG_STORAGE_READY backend=postgres "
+                f"approved_words={len(minigames.approved_words)} "
+                f"raccoon_sticker={'on' if raccoon_sticker else 'off'} "
+                "legacy_import=on",
+                flush=True,
+            )
+        else:
+            print(
+                "LEXICON_CONFIG_STORAGE_READY backend=files "
+                f"approved_words={len(minigames.approved_words)} "
+                f"raccoon_sticker={'on' if minigames.raccoon_sticker_file_id else 'off'} "
+                "WARNING=DATABASE_URL_missing",
+                flush=True,
+            )
 
         scope = register_writers_chat_handlers(
             app,

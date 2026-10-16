@@ -155,9 +155,24 @@ class LearningLexiconService(BaseLearningLexiconService):
         )
         return total
 
-    async def _send_raccoon_sticker(self, round_data: WordGameRound) -> None:
+    async def configure_raccoon_sticker(self, file_id: str) -> str:
+        """Persist sticker before reporting success to the administrator."""
+        store = getattr(self, "lexicon_pg_storage", None)
+        if store is not None:
+            await store.set_sticker(file_id)
+            try:
+                save_raccoon_sticker_file_id(file_id)
+            except Exception:
+                LOGGER.exception("Sticker stored in DB but local mirror failed")
+        else:
+            save_raccoon_sticker_file_id(file_id)
+        self.raccoon_sticker_file_id = file_id
+        return file_id
+
+    async def _send_raccoon_sticker(self, round_data: WordGameRound) -> bool:
         if not self.raccoon_sticker_file_id:
-            return
+            LOGGER.warning("LEXICON_RACCOON_STICKER_UNCONFIGURED")
+            return False
         params: dict[str, Any] = {
             "chat_id": round_data.chat_id,
             "sticker": self.raccoon_sticker_file_id,
@@ -172,6 +187,7 @@ class LearningLexiconService(BaseLearningLexiconService):
                 round_data.message_thread_id,
                 round_data.round_code,
             )
+            return True
         except Exception:
             LOGGER.exception(
                 "Could not send raccoon sticker chat_id=%s thread_id=%s round=%s",
@@ -179,6 +195,7 @@ class LearningLexiconService(BaseLearningLexiconService):
                 round_data.message_thread_id,
                 round_data.round_code,
             )
+            return False
 
     async def handle_word_guess(self, message: Message) -> None:
         """Delegate scoring, then persist and celebrate a newly found raccoon."""
@@ -201,8 +218,8 @@ class LearningLexiconService(BaseLearningLexiconService):
         )
         if announcement_key in self._raccoon_sticker_announced_rounds:
             return
-        self._raccoon_sticker_announced_rounds.add(announcement_key)
-        await self._send_raccoon_sticker(round_data)
+        if await self._send_raccoon_sticker(round_data):
+            self._raccoon_sticker_announced_rounds.add(announcement_key)
 
     async def finish_word_game(
         self,
@@ -441,13 +458,12 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
             return
 
         try:
-            file_id = save_raccoon_sticker_file_id(sticker.file_id)
+            file_id = await service.configure_raccoon_sticker(sticker.file_id)
         except Exception:
             LOGGER.exception("Could not save raccoon sticker file_id")
             await message.reply("🦝 Не удалось сохранить этот стикер. Попробуй другой.")
             return
 
-        service.raccoon_sticker_file_id = file_id
         await message.reply(
             "🦝 <b>Стикер енота сохранен.</b>\n"
             "Теперь Fosgen отправит его, когда кто-нибудь найдет слово <code>енот</code>."
