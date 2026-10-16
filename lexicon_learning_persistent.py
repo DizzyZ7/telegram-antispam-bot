@@ -97,8 +97,8 @@ class LearningLexiconService(BaseLearningLexiconService):
                 base_word, allowed = await self._claim_next_source(game_key)
             except LexiconSourceExhausted:
                 await message.reply(
-                    "📚 Все доступные стартовые слова уже использованы. "
-                    "Повторяться не будем — нужен новый словарный набор."
+                    "📚 Сейчас все подходящие стартовые слова заняты активными раундами. "
+                    "Попробуй открыть новую страницу после завершения одной из игр."
                 )
                 return
             except LexiconSourceStorageError:
