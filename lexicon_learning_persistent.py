@@ -259,6 +259,57 @@ class LearningLexiconService(BaseLearningLexiconService):
                 round_data.allowed_words.add(word)
         return True, word
 
+    def restore_approved_words(self, words: set[str]) -> None:
+        """Restore all database words into the live dictionary and local mirror."""
+        self.approved_words.update(words)
+        self.dictionary_words.update(words)
+        for round_data in self.active_word_games.values():
+            round_data.allowed_words.update(
+                word for word in words if self.can_build(word, round_data.base_word)
+            )
+        try:
+            save_approved_snapshot(self.approved_words)
+        except Exception:
+            # PostgreSQL remains authoritative. A missing ephemeral volume must
+            # not prevent startup or silently erase DB-approved entries.
+            LOGGER.exception("Could not refresh local Lexicon mirror from PostgreSQL")
+
+    async def add_approved_word_durable(
+        self, raw_word: str, *, admin_override: bool = True
+    ) -> tuple[bool, str]:
+        """Acknowledge approval only after PostgreSQL commits the new word."""
+        store = getattr(self, "lexicon_pg_storage", None)
+        if store is None:
+            # Development installations without DATABASE_URL retain file mode.
+            return self.add_approved_word(raw_word, admin_override=admin_override)
+
+        ok, result = validate_lexicon_word(
+            self, raw_word, admin_override=admin_override
+        )
+        if not ok:
+            return False, result
+        word = result
+        try:
+            # Even an in-memory duplicate must be written: older file-only
+            # state may have been restored while PostgreSQL was empty.
+            await store.add_word(word)
+        except Exception:
+            LOGGER.exception("PostgreSQL Lexicon approval failed word=%s", word)
+            return False, STORAGE_ERROR_MESSAGE
+
+        self.approved_words.add(word)
+        self.dictionary_words.add(word)
+        for round_data in self.active_word_games.values():
+            if self.can_build(word, round_data.base_word):
+                round_data.allowed_words.add(word)
+
+        try:
+            append_approved_word(word)
+            save_approved_snapshot(self.approved_words)
+        except Exception:
+            LOGGER.exception("Approved word saved in DB but local mirror failed word=%s", word)
+        return True, word
+
     @staticmethod
     def word_points(word: str) -> int:
         return balanced_word_points(word)
