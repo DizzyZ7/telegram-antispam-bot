@@ -17,6 +17,7 @@ from aiogram.types import ChatMemberAdministrator, Message
 
 from lexicon_live_patch import MORPH, WORD_RE, PatchedMiniGameService
 from lexicon_source_words import LONG_SOURCE_WORDS
+from lexicon_source_variety import RECENT_SOURCE_WINDOW, choose_varied_source
 from minigames import GameKey, MIN_WORD_LENGTH, WordGameRound
 from writers_moderation import contains_prohibited_language
 
@@ -318,6 +319,25 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
                         "SELECT letter_bag FROM wordgame_source_claims"
                     ) as cursor:
                         used_bags = {str(row[0]) for row in await cursor.fetchall()}
+                    # Most recent globally claimed pages, newest first. Fill
+                    # the window from the previous cycle after a rollover.
+                    async with connection.execute(
+                        "SELECT source_word FROM wordgame_source_claims "
+                        "ORDER BY rowid DESC LIMIT ?",
+                        (RECENT_SOURCE_WINDOW,),
+                    ) as cursor:
+                        recent_sources = [
+                            str(row[0]) for row in await cursor.fetchall()
+                        ]
+                    if len(recent_sources) < RECENT_SOURCE_WINDOW:
+                        async with connection.execute(
+                            "SELECT source_word FROM wordgame_source_cycle_history "
+                            "ORDER BY cycle_no DESC, rowid DESC LIMIT ?",
+                            (RECENT_SOURCE_WINDOW - len(recent_sources),),
+                        ) as cursor:
+                            recent_sources.extend(
+                                str(row[0]) for row in await cursor.fetchall()
+                            )
                     active_bags = {
                         _source_letter_bag(round_data.base_word)
                         for round_data in self.active_word_games.values()
@@ -359,7 +379,9 @@ class DictionaryBackedLexiconService(PatchedMiniGameService):
                         cycle_no += 1
                         restarted = True
 
-                    source_word = random.choice(available)
+                    source_word = choose_varied_source(
+                        available, candidate_map, recent_sources
+                    )
                     await connection.execute(
                         "INSERT INTO wordgame_source_claims"
                         "(source_word,letter_bag,chat_id,thread_id,used_at)"
