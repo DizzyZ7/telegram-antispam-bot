@@ -240,6 +240,7 @@ async def main() -> None:
     entertainment_storage = None
     entertainment_supervisor: EntertainmentSupervisor | None = None
     zero_trust_storage: PostgresZeroTrustStorage | None = None
+    lexicon_config: LexiconPostgresConfig | None = None
     zero_trust_service: ZeroTrustService | None = None
     writers_submission_runtime = None
     accurate_initialized = False
@@ -392,6 +393,8 @@ async def main() -> None:
             await minigame_storage.close()
         if accurate_initialized:
             await accurate_storage.close()
+        if lexicon_config is not None:
+            await lexicon_config.close()
         if zero_trust_storage is not None:
             await zero_trust_storage.close()
 

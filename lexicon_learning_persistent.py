@@ -293,10 +293,19 @@ class LearningLexiconService(BaseLearningLexiconService):
             # Even an in-memory duplicate must be written: older file-only
             # state may have been restored while PostgreSQL was empty.
             await store.add_word(word)
-        except Exception:
-            LOGGER.exception("PostgreSQL Lexicon approval failed word=%s", word)
+        except Exception as exc:
+            # SQLSTATE and error class help diagnose operational problems
+            # without leaking the PostgreSQL URL or credentials into chat.
+            sqlstate = getattr(exc, "sqlstate", None)
+            error_code = str(sqlstate) if sqlstate else type(exc).__name__
+            self.lexicon_last_storage_error = error_code
+            LOGGER.exception(
+                "LEXICON_APPROVAL_DB_FAILED word=%s error_type=%s sqlstate=%s",
+                word, type(exc).__name__, sqlstate or "-",
+            )
             return False, STORAGE_ERROR_MESSAGE
 
+        self.lexicon_last_storage_error = None
         self.approved_words.add(word)
         self.dictionary_words.add(word)
         for round_data in self.active_word_games.values():

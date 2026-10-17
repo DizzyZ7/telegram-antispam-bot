@@ -37,7 +37,7 @@ MAX_PENDING_LINES = 25
 LEXICON_RAW_WORD_RE = re.compile(r"^[а-яА-ЯеЕёЁ-]{4,32}$")
 LEXICON_STORED_WORD_RE = re.compile(r"^[а-яе]{4,32}$")
 LEXICON_TEXT_COMMAND_RE = re.compile(
-    r"^/(lex_add|lexadd|lexicon_add|lex_pending|lexicon_pending|lex_check|lexicon_check)(?:@[A-Za-z0-9_]{1,32})?(?:\s+(.+))?$",
+    r"^/(lex_add|lexadd|lexicon_add|lex_pending|lexicon_pending|lex_check|lexicon_check|lex_storage|lexicon_storage)(?:@[A-Za-z0-9_]{1,32})?(?:\s+(.+))?$",
     re.IGNORECASE,
 )
 
@@ -295,6 +295,47 @@ async def _reply_pending(app: Any, service: LearningLexiconService, message: Mes
     await message.reply("\n".join(lines))
 
 
+
+async def _reply_storage(app: Any, service: LearningLexiconService, message: Message) -> None:
+    """Admin-only, read-only diagnostics; never expose DATABASE_URL/credentials."""
+    if not await _is_chat_admin(app, message):
+        await message.reply("📖 Статус хранилища Лексикона доступен только администраторам.")
+        return
+
+    store = getattr(service, "lexicon_pg_storage", None)
+    if store is None:
+        await message.reply(
+            "📖 <b>Хранилище Лексикона</b>\n"
+            f"Режим: локальные файлы · слов в памяти: <b>{len(service.approved_words)}</b>\n"
+            "⚠️ DATABASE_URL не подключен к Лексикону, данные могут пропасть при пересоздании контейнера."
+        )
+        return
+    last = getattr(service, "lexicon_last_storage_error", None)
+    try:
+        count, can_insert = await store.inspect()
+    except Exception as exc:
+        code = getattr(exc, "sqlstate", None)
+        error_code = str(code) if code else type(exc).__name__
+        LOGGER.exception("LEXICON_STORAGE_DIAGNOSTIC_FAILED error_code=%s", error_code)
+        await message.reply(
+            "📖 <b>Хранилище Лексикона</b>\n"
+            "PostgreSQL: ошибка подключения или чтения.\n"
+            f"Код ошибки: <code>{app.safe_output_text(error_code)}</code>.\n"
+            "Проверь логи Bothost по маркеру LEXICON_STORAGE_DIAGNOSTIC_FAILED."
+        )
+        return
+    rights = "есть" if can_insert else "нет"
+    warning = "\n⚠️ У роли PostgreSQL нет права INSERT." if not can_insert else ""
+    last_line = f"\nПоследняя ошибка сохранения: <code>{app.safe_output_text(last)}</code>." if last else ""
+    await message.reply(
+        "📖 <b>Хранилище Лексикона</b>\n"
+        "PostgreSQL: соединение активно.\n"
+        f"Сохраненных слов: <b>{count}</b>.\n"
+        f"Право INSERT: <b>{rights}</b>."
+        f"{warning}{last_line}"
+    )
+
+
 def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService) -> None:
     dispatcher = app.dp
 
@@ -318,6 +359,8 @@ def register_lexicon_learning_handlers(app: Any, service: LearningLexiconService
             await _reply_add(app, service, message, argument)
         elif command in {"lex_pending", "lexicon_pending"}:
             await _reply_pending(app, service, message)
+        elif command in {"lex_storage", "lexicon_storage"}:
+            await _reply_storage(app, service, message)
 
     dispatcher.message.handlers.insert(0, dispatcher.message.handlers.pop())
     print(
