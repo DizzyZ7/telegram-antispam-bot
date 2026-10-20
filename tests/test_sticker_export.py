@@ -23,7 +23,9 @@ class ChoiceCacheTests(unittest.TestCase):
             for row in choice_keyboard(token).inline_keyboard
             for button in row
         ]
-        self.assertEqual(data, [f"sticker:file:{token}", f"sticker:pack:{token}"])
+        self.assertEqual(data, [
+            f"sticker:static:{token}", f"sticker:file:{token}", f"sticker:pack:{token}",
+        ])
         item.expires_at = time.monotonic() - 1
         self.assertIsNone(state.get_result(token, 11))
 
@@ -45,7 +47,7 @@ class ChoiceHandlerTests(unittest.IsolatedAsyncioTestCase):
             send_message=AsyncMock(), get_me=AsyncMock(),
         )
         state = StickerState()
-        token = state.remember(123, b"sample-webm")
+        token = state.remember(123, b"sample-webm", b"sample-png", "fosgen_sticker.png")
         callback = SimpleNamespace(
             data=f"sticker:{action}:{token}",
             from_user=SimpleNamespace(id=user, is_bot=False),
@@ -63,9 +65,28 @@ class ChoiceHandlerTests(unittest.IsolatedAsyncioTestCase):
             bot.send_sticker.assert_not_awaited()
         bot.send_document.assert_awaited_once()
         self.assertEqual(bot.send_document.await_args.kwargs["document"].filename, "fosgen_sticker.webm")
-        self.assertIn("/addsticker", bot.send_document.await_args.kwargs["caption"])
+        self.assertIn("/newvideo", bot.send_document.await_args.kwargs["caption"])
         await handle_sticker_choice(callback, state)
         bot.send_document.assert_awaited_once()
+
+    async def test_static_png_export_is_separate_and_idempotent(self):
+        state, bot, callback = self.make_callback("static")
+        with patch("sticker_maker.handlers.save_to_personal_pack", new_callable=AsyncMock) as add:
+            await handle_sticker_choice(callback, state)
+            add.assert_not_awaited()
+            bot.send_sticker.assert_not_awaited()
+            await handle_sticker_choice(callback, state)
+        bot.send_document.assert_awaited_once()
+        doc = bot.send_document.await_args.kwargs["document"]
+        self.assertEqual(doc.filename, "fosgen_sticker.png")
+        self.assertEqual(doc.data, b"sample-png")
+        self.assertIn("PNG/WEBP", bot.send_document.await_args.kwargs["caption"])
+
+    async def test_static_png_export_for_other_user_is_denied(self):
+        state, bot, callback = self.make_callback("static", user=456)
+        await handle_sticker_choice(callback, state)
+        bot.send_document.assert_not_awaited()
+        bot.send_sticker.assert_not_awaited()
 
     async def test_add_to_pack_only_when_clicked(self):
         state, bot, callback = self.make_callback("pack")
