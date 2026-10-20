@@ -78,7 +78,7 @@ class StickerAsyncTests(unittest.IsolatedAsyncioTestCase):
                 images.append(frame)
             images[0].save(source, save_all=True, append_images=images[1:], duration=90, loop=0, disposal=2)
             output = await convert_to_sticker(source, dest)
-            self.assertTrue(output.startswith(b"\\x1aE\\xdf\\xa3".decode("unicode_escape").encode("latin-1")))
+            self.assertEqual(output[:4], bytes((0x1A, 0x45, 0xDF, 0xA3)))
             self.assertLessEqual(len(output), MAX_STICKER_BYTES)
             self.assertEqual(output, dest.read_bytes())
 
