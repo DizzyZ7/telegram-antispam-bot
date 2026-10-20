@@ -183,6 +183,7 @@ from lexicon_learning_unpin import LearningLexiconService, register_lexicon_lear
 from lexicon_postgres_config import LexiconPostgresConfig
 from lexicon_raccoon_sticker import save_raccoon_sticker_file_id
 from minigames import MiniGameStorage, register_minigame_handlers
+from sticker_maker.handlers import register_sticker_handlers
 from writers_guard_history import WritersModerationLedger
 from writers_guard_reports import WritersReportQueue
 from writers_moderation import (
@@ -360,6 +361,10 @@ async def main() -> None:
             database_url=os.getenv("DATABASE_URL"),
             bot_token=os.getenv("BOT_TOKEN"),
         )
+
+        # DM-only GIF conversion; no new group/chat allowlist permissions.
+        register_sticker_handlers(app)
+        print("STICKER_MAKER_READY scope=private format=webm max_concurrent=2", flush=True)
 
         # All game, entertainment, form and legacy handlers have now registered.
         # Profanity deletion must run before any text catch-all in writers chat.
