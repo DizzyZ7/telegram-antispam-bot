@@ -19,7 +19,7 @@ from aiogram.types import (
     CallbackQuery, InputSticker, Message,
 )
 
-from .converter import MAX_SOURCE_BYTES, StickerConversionError, convert_to_sticker
+from .converter import MAX_SOURCE_BYTES, StickerConversionError, convert_to_sticker, convert_to_static_sticker
 
 LOGGER = logging.getLogger(__name__)
 PENDING_TTL_SECONDS = 300
@@ -37,6 +37,9 @@ class ConvertedSticker:
     user_id: int
     webm: bytes
     expires_at: float
+    static_image: bytes = b""
+    static_filename: str = "fosgen_sticker.png"
+    static_sent: bool = False
     file_sent: bool = False
     pack: str | None = None
     busy: bool = False
@@ -45,7 +48,10 @@ class ConvertedSticker:
 def choice_keyboard(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text="📁 Получить файл .webm", callback_data=f"sticker:file:{token}",
+            text="🖼 PNG/WEBP для обычного набора", callback_data=f"sticker:static:{token}",
+        )],
+        [InlineKeyboardButton(
+            text="🎞 WEBM с анимацией", callback_data=f"sticker:file:{token}",
         )],
         [InlineKeyboardButton(
             text="➕ Добавить в набор Fosgen", callback_data=f"sticker:pack:{token}",
@@ -172,7 +178,10 @@ class StickerState:
     def finish(self, user_id: int) -> None:
         self.active.discard(user_id)
 
-    def remember(self, user_id: int, webm: bytes) -> str:
+    def remember(
+        self, user_id: int, webm: bytes, 
+        static_image: bytes = b"", static_filename: str = "fosgen_sticker.png",
+    ) -> str:
         now = time.monotonic()
         for token, item in list(self.results.items()):
             if item.expires_at <= now or item.user_id == user_id:
@@ -180,7 +189,10 @@ class StickerState:
         while len(self.results) >= MAX_PENDING_RESULTS:
             self.results.popitem(last=False)
         token = secrets.token_urlsafe(12)
-        self.results[token] = ConvertedSticker(user_id, webm, now + RESULT_TTL_SECONDS)
+        self.results[token] = ConvertedSticker(
+            user_id, webm, now + RESULT_TTL_SECONDS,
+            static_image=static_image, static_filename=static_filename,
+        )
         return token
 
     def get_result(self, token: str, user_id: int) -> ConvertedSticker | None:
@@ -229,13 +241,17 @@ async def create_sticker(
                 raise StickerConversionError("GIF слишком большая или недоступна для скачивания.")
             await message.bot.download_file(file.file_path, destination=input_path, timeout=30)
             webm = await convert_to_sticker(input_path, output_path)
+            static_filename, static_image = await convert_to_static_sticker(
+                input_path, Path(folder) / "static.png",
+            )
 
-        token = state.remember(user_id, webm)
+        token = state.remember(user_id, webm, static_image, static_filename)
         await status.edit_text(
-            "✅ GIF готова. Выбери, что сделать:\n\n"
-            "📁 Получить .webm, чтобы загрузить его в свой существующий набор через @Stickers.\n"
-            "➕ Добавить в персональный набор Fosgen.\n\n"
-            "Обе кнопки доступны 10 минут. До выбора набор не меняется.",
+            "✅ GIF готова. Выбери формат:\n\n"
+            "🖼 PNG/WEBP — неподвижный кадр для @Stickers, когда бот просит изображение.\n"
+            "🎞 WEBM — видеостикер с анимацией, не подходит в поле PNG/WEBP.\n"
+            "➕ Fosgen — анимированный стикер в наборе бота.\n\n"
+            "Кнопки доступны 10 минут. Без выбора набор не меняется.",
             reply_markup=choice_keyboard(token),
         )
     except StickerConversionError as exc:
@@ -258,7 +274,7 @@ async def handle_sticker_choice(callback: CallbackQuery, state: StickerState) ->
         await callback.answer("Только в личке с ботом.", show_alert=True)
         return
     parts = (callback.data or "").split(":")
-    if len(parts) != 3 or parts[0] != "sticker" or parts[1] not in ("file", "pack"):
+    if len(parts) != 3 or parts[0] != "sticker" or parts[1] not in ("static", "file", "pack"):
         await callback.answer("Неизвестное действие.", show_alert=True)
         return
     action, token = parts[1:]
@@ -269,20 +285,40 @@ async def handle_sticker_choice(callback: CallbackQuery, state: StickerState) ->
     if result.busy:
         await callback.answer("Предыдущий запрос еще выполняется.", show_alert=True)
         return
-    if action == "file" and result.file_sent:
+    if (action == "file" and result.file_sent) or (action == "static" and result.static_sent):
         await callback.answer("Файл уже отправлен выше.", show_alert=True)
         return
     result.busy = True
     await callback.answer()
     try:
-        if action == "file":
+        if action == "static":
+            if not result.static_image:
+                await callback.bot.send_message(
+                    chat_id=callback.from_user.id,
+                    text="PNG для этой конвертации недоступен. Пришли /sticker еще раз.",
+                )
+                return
+            await callback.bot.send_document(
+                chat_id=callback.from_user.id,
+                document=BufferedInputFile(
+                    result.static_image, filename=result.static_filename,
+                ),
+                caption=(
+                    "🖼 Статичный стикер готов. Это один кадр GIF без движения.\n\n"
+                    "Отправь файл в @Stickers, где он просит PNG/WEBP, "
+                    "и назначь эмодзи. Для анимации используй отдельную кнопку WEBM."
+                ),
+            )
+            result.static_sent = True
+        elif action == "file":
             await callback.bot.send_document(
                 chat_id=callback.from_user.id,
                 document=BufferedInputFile(result.webm, filename="fosgen_sticker.webm"),
                 caption=(
-                    "📁 Видеостикер .webm готов!\n\n"
-                    "Открой @Stickers, выбери /addsticker и свой существующий набор. "
-                    "Отправь полученный файл в виде документа и назначь эмодзи по инструкции."
+                    "🎞 Видеостикер .webm готов, движение сохранено.\n\n"
+                    "Это формат видеостикера (например, /newvideo в @Stickers). "
+                    "Если @Stickers просит PNG/WEBP, выбери в Fosgen статичный файл. "
+                    "Переименование расширения не поможет."
                 ),
             )
             result.file_sent = True
