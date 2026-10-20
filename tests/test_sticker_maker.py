@@ -1,6 +1,7 @@
 """DM isolation, reusable user packs, and real FFmpeg conversion regressions."""
 
 import shutil
+from io import BytesIO
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +12,8 @@ from PIL import Image, ImageDraw
 
 from sticker_maker.converter import (
     MAX_SOURCE_BYTES, MAX_STICKER_BYTES,
-    StickerConversionError, convert_to_sticker,
+    StickerConversionError, convert_to_sticker, convert_to_static_sticker,
+    MAX_STATIC_STICKER_BYTES,
 )
 from sticker_maker.handlers import (
     StickerState, media_file, pack_name, private, save_to_personal_pack,
@@ -81,6 +83,42 @@ class StickerAsyncTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(output[:4], bytes((0x1A, 0x45, 0xDF, 0xA3)))
             self.assertLessEqual(len(output), MAX_STICKER_BYTES)
             self.assertEqual(output, dest.read_bytes())
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg unavailable in test environment")
+    async def test_gif_to_static_rgba_png(self):
+        with tempfile.TemporaryDirectory() as d:
+            source, dest = Path(d) / "sample.gif", Path(d) / "frame.png"
+            image = Image.new("RGBA", (180, 100), (0, 0, 0, 0))
+            ImageDraw.Draw(image).rectangle((10, 20, 80, 75), fill=(255, 0, 0, 255))
+            image.save(source, format="GIF")
+            filename, data = await convert_to_static_sticker(source, dest)
+            self.assertEqual(filename, "fosgen_sticker.png")
+            self.assertLessEqual(len(data), MAX_STATIC_STICKER_BYTES)
+            with Image.open(BytesIO(data)) as sticker:
+                self.assertEqual(sticker.size, (512, 512))
+                self.assertEqual(sticker.mode, "RGBA")
+                self.assertEqual(sticker.getpixel((0, 0))[3], 0)
+                self.assertGreater(sticker.getpixel((100, 200))[3], 0)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg unavailable in test environment")
+    async def test_mp4_to_static_image(self):
+        with tempfile.TemporaryDirectory() as d:
+            source, dest = Path(d) / "telegram.mp4", Path(d) / "frame.png"
+            import asyncio
+            p = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                "-f", "lavfi", "-i", "color=c=blue:s=128x96:r=10",
+                "-t", "0.4", "-an", "-c:v", "libx264", str(source),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await p.communicate()
+            if p.returncode != 0:
+                self.skipTest("ffmpeg does not include libx264: " + stderr.decode(errors="replace"))
+            filename, data = await convert_to_static_sticker(source, dest)
+            self.assertTrue(filename.endswith((".png", ".webp")))
+            with Image.open(BytesIO(data)) as sticker:
+                self.assertEqual(sticker.size, (512, 512))
+                self.assertEqual(sticker.getpixel((0, 0))[3], 0)
 
     async def test_rejects_oversized_input(self):
         with tempfile.TemporaryDirectory() as d:
