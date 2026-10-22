@@ -212,6 +212,7 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         if (word in self.approved_words or _known_dictionary_word(self, word)) and word not in round_data.allowed_words:
             if self.can_build(word, round_data.base_word):
                 round_data.allowed_words.add(word)
+                self.extend_round_deadline_for_total_words(round_data, len(round_data.allowed_words))
 
         await super().handle_word_guess(message)
 
