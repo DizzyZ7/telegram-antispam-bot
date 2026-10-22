@@ -150,6 +150,8 @@ class LearningLexiconService(DictionaryBackedLexiconService):
         for _key, round_data in self.active_word_games.items():
             if self.can_build(word, round_data.base_word):
                 round_data.allowed_words.add(word)
+                self.extend_round_deadline_for_total_words(round_data, len(round_data.allowed_words))
+                self.extend_round_deadline_for_total_words(round_data, len(round_data.allowed_words))
         return True, word
 
     def log_rejected_candidate(self, *, word: str, round_base: str, user_id: int, name: str, reason: str) -> None:
