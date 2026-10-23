@@ -126,7 +126,10 @@ def festive_reply(kind: str, *, rng: random, public_work_title: str | None = Non
             words[position] = word[:split] + emoji + word[split:]
         else:
             words.insert(position, emoji)
-    result = " ".join(words)\n    if protected_title:\n        result = result.replace("PUBLICWORKTITLETOKEN", protected_title)\n    return result[:500]
+    result = " ".join(words)
+    if protected_title:
+        result = result.replace("PUBLICWORKTITLETOKEN", protected_title)
+    return result[:500]
 
 
 __all__ = ["celebration_kind", "festive_reply", "celebration_context"]
