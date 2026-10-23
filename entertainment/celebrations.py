@@ -13,11 +13,26 @@ _BIRTHDAY_LINES = (
     "С ДНЕМ РОЖДЕНИЯ! Желаю столько счастья, чтобы даже енот не смог утащить.",
     "С днем рождения! Пусть сюжет жизни будет с неожиданными поворотами, но без багов.",
     "С днем рождения! Сегодня официальный повод быть легендой чата.",
+    "ВНИМАНИЕ, ЧАТ! Сегодня у одного из главных героев новый сезон жизни. С днем рождения!",
+    "С днем рождения! Пусть твой запас удачи не кончается даже после финальных титров.",
+    "УРААА! Праздничный енот одобрил этот день. С днем рождения!",
+    "С днем рождения! Желаю вдохновения, смешных историй и людей, с которыми хорошо даже молчать.",
+    "Сегодня вселенная официально разрешает тебе быть счастливее обычного. С днем рождения!",
+    "С днем рождения! Если жизнь — фанфик, пусть у тебя всегда будет любимый автор.",
+    "Поздравляю с днем рождения! Сюжетный поворот дня: все хорошие пожелания сбываются.",
+    "С днем рождения! Пусть хорошие новости приходят чаще, чем уведомления из чата.",
+    "В этот день даже мемы встали по стойке смирно. С днем рождения!",
 )
 _WISH_LINES = (
     "Поздравляю! Пусть удача пристает сильнее, чем Фосген к мемам.",
     "УРА! Поздравления приняты, праздничный хаос запущен.",
     "Это повод устроить маленький праздник прямо в чате!",
+    "Официально объявляю: сегодня есть повод для радости. Поздравляю!",
+    "Поздравляю! Пусть эта победа станет только первой главой.",
+    "Тревога! Обнаружен повод для счастья. Срочно поздравляю!",
+    "Поздравляю! Пусть дальше будет еще больше поводов улыбаться.",
+    "Сегодня удача явно решила зайти в этот чат. Поздравляю!",
+    "Поздравляю! Желаю, чтобы приятные неожиданности стали привычкой.",
 )
 
 
@@ -31,10 +46,10 @@ def celebration_kind(text: str | None) -> str | None:
     return None
 
 
-def festive_reply(kind: str, *, rng: random.Random, public_work_title: str | None = None) -> str:
+def festive_reply(kind: str, *, rng: random, public_work_title: str | None = None, recent_replies: tuple[str, ...] = ()) -> str:
     """Shuffle emoji across words, sometimes within a word; cap total size."""
     lines = _BIRTHDAY_LINES if kind == "birthday" else _WISH_LINES
-    message = rng.choice(lines)
+    # Avoid repeating the same base phrase even if emojis differ.\n    used = tuple(item.casefold() for item in recent_replies[-20:])\n    available = [line for line in lines if not any(line.casefold() in old for old in used)]\n    message = rng.choice(available or lines)
     # Only a previously verified, published and author-opted-in title is allowed.
     # Never use draft text, descriptions, submission statuses or unpublished titles.
     if kind == "birthday" and public_work_title:
