@@ -22,7 +22,7 @@ def is_novel_generated_text(
     sources: list[str],
     recent_outputs: list[str],
 ) -> bool:
-    """Reject source replay, recent bot replay, and excessive source overlap."""
+    """Reject source replay and substantial overlap with recent bot replies."""
     candidate_words = _normalized_words(candidate)
     if not candidate_words:
         return False
@@ -37,7 +37,7 @@ def is_novel_generated_text(
         return True
 
     candidate_gram_count = len(candidate_grams)
-    for source in sources:
+    for source in (*sources, *recent_outputs):
         source_grams = set(_four_grams(_normalized_words(source)))
         if not source_grams:
             continue
