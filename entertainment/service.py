@@ -33,7 +33,7 @@ from .models import (
     EntertainmentSettings,
     normalize_topic_id,
 )
-from .novelty import is_novel_generated_text
+from .novelty import is_contextually_relevant, is_novel_generated_text
 from .storage.base import EntertainmentStorage
 
 LOGGER = logging.getLogger(__name__)
@@ -279,6 +279,7 @@ class EntertainmentService:
         *,
         recent_outputs: list[str],
         recent_signatures: set[str],
+        direct_trigger: str | None = None,
     ) -> tuple[str | None, str | None]:
         """Generate a novel phrase, then optionally apply local emoji culture."""
         if not context.source_messages:
@@ -296,6 +297,8 @@ class EntertainmentService:
                 context.source_messages,
                 recent_outputs,
             ):
+                continue
+            if direct_trigger and not is_contextually_relevant(generated, direct_trigger):
                 continue
             return apply_emoji_style(
                 generated,
@@ -394,6 +397,7 @@ class EntertainmentService:
             culture,
             recent_outputs=recent_outputs,
             recent_signatures=recent_signatures,
+            direct_trigger=(trigger_text if selected.action_type is EntertainmentActionType.CONTEXTUAL_REPLY and not supervisor else None),
         )
         if generated is None:
             return None

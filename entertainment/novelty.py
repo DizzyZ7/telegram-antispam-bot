@@ -22,7 +22,7 @@ def is_novel_generated_text(
     sources: list[str],
     recent_outputs: list[str],
 ) -> bool:
-    """Reject source replay, recent bot replay, and excessive source overlap."""
+    """Reject source replay and substantial overlap with recent bot replies."""
     candidate_words = _normalized_words(candidate)
     if not candidate_words:
         return False
@@ -32,12 +32,19 @@ def is_novel_generated_text(
         if normalized_candidate == " ".join(_normalized_words(text)):
             return False
 
+    for previous in recent_outputs:
+        previous_words = set(_normalized_words(previous))
+        if len(candidate_words) >= 5 and previous_words:
+            shared = len(set(candidate_words) & previous_words)
+            if shared / max(1, len(set(candidate_words))) >= 0.75:
+                return False
+
     candidate_grams = _four_grams(candidate_words)
     if not candidate_grams:
         return True
 
     candidate_gram_count = len(candidate_grams)
-    for source in sources:
+    for source in (*sources, *recent_outputs):
         source_grams = set(_four_grams(_normalized_words(source)))
         if not source_grams:
             continue
@@ -48,4 +55,20 @@ def is_novel_generated_text(
     return True
 
 
-__all__ = ["is_novel_generated_text"]
+def is_contextually_relevant(candidate: str, trigger: str) -> bool:
+    """Require a meaningful shared topic for a direct reply when detectable."""
+    from .generation import CONTEXT_STOPWORDS
+
+    def terms(text: str) -> set[str]:
+        return {
+            word for word in _normalized_words(text)
+            if len(word) >= 4 and word not in CONTEXT_STOPWORDS
+        }
+
+    prompt_terms = terms(trigger)
+    if not prompt_terms:
+        return True
+    return bool(prompt_terms & terms(candidate))
+
+
+__all__ = ["is_novel_generated_text", "is_contextually_relevant"]
