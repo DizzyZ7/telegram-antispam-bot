@@ -63,6 +63,30 @@ def celebration_kind(text: str | None) -> str | None:
     return None
 
 
+
+_SEASONAL = {
+    "winter": ("Пусть удача сияет ярче гирлянд.", "Желаю теплых людей даже в холодные дни.", "Пусть снежинки приносят хорошие новости.", "Пусть мороз оставит только приятные мурашки."),
+    "spring": ("Пусть идеи расцветают быстрее подснежников.", "Пусть весна добавит вдохновения.", "Желаю новых глав и легкого настроения.", "Пусть счастье просыпается вместе с природой."),
+    "summer": ("Пусть лето будет как отпуск у главного героя.", "Пусть солнце заряжает лучше кофе.", "Желаю теплых встреч и незабываемых историй.", "Пусть удача будет ярче июльского неба."),
+    "autumn": ("Пусть уют и хорошие новости идут комплектом.", "Желаю золотых идей и теплых разговоров.", "Пусть дождь приносит только вдохновение.", "Пусть осенние главы будут самыми красивыми."),
+}
+_DAYPART = {
+    "morning": ("Утро официально объявлено праздничным.", "Сегодня даже будильник должен поздравлять."),
+    "day": ("Дневной эфир захвачен хорошими новостями.", "Середина дня, а повод для счастья уже найден."),
+    "evening": ("Вечер заслуживает праздничного саундтрека.", "Пусть сегодняшний вечер запомнится надолго."),
+    "night": ("Даже ночные совы сегодня празднуют.", "Пусть ночные звезды подмигивают тебе."),
+}
+
+
+def celebration_context(moment: datetime) -> tuple[str, str]:
+    month, hour = moment.month, moment.hour
+    season = ("winter" if month in (12, 1, 2) else
+              "spring" if month in (3, 4, 5) else
+              "summer" if month in (6, 7, 8) else "autumn")
+    daypart = "morning" if 5 <= hour < 12 else "day" if 12 <= hour < 18 else "evening" if 18 <= hour < 23 else "night"
+    return season, daypart
+
+
 def festive_reply(kind: str, *, rng: random, public_work_title: str | None = None, recent_replies: tuple[str, ...] = ()) -> str:
     """Shuffle emoji across words, sometimes within a word; cap total size."""
     lines = _BIRTHDAY_LINES if kind == "birthday" else _WISH_LINES
