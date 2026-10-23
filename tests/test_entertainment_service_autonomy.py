@@ -161,7 +161,7 @@ class EntertainmentServiceAutonomyTests(unittest.IsolatedAsyncioTestCase):
                 message_id=500 + index,
                 created_at=self.NOW - 120 + index,
             )
-        message = FakeMessage(message_id=903, reply_to_bot=True)
+        message = FakeMessage(message_id=903, reply_to_bot=True, text="как бот ответит на прямое обращение во время пика")
         with patch(
             "entertainment.service.generate_chat_text",
             return_value="ответ на прямое обращение во время пика",
