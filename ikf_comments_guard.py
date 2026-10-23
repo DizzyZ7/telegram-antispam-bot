@@ -15,9 +15,9 @@ from aiogram.types import Message
 
 LOGGER = logging.getLogger(__name__)
 COMMENTS_CHAT_ID = -1002576898711
-URL_RE = re.compile(r"(?:https?://)?(?:t\\.me|telegram\\.me)/(?:[A-Za-z0-9_+/-]+)", re.I)
-BOT_URL_RE = re.compile(r"(?:https?://)?(?:t\\.me|telegram\\.me)/(?:[A-Za-z0-9_]{5,32}bot)(?:[/?#]|$)", re.I)
-BOT_MENTION_RE = re.compile(r"(?<![\\w])@[A-Za-z0-9_]{4,29}bot\\b", re.I)
+URL_RE = re.compile(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:[A-Za-z0-9_+/-]+)", re.I)
+BOT_URL_RE = re.compile(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:[A-Za-z0-9_]{5,32}bot)(?:[/?#]|$)", re.I)
+BOT_MENTION_RE = re.compile(r"(?<![\w])@[A-Za-z0-9_]{4,29}bot\b", re.I)
 EARN_RE = re.compile(r"(?:заработ|доход|инвест|прибыл|выплат|крипт|подработ)", re.I)
 CTA_RE = re.compile(r"(?:запусти|запустить|переходи|переходите|подпишись|жми|нажми|бота)", re.I)
 LATIN_LOOKALIKES = str.maketrans({
