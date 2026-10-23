@@ -200,6 +200,8 @@ class EntertainmentService:
         recent_outputs: list[str],
     ) -> str | None:
         """Compatibility generation helper kept for legacy callers/tests."""
+        from .voice import choose_voice_variant
+
         for _ in range(5):
             generated = generate_chat_text(messages, rng=self.rng)
             if not generated:
@@ -300,6 +302,7 @@ class EntertainmentService:
                 continue
             if direct_trigger and not is_contextually_relevant(generated, direct_trigger):
                 continue
+            generated = choose_voice_variant(generated, recent_outputs, rng=self.rng)
             return apply_emoji_style(
                 generated,
                 context,
