@@ -257,6 +257,7 @@ class LearningLexiconService(BaseLearningLexiconService):
         for _key, round_data in self.active_word_games.items():
             if self.can_build(word, round_data.base_word):
                 round_data.allowed_words.add(word)
+                self.extend_round_deadline_for_total_words(round_data, len(round_data.allowed_words))
         return True, word
 
     def restore_approved_words(self, words: set[str]) -> None:
@@ -267,6 +268,7 @@ class LearningLexiconService(BaseLearningLexiconService):
             round_data.allowed_words.update(
                 word for word in words if self.can_build(word, round_data.base_word)
             )
+            self.extend_round_deadline_for_total_words(round_data, len(round_data.allowed_words))
         try:
             save_approved_snapshot(self.approved_words)
         except Exception:
@@ -311,6 +313,7 @@ class LearningLexiconService(BaseLearningLexiconService):
         for round_data in self.active_word_games.values():
             if self.can_build(word, round_data.base_word):
                 round_data.allowed_words.add(word)
+                self.extend_round_deadline_for_total_words(round_data, len(round_data.allowed_words))
 
         try:
             append_approved_word(word)
