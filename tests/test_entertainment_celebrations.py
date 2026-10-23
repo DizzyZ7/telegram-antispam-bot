@@ -17,6 +17,14 @@ class CelebrationTests(unittest.TestCase):
         for message in ("обычное сообщение", "/fun поздравляю", "вчера был день рождения"):
             self.assertIsNone(celebration_kind(message))
 
+    def test_opted_in_public_title_can_be_used(self):
+        text = festive_reply('birthday', rng=random.Random(4), public_work_title='Лунная библиотека')
+        self.assertIn('«Лунная библиотека»', text)
+
+    def test_untrusted_title_is_not_rendered(self):
+        text = festive_reply('birthday', rng=random.Random(4), public_work_title='<private>')
+        self.assertNotIn('<private>', text)
+
     def test_festive_reply_is_bounded_and_varied(self):
         outputs = {festive_reply("birthday", rng=random.Random(seed)) for seed in range(10)}
         self.assertGreater(len(outputs), 5)
