@@ -513,16 +513,21 @@ class EntertainmentService:
         if now - last < 3600:
             return False
         recent = await self.storage.recent_actions(chat_id, topic_id, since=now - 3600, limit=20)
-        if recent:
+        if any(getattr(action, 'metadata', {}).get('source') == 'celebration' for action in recent):
             return False
         self._celebration_last_at[scope] = now
         recent_outputs = tuple(
             str(action.metadata.get("output", "")) for action in recent
             if isinstance(action.metadata, dict)
         )
+        try:
+            local_time = datetime.fromtimestamp(now, ZoneInfo(settings.timezone))
+        except (ZoneInfoNotFoundError, ValueError, TypeError, AttributeError):
+            local_time = datetime.fromtimestamp(now, ZoneInfo('Europe/Moscow'))
         reply = festive_reply(
             kind, rng=self.rng, recent_replies=recent_outputs,
-            moment=datetime.fromtimestamp(now, ZoneInfo(settings.timezone)),
+            moment=local_time,
+            occasion_key=f'{chat_id}:{topic_id}:{local_time.date().isoformat()}:{kind}',
         )
         try:
             await message.reply(html.escape(reply))
