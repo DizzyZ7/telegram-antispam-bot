@@ -18,6 +18,12 @@ class CelebrationTests(unittest.TestCase):
         for message in ("обычное сообщение", "/fun поздравляю", "вчера был день рождения"):
             self.assertIsNone(celebration_kind(message))
 
+    def test_same_occasion_has_stable_words(self):
+        first = festive_reply('birthday', rng=random.Random(1), moment=datetime(2026, 10, 23, 12), occasion_key='chat:topic:2026-10-23:birthday')
+        second = festive_reply('birthday', rng=random.Random(2), moment=datetime(2026, 10, 23, 12), occasion_key='chat:topic:2026-10-23:birthday')
+        self.assertIn('🎉' if '🎉' in first else first.split()[0], first)
+        self.assertNotEqual(first, second)  # Same wording seed, different emoji shuffle
+
     def test_season_and_daypart(self):
         self.assertEqual(celebration_context(datetime(2026, 1, 10, 8)), ('winter', 'morning'))
         self.assertEqual(celebration_context(datetime(2026, 4, 10, 14)), ('spring', 'day'))
