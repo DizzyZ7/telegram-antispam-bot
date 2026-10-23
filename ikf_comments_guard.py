@@ -6,6 +6,7 @@ Does not download or retain attachments.
 from __future__ import annotations
 
 import logging
+import time
 import re
 import unicodedata
 from typing import Any, Awaitable, Callable
@@ -68,7 +69,36 @@ def is_advertising(message: Message) -> bool:
     return False
 
 
+CJK_RE = re.compile(r"[\\u3400-\\u9fff\\u3040-\\u30ff\\uac00-\\ud7af]")
+CYRILLIC_RE = re.compile(r"[а-яё]", re.I)
+EXTERNAL_LINK_RE = re.compile(r"(?:https?://|www\\.|t\\.me/|telegram\\.me/)", re.I)
+
+
+def is_long_cjk_message(message: Message) -> bool:
+    text = message.text or message.caption or ""
+    if len(text) < 45:
+        return False
+    letters = [char for char in text if char.isalpha()]
+    if len(letters) < 30:
+        return False
+    cjk_count = sum(bool(CJK_RE.fullmatch(char)) for char in letters)
+    # Mixed Russian discussions of names, titles and quotations remain allowed.
+    return cjk_count >= 30 and cjk_count / len(letters) >= 0.80 and not CYRILLIC_RE.search(text)
+
+
+def canonical_message(message: Message) -> str:
+    text = message.text or message.caption or ""
+    return " ".join(normalize_ad_text(text).split()).strip()
+
+
+def contains_external_link(message: Message) -> bool:
+    return any(EXTERNAL_LINK_RE.search(value) for value in message_links(message))
+
+
 class IKFCommentsGuard(BaseMiddleware):
+    def __init__(self) -> None:
+        self.last_messages: dict[int, tuple[str, float]] = {}
+
     async def __call__(
         self,
         handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
@@ -79,18 +109,46 @@ class IKFCommentsGuard(BaseMiddleware):
             return await handler(event, data)
         if event.from_user is None or event.from_user.is_bot or event.sender_chat is not None:
             return await handler(event, data)
-        if not is_advertising(event):
+        user_id = event.from_user.id
+        text = canonical_message(event)
+        now = time.monotonic()
+        previous = self.last_messages.get(user_id)
+        # Keep bounded, short-lived metadata only; no copies of media or URLs in logs.
+        if len(self.last_messages) > 2000:
+            self.last_messages = {
+                uid: item for uid, item in self.last_messages.items()
+                if now - item[1] < 900
+            }
+        duplicate = bool(text and len(text) >= 12 and previous
+                         and previous[0] == text and now - previous[1] < 900)
+        if text:
+            self.last_messages[user_id] = (text, now)
+
+        ad = is_advertising(event)
+        cjk = is_long_cjk_message(event)
+        if not (ad or duplicate or cjk):
             return await handler(event, data)
         try:
-            member = await event.bot.get_chat_member(event.chat.id, event.from_user.id)
+            member = await event.bot.get_chat_member(event.chat.id, user_id)
             if member.status in {"administrator", "creator"}:
                 return await handler(event, data)
             await event.bot.delete_message(event.chat.id, event.message_id)
-            LOGGER.info("IKF_COMMENT_AD_REMOVED chat_id=%s message_id=%s", event.chat.id, event.message_id)
+            if ad or duplicate:
+                # Telegram requires ban permissions separately from delete permissions.
+                await event.bot.ban_chat_member(event.chat.id, user_id, revoke_messages=False)
+                LOGGER.info("IKF_COMMENT_SPAM_BANNED chat_id=%s user_id=%s", event.chat.id, user_id)
+            elif cjk:
+                await event.bot.send_message(
+                    event.chat.id,
+                    "Пожалуйста, общайтесь в комментариях на русском языке. "
+                    "Названия, имена и короткие цитаты на других языках разрешены.",
+                    disable_notification=True,
+                )
+                LOGGER.info("IKF_COMMENT_LANGUAGE_REMOVED chat_id=%s message_id=%s", event.chat.id, event.message_id)
             return None
         except Exception:
-            LOGGER.exception("IKF_COMMENT_AD_DELETE_FAILED chat_id=%s message_id=%s", event.chat.id, event.message_id)
-            return await handler(event, data)
+            LOGGER.exception("IKF_COMMENT_MODERATION_FAILED chat_id=%s message_id=%s", event.chat.id, event.message_id)
+            return None
 
 
 def register_ikf_comments_guard(app: Any) -> None:
