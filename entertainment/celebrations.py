@@ -8,7 +8,7 @@ _BIRTHDAY = re.compile(r"(?iu)\b(?:с\s+дн(?:ем|ём|юхой)\s+рожде�
 _WISH = re.compile(r"(?iu)\b(?:поздравляю|поздравляем|поздравляем\s+тебя|с\s+праздником|с\s+юбилеем|поздравухи)\b")
 _NEGATION = re.compile(r"(?iu)\b(?:не\s+поздравля|не\s+день\s+рождения|вчера\s+был\s+день\s+рождения)")
 
-_EMOJI = ("🫦", "🤗", "🥳", "🎉", "🎊", "🤣", "💃", "🪩", "✨", "🎂")
+_EMOJI = ("🫦", "🤗", "🥳", "🎉", "🎊", "🤣", "💃", "🪩", "✨", "🎂", "😭", "💀", "🔥", "💖", "❤️", "😍", "😂", "🥹", "🫶", "😎", "💅", "🗣️", "👑", "🍰", "🎁", "🎈", "💐", "⭐", "😼", "🦝")
 _BIRTHDAY_LINES = (
     "С ДНЕМ РОЖДЕНИЯ! Желаю столько счастья, чтобы даже енот не смог утащить.",
     "С днем рождения! Пусть сюжет жизни будет с неожиданными поворотами, но без багов.",
@@ -57,10 +57,10 @@ def festive_reply(kind: str, *, rng: random, public_work_title: str | None = Non
         if 1 <= len(title) <= 80 and not any(mark in title for mark in ("<", ">", "\\n", "\\r")):
             message += f" Пусть вдохновение для «{title}» никогда не заканчивается!"
     words = message.split(" ")
-    emojis = [rng.choice(_EMOJI) for _ in range(rng.randint(5, 9))]
+    # Emoji bursts are deliberately noisy *within one reply*, never extra chat messages.\n    emojis = [rng.choice(_EMOJI) for _ in range(rng.randint(9, 24))]
     for emoji in emojis:
         position = rng.randrange(len(words) + 1)
-        if position < len(words) and len(words[position]) >= 6 and rng.random() < 0.24:
+        if position < len(words) and len(words[position]) >= 6 and rng.random() < 0.28:
             word = words[position]
             split = rng.randint(2, len(word) - 2)
             words[position] = word[:split] + emoji + word[split:]
