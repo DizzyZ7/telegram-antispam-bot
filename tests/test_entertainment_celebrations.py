@@ -17,6 +17,11 @@ class CelebrationTests(unittest.TestCase):
         for message in ("обычное сообщение", "/fun поздравляю", "вчера был день рождения"):
             self.assertIsNone(celebration_kind(message))
 
+    def test_emoji_bursts_are_dense_but_one_message(self):
+        text = festive_reply('birthday', rng=random.Random(17))
+        self.assertLessEqual(len(text), 500)
+        self.assertGreaterEqual(sum(text.count(emoji) for emoji in ('🫦', '🤗', '🥳', '🎉', '🎊', '🤣', '💃', '🪩', '✨', '🎂', '😭', '💀', '🔥', '💖', '❤️', '😍', '😂', '🥹', '🫶', '😎', '💅', '🗣️', '👑', '🍰', '🎁', '🎈', '💐', '⭐', '😼', '🦝')), 9)
+
     def test_recent_base_phrase_is_not_reused(self):
         previous = festive_reply('birthday', rng=random.Random(2))
         variants = [festive_reply('birthday', rng=random.Random(seed), recent_replies=(previous,)) for seed in range(10)]
