@@ -397,7 +397,7 @@ class EntertainmentService:
             culture,
             recent_outputs=recent_outputs,
             recent_signatures=recent_signatures,
-            direct_trigger=trigger_text,
+            direct_trigger=(trigger_text if selected.action_type is EntertainmentActionType.CONTEXTUAL_REPLY and not supervisor else None),
         )
         if generated is None:
             return None
