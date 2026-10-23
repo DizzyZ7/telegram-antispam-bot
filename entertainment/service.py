@@ -516,7 +516,14 @@ class EntertainmentService:
         if recent:
             return False
         self._celebration_last_at[scope] = now
-        recent_outputs = tuple(\n            str(action.metadata.get("output", "")) for action in recent\n            if isinstance(action.metadata, dict)\n        )\n        reply = festive_reply(\n            kind, rng=self.rng, recent_replies=recent_outputs,\n            moment=datetime.fromtimestamp(now, ZoneInfo(settings.timezone)),\n        )
+        recent_outputs = tuple(
+            str(action.metadata.get("output", "")) for action in recent
+            if isinstance(action.metadata, dict)
+        )
+        reply = festive_reply(
+            kind, rng=self.rng, recent_replies=recent_outputs,
+            moment=datetime.fromtimestamp(now, ZoneInfo(settings.timezone)),
+        )
         try:
             await message.reply(html.escape(reply))
         except Exception:
