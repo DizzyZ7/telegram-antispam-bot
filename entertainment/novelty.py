@@ -48,4 +48,20 @@ def is_novel_generated_text(
     return True
 
 
-__all__ = ["is_novel_generated_text"]
+def is_contextually_relevant(candidate: str, trigger: str) -> bool:
+    """Require a meaningful shared topic for a direct reply when detectable."""
+    from .generation import CONTEXT_STOPWORDS
+
+    def terms(text: str) -> set[str]:
+        return {
+            word for word in _normalized_words(text)
+            if len(word) >= 4 and word not in CONTEXT_STOPWORDS
+        }
+
+    prompt_terms = terms(trigger)
+    if not prompt_terms:
+        return True
+    return bool(prompt_terms & terms(candidate))
+
+
+__all__ = ["is_novel_generated_text", "is_contextually_relevant"]
