@@ -20,7 +20,16 @@ _BIRTHDAY_LINES = (
     "УРААА! Праздничный енот одобрил этот день. С днем рождения!",
     "С днем рождения! Желаю вдохновения, смешных историй и людей, с которыми хорошо даже молчать.",
     "Сегодня вселенная официально разрешает тебе быть счастливее обычного. С днем рождения!",
-    "С днем рождения! Если жизнь — фанфик, пусть у тебя всегда будет любимый автор.",\n    "СРОЧНЫЕ НОВОСТИ! У тебя сегодня день рождения, а значит, все остальные новости отменяются.",\n    "Поздравляю! Пусть твоя жизнь будет как хороший сериал: новый сезон лучше предыдущего.",\n    "Сегодня твой персональный праздник. Даже енот достал праздничный галстук.",\n    "С днем рождения! Пусть счастье появляется без кулдауна, а грусть уходит в бан.",\n    "Поздравляю! Пусть каждый день приносит хотя бы одну историю, которую захочется пересказать.",\n    "Праздничный комитет мемов постановил: сегодня ты невероятен. С днем рождения!",\n    "С днем рождения! Пусть твои мечты получают зеленый свет без очереди.",\n    "Пока все поздравляют, я просто напомню: ты главный герой сегодняшнего эпизода.",\n    "С днем рождения! Пусть удача пишет тебе первой, а проблемы остаются в архиве.",
+    "С днем рождения! Если жизнь — фанфик, пусть у тебя всегда будет любимый автор.",
+    "СРОЧНЫЕ НОВОСТИ! У тебя сегодня день рождения, а значит, все остальные новости отменяются.",
+    "Поздравляю! Пусть твоя жизнь будет как хороший сериал: новый сезон лучше предыдущего.",
+    "Сегодня твой персональный праздник. Даже енот достал праздничный галстук.",
+    "С днем рождения! Пусть счастье появляется без кулдауна, а грусть уходит в бан.",
+    "Поздравляю! Пусть каждый день приносит хотя бы одну историю, которую захочется пересказать.",
+    "Праздничный комитет мемов постановил: сегодня ты невероятен. С днем рождения!",
+    "С днем рождения! Пусть твои мечты получают зеленый свет без очереди.",
+    "Пока все поздравляют, я просто напомню: ты главный герой сегодняшнего эпизода.",
+    "С днем рождения! Пусть удача пишет тебе первой, а проблемы остаются в архиве.",
     "Поздравляю с днем рождения! Сюжетный поворот дня: все хорошие пожелания сбываются.",
     "С днем рождения! Пусть хорошие новости приходят чаще, чем уведомления из чата.",
     "В этот день даже мемы встали по стойке смирно. С днем рождения!",
@@ -34,7 +43,13 @@ _WISH_LINES = (
     "Тревога! Обнаружен повод для счастья. Срочно поздравляю!",
     "Поздравляю! Пусть дальше будет еще больше поводов улыбаться.",
     "Сегодня удача явно решила зайти в этот чат. Поздравляю!",
-    "Поздравляю! Желаю, чтобы приятные неожиданности стали привычкой.",\n    "Поздравляю! Даже енот отложил свои важные дела ради такого события.",\n    "ОБЪЯВЛЕНИЕ: в чате зафиксирован редкий уровень радости. Поздравляю!",\n    "Пусть этот повод станет началом целой серии счастливых событий!",\n    "Поздравляю! Желаю столько поводов для гордости, чтобы не хватило закрепов.",\n    "Сегодня можно немного погордиться собой. Поздравляю!",\n    "Официальный вердикт праздничной комиссии: это заслуживает аплодисментов!",
+    "Поздравляю! Желаю, чтобы приятные неожиданности стали привычкой.",
+    "Поздравляю! Даже енот отложил свои важные дела ради такого события.",
+    "ОБЪЯВЛЕНИЕ: в чате зафиксирован редкий уровень радости. Поздравляю!",
+    "Пусть этот повод станет началом целой серии счастливых событий!",
+    "Поздравляю! Желаю столько поводов для гордости, чтобы не хватило закрепов.",
+    "Сегодня можно немного погордиться собой. Поздравляю!",
+    "Официальный вердикт праздничной комиссии: это заслуживает аплодисментов!",
 )
 
 
@@ -51,7 +66,16 @@ def celebration_kind(text: str | None) -> str | None:
 def festive_reply(kind: str, *, rng: random, public_work_title: str | None = None, recent_replies: tuple[str, ...] = ()) -> str:
     """Shuffle emoji across words, sometimes within a word; cap total size."""
     lines = _BIRTHDAY_LINES if kind == "birthday" else _WISH_LINES
-    # Avoid repeating the same base phrase even if emojis differ.\n    used = tuple(item.casefold() for item in recent_replies[-20:])\n    available = [line for line in lines if not any(line.casefold() in old for old in used)]\n    # Deterministic rotation gives 365 distinct day slots without a new DB table.\n    # The same occasion gets the same base line, regardless of worker restart.\n    if occasion_key:\n        digest = hashlib.sha256(occasion_key.encode('utf-8')).digest()\n        message = lines[int.from_bytes(digest[:4], 'big') % len(lines)]\n    else:\n        message = rng.choice(available or lines)
+    # Avoid repeating the same base phrase even if emojis differ.
+    used = tuple(item.casefold() for item in recent_replies[-20:])
+    available = [line for line in lines if not any(line.casefold() in old for old in used)]
+    # Deterministic rotation gives 365 distinct day slots without a new DB table.
+    # The same occasion gets the same base line, regardless of worker restart.
+    if occasion_key:
+        digest = hashlib.sha256(occasion_key.encode('utf-8')).digest()
+        message = lines[int.from_bytes(digest[:4], 'big') % len(lines)]
+    else:
+        message = rng.choice(available or lines)
     if moment is not None:
         season, daypart = celebration_context(moment)
         if occasion_key:
@@ -68,7 +92,8 @@ def festive_reply(kind: str, *, rng: random, public_work_title: str | None = Non
         if 1 <= len(title) <= 80 and not any(mark in title for mark in ("<", ">", "\\n", "\\r")):
             message += f" Пусть вдохновение для «{title}» никогда не заканчивается!"
     words = message.split(" ")
-    # Emoji bursts are deliberately noisy *within one reply*, never extra chat messages.\n    emojis = [rng.choice(_EMOJI) for _ in range(rng.randint(9, 24))]
+    # Emoji bursts are deliberately noisy *within one reply*, never extra chat messages.
+    emojis = [rng.choice(_EMOJI) for _ in range(rng.randint(9, 24))]
     for emoji in emojis:
         position = rng.randrange(len(words) + 1)
         if position < len(words) and len(words[position]) >= 6 and rng.random() < 0.28:
