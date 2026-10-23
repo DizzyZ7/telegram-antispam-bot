@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 import re
+from datetime import datetime
 
 _BIRTHDAY = re.compile(r"(?iu)\b(?:с\s+дн(?:ем|ём|юхой)\s+рождени[яе]|с\s+др\b|happy\s+birthday)\b")
 _WISH = re.compile(r"(?iu)\b(?:поздравляю|поздравляем|поздравляем\s+тебя|с\s+праздником|с\s+юбилеем|поздравухи)\b")
@@ -50,6 +51,9 @@ def festive_reply(kind: str, *, rng: random, public_work_title: str | None = Non
     """Shuffle emoji across words, sometimes within a word; cap total size."""
     lines = _BIRTHDAY_LINES if kind == "birthday" else _WISH_LINES
     # Avoid repeating the same base phrase even if emojis differ.\n    used = tuple(item.casefold() for item in recent_replies[-20:])\n    available = [line for line in lines if not any(line.casefold() in old for old in used)]\n    message = rng.choice(available or lines)
+    if moment is not None:
+        season, daypart = celebration_context(moment)
+        message += ' ' + rng.choice(_SEASONAL[season]) + ' ' + rng.choice(_DAYPART[daypart])
     # Only a previously verified, published and author-opted-in title is allowed.
     # Never use draft text, descriptions, submission statuses or unpublished titles.
     if kind == "birthday" and public_work_title:
@@ -69,4 +73,4 @@ def festive_reply(kind: str, *, rng: random, public_work_title: str | None = Non
     return " ".join(words)[:500]
 
 
-__all__ = ["celebration_kind", "festive_reply"]
+__all__ = ["celebration_kind", "festive_reply", "celebration_context"]
