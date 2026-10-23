@@ -31,10 +31,17 @@ def celebration_kind(text: str | None) -> str | None:
     return None
 
 
-def festive_reply(kind: str, *, rng: random.Random) -> str:
+def festive_reply(kind: str, *, rng: random.Random, public_work_title: str | None = None) -> str:
     """Shuffle emoji across words, sometimes within a word; cap total size."""
     lines = _BIRTHDAY_LINES if kind == "birthday" else _WISH_LINES
-    words = rng.choice(lines).split(" ")
+    message = rng.choice(lines)
+    # Only a previously verified, published and author-opted-in title is allowed.
+    # Never use draft text, descriptions, submission statuses or unpublished titles.
+    if kind == "birthday" and public_work_title:
+        title = " ".join(public_work_title.split())
+        if 1 <= len(title) <= 80 and not any(mark in title for mark in ("<", ">", "\\n", "\\r")):
+            message += f" Пусть вдохновение для «{title}» никогда не заканчивается!"
+    words = message.split(" ")
     emojis = [rng.choice(_EMOJI) for _ in range(rng.randint(5, 9))]
     for emoji in emojis:
         position = rng.randrange(len(words) + 1)
