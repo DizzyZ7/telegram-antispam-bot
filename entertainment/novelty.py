@@ -32,6 +32,13 @@ def is_novel_generated_text(
         if normalized_candidate == " ".join(_normalized_words(text)):
             return False
 
+    for previous in recent_outputs:
+        previous_words = set(_normalized_words(previous))
+        if len(candidate_words) >= 5 and previous_words:
+            shared = len(set(candidate_words) & previous_words)
+            if shared / max(1, len(set(candidate_words))) >= 0.75:
+                return False
+
     candidate_grams = _four_grams(candidate_words)
     if not candidate_grams:
         return True
