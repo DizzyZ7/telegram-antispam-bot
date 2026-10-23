@@ -120,7 +120,7 @@ def festive_reply(kind: str, *, rng: random, public_work_title: str | None = Non
     emojis = [rng.choice(_EMOJI) for _ in range(rng.randint(9, 24))]
     for emoji in emojis:
         position = rng.randrange(len(words) + 1)
-        if position < len(words) and len(words[position]) >= 6 and rng.random() < 0.28:
+        if position < len(words) and words[position] != "PUBLICWORKTITLETOKEN" and len(words[position]) >= 6 and rng.random() < 0.28:
             word = words[position]
             split = rng.randint(2, len(word) - 2)
             words[position] = word[:split] + emoji + word[split:]
