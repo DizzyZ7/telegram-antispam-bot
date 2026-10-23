@@ -182,6 +182,7 @@ from lexicon_game_scope import (
 from lexicon_learning_unpin import LearningLexiconService, register_lexicon_learning_handlers
 from lexicon_postgres_config import LexiconPostgresConfig
 from lexicon_raccoon_sticker import save_raccoon_sticker_file_id
+from ikf_comments_guard import register_ikf_comments_guard
 from minigames import MiniGameStorage, register_minigame_handlers
 from sticker_maker.handlers import register_sticker_handlers
 from writers_guard_history import WritersModerationLedger
@@ -341,6 +342,7 @@ async def main() -> None:
                 writers_scope=scope,
             )
 
+        register_ikf_comments_guard(app)
         register_accurate_stats_handlers(app, accurate_stats)
         register_entertainment_handlers(app, entertainment)
 
