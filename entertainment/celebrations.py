@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 import re
+import hashlib
 from datetime import datetime
 
 _BIRTHDAY = re.compile(r"(?iu)\b(?:с\s+дн(?:ем|ём|юхой)\s+рождени[яе]|с\s+др\b|happy\s+birthday)\b")
@@ -50,10 +51,16 @@ def celebration_kind(text: str | None) -> str | None:
 def festive_reply(kind: str, *, rng: random, public_work_title: str | None = None, recent_replies: tuple[str, ...] = ()) -> str:
     """Shuffle emoji across words, sometimes within a word; cap total size."""
     lines = _BIRTHDAY_LINES if kind == "birthday" else _WISH_LINES
-    # Avoid repeating the same base phrase even if emojis differ.\n    used = tuple(item.casefold() for item in recent_replies[-20:])\n    available = [line for line in lines if not any(line.casefold() in old for old in used)]\n    message = rng.choice(available or lines)
+    # Avoid repeating the same base phrase even if emojis differ.\n    used = tuple(item.casefold() for item in recent_replies[-20:])\n    available = [line for line in lines if not any(line.casefold() in old for old in used)]\n    # Deterministic rotation gives 365 distinct day slots without a new DB table.\n    # The same occasion gets the same base line, regardless of worker restart.\n    if occasion_key:\n        digest = hashlib.sha256(occasion_key.encode('utf-8')).digest()\n        message = lines[int.from_bytes(digest[:4], 'big') % len(lines)]\n    else:\n        message = rng.choice(available or lines)
     if moment is not None:
         season, daypart = celebration_context(moment)
-        message += ' ' + rng.choice(_SEASONAL[season]) + ' ' + rng.choice(_DAYPART[daypart])
+        if occasion_key:
+            digest = hashlib.sha256(occasion_key.encode('utf-8')).digest()
+            seasonal = _SEASONAL[season][digest[4] % len(_SEASONAL[season])]
+            daypart_line = _DAYPART[daypart][digest[5] % len(_DAYPART[daypart])]
+        else:
+            seasonal, daypart_line = rng.choice(_SEASONAL[season]), rng.choice(_DAYPART[daypart])
+        message += ' ' + seasonal + ' ' + daypart_line
     # Only a previously verified, published and author-opted-in title is allowed.
     # Never use draft text, descriptions, submission statuses or unpublished titles.
     if kind == "birthday" and public_work_title:
