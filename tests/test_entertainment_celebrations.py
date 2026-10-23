@@ -1,7 +1,8 @@
 import random
 import unittest
+from datetime import datetime
 
-from entertainment.celebrations import celebration_kind, festive_reply
+from entertainment.celebrations import celebration_kind, celebration_context, festive_reply
 
 
 class CelebrationTests(unittest.TestCase):
@@ -16,6 +17,18 @@ class CelebrationTests(unittest.TestCase):
     def test_no_false_positive(self):
         for message in ("обычное сообщение", "/fun поздравляю", "вчера был день рождения"):
             self.assertIsNone(celebration_kind(message))
+
+    def test_season_and_daypart(self):
+        self.assertEqual(celebration_context(datetime(2026, 1, 10, 8)), ('winter', 'morning'))
+        self.assertEqual(celebration_context(datetime(2026, 4, 10, 14)), ('spring', 'day'))
+        self.assertEqual(celebration_context(datetime(2026, 7, 10, 20)), ('summer', 'evening'))
+        self.assertEqual(celebration_context(datetime(2026, 10, 10, 1)), ('autumn', 'night'))
+
+    def test_seasonal_output_changes(self):
+        winter = festive_reply('birthday', rng=random.Random(5), moment=datetime(2026, 1, 10, 8))
+        summer = festive_reply('birthday', rng=random.Random(5), moment=datetime(2026, 7, 10, 8))
+        self.assertNotEqual(winter, summer)
+        self.assertLessEqual(len(winter), 500)
 
     def test_emoji_bursts_are_dense_but_one_message(self):
         text = festive_reply('birthday', rng=random.Random(17))
