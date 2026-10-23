@@ -35,6 +35,7 @@ from .models import (
     normalize_topic_id,
 )
 from .novelty import is_contextually_relevant, is_novel_generated_text
+from .voice import choose_voice_variant
 from .storage.base import EntertainmentStorage
 
 LOGGER = logging.getLogger(__name__)
