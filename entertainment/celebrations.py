@@ -87,7 +87,7 @@ def celebration_context(moment: datetime) -> tuple[str, str]:
     return season, daypart
 
 
-def festive_reply(kind: str, *, rng: random, public_work_title: str | None = None, recent_replies: tuple[str, ...] = ()) -> str:
+def festive_reply(kind: str, *, rng: random, public_work_title: str | None = None, recent_replies: tuple[str, ...] = (), moment: datetime | None = None, occasion_key: str | None = None) -> str:
     """Shuffle emoji across words, sometimes within a word; cap total size."""
     lines = _BIRTHDAY_LINES if kind == "birthday" else _WISH_LINES
     # Avoid repeating the same base phrase even if emojis differ.
