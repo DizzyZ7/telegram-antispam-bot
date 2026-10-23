@@ -24,6 +24,7 @@ from .config import (
     URL_RE,
 )
 from .culture import CultureGenerationContext, apply_emoji_style, build_culture_context
+from .celebrations import celebration_kind, festive_reply
 from .generation import generate_chat_text, tokenize
 from .memory import classify_memory_event
 from .models import (
@@ -61,6 +62,7 @@ class EntertainmentService:
         self.rng = rng or random.Random()
         self._now_fn = now_fn or time.time
         self._active_topics: dict[tuple[int, int], Any] = {}
+        self._celebration_last_at: dict[tuple[int, int], int] = {}
 
     def is_allowed_chat(self, chat_id: int) -> bool:
         return int(chat_id) in self.chat_ids
@@ -497,6 +499,36 @@ class EntertainmentService:
         self.remember_active_topic(message)
         await self.evaluate_topic(message)
 
+    async def _maybe_celebrate(self, message: Message, settings: EntertainmentSettings, now: int) -> bool:
+        """One festive reply per topic per hour, only to a human celebration."""
+        if not settings.autonomous_text_enabled or self._quiet_hours_active(settings, now):
+            return False
+        kind = celebration_kind(getattr(message, "text", None))
+        if kind is None:
+            return False
+        chat_id, topic_id = int(message.chat.id), self._topic_id(message)
+        scope = (chat_id, topic_id)
+        last = self._celebration_last_at.get(scope, 0)
+        if now - last < 3600:
+            return False
+        recent = await self.storage.recent_actions(chat_id, topic_id, since=now - 3600, limit=20)
+        if recent:
+            return False
+        self._celebration_last_at[scope] = now
+        reply = festive_reply(kind, rng=self.rng)
+        try:
+            await message.reply(html.escape(reply))
+        except Exception:
+            self._celebration_last_at.pop(scope, None)
+            raise
+        await self.storage.record_action(EntertainmentActionRecord(
+            id=None, chat_id=chat_id, topic_id=topic_id,
+            action_type=EntertainmentActionType.CONTEXTUAL_REPLY,
+            trigger_message_id=getattr(message, "message_id", None),
+            created_at=now, metadata={"source": "celebration", "kind": kind, "output": reply},
+        ))
+        return True
+
     async def observe_message(self, message: Message) -> None:
         if not self._is_eligible_memory_sender(message):
             return
@@ -543,6 +575,8 @@ class EntertainmentService:
             created_at=now,
         )
         self.remember_active_topic(message)
+        if await self._maybe_celebrate(message, settings, now):
+            return
         await self.evaluate_topic(message)
 
     async def set_remember_me(self, message: Message, enabled: bool) -> None:
