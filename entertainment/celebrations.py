@@ -92,7 +92,7 @@ def festive_reply(kind: str, *, rng: random, public_work_title: str | None = Non
     lines = _BIRTHDAY_LINES if kind == "birthday" else _WISH_LINES
     # Avoid repeating the same base phrase even if emojis differ.
     used = tuple(item.casefold() for item in recent_replies[-20:])
-    available = [line for line in lines if not any(line.casefold() in old for old in used)]
+    # Emoji may interrupt words in previous outputs: compare normalized letters only.\n    def normalize(value: str) -> str:\n        return "".join(ch for ch in value.casefold() if ch.isalpha() or ch.isdigit())\n    used_normalized = tuple(normalize(item) for item in used)\n    available = [line for line in lines if not any(normalize(line) in old for old in used_normalized)]
     # Deterministic rotation gives 365 distinct day slots without a new DB table.
     # The same occasion gets the same base line, regardless of worker restart.
     if occasion_key:
@@ -115,7 +115,7 @@ def festive_reply(kind: str, *, rng: random, public_work_title: str | None = Non
         title = " ".join(public_work_title.split())
         if 1 <= len(title) <= 80 and not any(mark in title for mark in ("<", ">", "\\n", "\\r")):
             message += f" Пусть вдохновение для «{title}» никогда не заканчивается!"
-    words = message.split(" ")
+    # Keep opted-in published titles intact, including their spacing.\n    protected_title = f"«{title}»" if kind == "birthday" and public_work_title and "title" in locals() and f"«{title}»" in message else None\n    if protected_title:\n        message = message.replace(protected_title, "PUBLICWORKTITLETOKEN")\n    words = message.split(" ")
     # Emoji bursts are deliberately noisy *within one reply*, never extra chat messages.
     emojis = [rng.choice(_EMOJI) for _ in range(rng.randint(9, 24))]
     for emoji in emojis:
@@ -126,7 +126,7 @@ def festive_reply(kind: str, *, rng: random, public_work_title: str | None = Non
             words[position] = word[:split] + emoji + word[split:]
         else:
             words.insert(position, emoji)
-    return " ".join(words)[:500]
+    result = " ".join(words)\n    if protected_title:\n        result = result.replace("PUBLICWORKTITLETOKEN", protected_title)\n    return result[:500]
 
 
 __all__ = ["celebration_kind", "festive_reply", "celebration_context"]
