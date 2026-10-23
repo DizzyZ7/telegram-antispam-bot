@@ -15,16 +15,35 @@ from aiogram.types import Message
 
 LOGGER = logging.getLogger(__name__)
 COMMENTS_CHAT_ID = -1002576898711
-URL_RE = re.compile(r"(?:https?://|t\\.me/|telegram\\.me/|@)[\\w./?=&%-]+", re.I)
-INVITE_RE = re.compile(r"(?:https?://)?(?:t\\.me|telegram\\.me)/(?:\\+|joinchat/)", re.I)
+URL_RE = re.compile(r"(?:https?://)?(?:t\\.me|telegram\\.me)/(?:[A-Za-z0-9_+/-]+)", re.I)
+BOT_URL_RE = re.compile(r"(?:https?://)?(?:t\\.me|telegram\\.me)/(?:[A-Za-z0-9_]{5,32}bot)(?:[/?#]|$)", re.I)
+BOT_MENTION_RE = re.compile(r"(?<![\\w])@[A-Za-z0-9_]{4,29}bot\\b", re.I)
 EARN_RE = re.compile(r"(?:заработ|доход|инвест|прибыл|выплат|крипт|подработ)", re.I)
 CTA_RE = re.compile(r"(?:запусти|запустить|переходи|переходите|подпишись|жми|нажми|бота)", re.I)
-CYRILLIC = "абвгдежзийклмнопрстуфхцчшщыьэюя"
 LATIN_LOOKALIKES = str.maketrans({
     "a": "а", "b": "в", "c": "с", "e": "е", "h": "н", "k": "к",
     "m": "м", "o": "о", "p": "р", "t": "т", "x": "х", "y": "у",
     "0": "о", "3": "з",
 })
+
+
+def message_links(message: Message) -> list[str]:
+    text = message.text or message.caption or ""
+    urls = [text]
+    for entity in (* (message.entities or ()), * (message.caption_entities or ())):
+        if getattr(entity, "type", None) == "text_link" and getattr(entity, "url", None):
+            urls.append(entity.url)
+    markup = getattr(message, "reply_markup", None)
+    if markup:
+        for row in getattr(markup, "inline_keyboard", ()):
+            for button in row:
+                if getattr(button, "url", None):
+                    urls.append(button.url)
+    return urls
+
+
+def has_telegram_bot_link(message: Message) -> bool:
+    return any(BOT_URL_RE.search(value) or BOT_MENTION_RE.search(value) for value in message_links(message))
 
 
 def normalize_ad_text(text: str) -> str:
@@ -35,18 +54,16 @@ def normalize_ad_text(text: str) -> str:
 
 
 def is_advertising(message: Message) -> bool:
-    text = (message.text or message.caption or "")
+    if has_telegram_bot_link(message):
+        return True
+    text = message.text or message.caption or ""
     if not text:
         return False
     normalized = normalize_ad_text(text)
-    links = URL_RE.findall(text)
-    repeated_cta = len(re.findall(r"з[аa]п[уy]с[тt]", normalized)) >= 2
-    # Links, repeated CTA and earnings claims together are a strong signal.
-    if repeated_cta and (links or "бот" in normalized):
+    repeated_cta = len(re.findall(r"запуст", normalized)) >= 2
+    if repeated_cta and "бот" in normalized:
         return True
-    if links and EARN_RE.search(normalized) and CTA_RE.search(normalized):
-        return True
-    if INVITE_RE.search(text) and (EARN_RE.search(normalized) or CTA_RE.search(normalized)):
+    if URL_RE.search(text) and EARN_RE.search(normalized) and CTA_RE.search(normalized):
         return True
     return False
 
