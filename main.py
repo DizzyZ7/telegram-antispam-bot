@@ -183,6 +183,7 @@ from lexicon_learning_unpin import LearningLexiconService, register_lexicon_lear
 from lexicon_postgres_config import LexiconPostgresConfig
 from lexicon_raccoon_sticker import save_raccoon_sticker_file_id
 from ikf_comments_guard import register_ikf_comments_guard
+from scoped_spam_guard import ScopedSpamDeletionMiddleware, report_scoped_spam_permission
 from minigames import MiniGameStorage, register_minigame_handlers
 from sticker_maker.handlers import register_sticker_handlers
 from writers_guard_history import WritersModerationLedger
@@ -367,6 +368,10 @@ async def main() -> None:
         # DM-only GIF conversion; no new group/chat allowlist permissions.
         register_sticker_handlers(app)
         print("STICKER_MAKER_READY scope=private format=webm max_concurrent=2", flush=True)
+
+        # Outer middleware intercepts even messages handled by legacy catch-all routes.
+        app.dp.message.outer_middleware(ScopedSpamDeletionMiddleware())
+        await report_scoped_spam_permission(app.bot)
 
         # All game, entertainment, form and legacy handlers have now registered.
         # Profanity deletion must run before any text catch-all in writers chat.
