@@ -1,6 +1,7 @@
 """Regression tests for the isolated spam guard."""
 import unittest
-from unittest.mock import AsyncMock, SimpleNamespace
+from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 from scoped_spam_guard import PROTECTED_CHAT_ID, ScopedSpamDeletionMiddleware, is_high_confidence_spam
 
