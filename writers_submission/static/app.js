@@ -150,7 +150,8 @@
   function requestFailure(status, code, message = "", reference = "") {
     const details = String(message || "").trim();
     const lookup = {
-      unauthorized: "Сессия Telegram истекла. Закрой и снова открой Mini App через бота.",
+      unauthorized: "Сессия Telegram истекла или не подтверждена. Если данные сохранились, повтори сохранение один раз. Иначе скопируй текст и открой Mini App через бота заново.",
+      telegram_auth_invalid: "Telegram передал устаревшие данные запуска. Скопируй текст и заново открой Mini App через бота.",
       not_found: "Черновик не найден или больше недоступен. Вернись к списку работ.",
       conflict: "Черновик изменился в другой вкладке. Проверь сохраненные данные перед повтором.",
       payload_too_large: "Файл или запрос слишком большой. Для вложения предел — 20 МБ.",
@@ -210,6 +211,23 @@
     return error;
   }
 
+  // Refresh a signed session once. Never trust initDataUnsafe for authentication.
+  let sessionRefreshPromise = null;
+  async function refreshTelegramSession() {
+    if (!tg || !tg.initData) return false;
+    if (!sessionRefreshPromise) {
+      sessionRefreshPromise = fetch("/api/writers/session", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ init_data: tg.initData }),
+      }).then(response => response.status === 204)
+        .catch(() => false)
+        .finally(() => { sessionRefreshPromise = null; });
+    }
+    return sessionRefreshPromise;
+  }
+
   async function api(path, options = {}) {
     const request = {
       method: options.method || "GET",
@@ -232,6 +250,13 @@
     let response;
     try {
       response = await fetch(path, request);
+      // Only repeat GET requests. Mutations may already have been committed.
+      if (response.status === 401 && path !== "/api/writers/session") {
+        const restored = await refreshTelegramSession();
+        if (restored && request.method === "GET") {
+          response = await fetch(path, request);
+        }
+      }
     } catch (cause) {
       const timedOut = controller && controller.signal.aborted;
       const error = new Error(timedOut
