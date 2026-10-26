@@ -257,7 +257,7 @@
         const restored = await refreshTelegramSession();
         if (restored && request.method === "GET") {
           response = await fetch(path, request);
-        } else if (restored) {
+        } else if (restored && request.method !== "GET") {
           const error = new Error(
             "Сессия Telegram восстановлена. Проверяю сохранение перед повтором."
           );
