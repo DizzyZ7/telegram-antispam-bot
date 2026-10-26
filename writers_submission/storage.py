@@ -247,6 +247,21 @@ class PostgresWritersSubmissionStorage:
             "LIMIT 5 OFFSET $1", max(0, int(offset)),
         )
 
+    async def schedule_publication(self, submission_id, scheduled_at: int, admin_id: int):
+        return await self._require_pool().fetchrow(
+            """
+            INSERT INTO writers_publication_queue
+                (submission_id, state, scheduled_at, scheduled_by, updated_at)
+            SELECT id, 'SCHEDULED', $2, $3, EXTRACT(EPOCH FROM now())::BIGINT
+            FROM writers_submissions WHERE id = $1 AND status = 'APPROVED'
+            ON CONFLICT (submission_id) DO UPDATE SET
+                state = 'SCHEDULED', scheduled_at = EXCLUDED.scheduled_at,
+                scheduled_by = EXCLUDED.scheduled_by, updated_at = EXCLUDED.updated_at
+            WHERE writers_publication_queue.state = 'SCHEDULED'
+            RETURNING submission_id
+            """, submission_id, int(scheduled_at), int(admin_id),
+        )
+
     async def _initialize_schema(self, connection: asyncpg.Connection) -> None:
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS writers_publication_queue (
