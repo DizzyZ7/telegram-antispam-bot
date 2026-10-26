@@ -53,6 +53,49 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.storage.close()
 
+    async def test_publication_reschedule_payment_priority_and_audit(self):
+        draft = await self.storage.create_submission(
+            author_user_id=790, writers_chat_id=-1002619489118,
+            fields=fields("Публикация с переносом"), now=100,
+            idempotency_key="publication-lifecycle-draft",
+        )
+        sent = await self.storage.seal_and_submit(
+            submission_id=draft.id, author_user_id=790,
+            expected_version=draft.version, now=110,
+            idempotency_key="publication-lifecycle-submit",
+        )
+        await self.storage.claim_submission(
+            submission_id=sent.id, revision_id=sent.revision.id,
+            reviewer_user_id=9002, now=120,
+        )
+        await self.storage.decide_submission(
+            submission_id=sent.id, revision_id=sent.revision.id,
+            reviewer_user_id=9002, action=ReviewAction.APPROVE,
+            comment=None, now=130,
+        )
+        self.assertTrue(await self.storage.schedule_publication(sent.id, 2000000000, 9002))
+        self.assertTrue(await self.storage.update_publication_priority(sent.id, True, 9002))
+        self.assertTrue(await self.storage.update_publication_payment(sent.id, "CONFIRMED", 9002))
+        self.assertTrue(await self.storage.unschedule_publication(sent.id, 9002))
+        self.assertFalse(await self.storage.unschedule_publication(sent.id, 9002))
+        approved = await self.storage.list_publication_admin("approved")
+        self.assertIn(sent.id, [row["id"] for row in approved])
+        self.assertTrue(await self.storage.schedule_publication(sent.id, 2000003600, 9002))
+        queued = await self.storage.list_publication_admin("queue")
+        row = next(row for row in queued if row["id"] == sent.id)
+        self.assertEqual(row["scheduled_at"], 2000003600)
+        self.assertTrue(row["priority"])
+        self.assertEqual(row["priority_payment_state"], "CONFIRMED")
+        self.assertTrue(await self.storage.update_publication_priority(sent.id, False, 9002))
+        with self.assertRaises(ValueError):
+            await self.storage.update_publication_payment(sent.id, "UNVERIFIED", 9002)
+        audit = await self.storage.get_publication_audit(sent.id)
+        self.assertIn("UNSCHEDULE", [row["action"] for row in audit])
+        self.assertIn("PAYMENT", [row["action"] for row in audit])
+        self.assertGreaterEqual(
+            sum(row["action"] == "SCHEDULE" for row in audit), 2,
+        )
+
     async def test_owner_audit_finds_saved_draft_and_delivered_moderation_packet(self):
         unsent = await self.storage.create_submission(
             author_user_id=707, writers_chat_id=-1002619489118,
