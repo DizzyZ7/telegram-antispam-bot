@@ -249,6 +249,13 @@
     let response;
     try {
       response = await fetch(path, request);
+      // Only repeat GET requests. Mutations may already have been committed.
+      if (response.status === 401 && path !== "/api/writers/session") {
+        const restored = await refreshTelegramSession();
+        if (restored && request.method === "GET") {
+          response = await fetch(path, request);
+        }
+      }
     } catch (cause) {
       const timedOut = controller && controller.signal.aborted;
       const error = new Error(timedOut
