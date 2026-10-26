@@ -232,11 +232,28 @@ class PostgresWritersSubmissionStorage:
                     state TEXT NOT NULL CHECK (state IN ('SCHEDULED', 'PUBLISHED')),
                     scheduled_at BIGINT NOT NULL,
                     scheduled_by BIGINT NOT NULL,
+                    priority BOOLEAN NOT NULL DEFAULT FALSE,
                     published_at BIGINT,
                     post_url TEXT,
                     updated_at BIGINT NOT NULL
                 )
             """)
+
+                await connection.execute("""
+                    CREATE TABLE IF NOT EXISTS writers_publication_audit (
+                        id BIGSERIAL PRIMARY KEY,
+                        submission_id UUID NOT NULL REFERENCES writers_submissions(id) ON DELETE CASCADE,
+                        admin_id BIGINT NOT NULL,
+                        action TEXT NOT NULL,
+                        old_value TEXT,
+                        new_value TEXT,
+                        created_at BIGINT NOT NULL
+                    )
+                """)
+                await connection.execute(
+                    "ALTER TABLE writers_publication_queue "
+                    "ADD COLUMN IF NOT EXISTS priority BOOLEAN NOT NULL DEFAULT FALSE"
+                )
 
     async def list_publication_admin(self, category: str, offset: int = 0):
         conditions = {
