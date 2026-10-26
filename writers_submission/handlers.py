@@ -270,29 +270,50 @@ def register_writers_submission_handlers(
             except Exception:
                 LOGGER.exception("WRITERS_COMMUNITY_MEMBER_EVENT_SAVE_FAILED")
 
-    @app.dp.message(CommandStart(), WritersSubmissionStartFilter())
+    @app.dp.message(CommandStart())
     async def writers_submission_start(message: Message) -> None:
-        if not _is_writers_submit_start(message):
-            return
         if _chat_type_value(message.chat) != "private":
+            return
+        # Preserve other deep-link entry points for their dedicated handlers.
+        parts = str(getattr(message, "text", "") or "").strip().split(maxsplit=1)
+        if len(parts) == 2 and parts[1].strip() != "writers_submit":
             return
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="✒️ Отправить работу",
-                        web_app=WebAppInfo(url=str(config.public_url)),
-                    )
-                ]
+                [InlineKeyboardButton(
+                    text="✒️ Заполнить анкету",
+                    web_app=WebAppInfo(url=str(config.public_url)),
+                )],
+                [InlineKeyboardButton(
+                    text="📢 Подписаться на ИКФ",
+                    url="https://t.me/ff_info_ru",
+                )],
             ]
         )
         await message.answer(
-            "✒️ Привет! Здесь можно заполнить заявку и сохранять черновик "
-            "в своем темпе. 💛\n\n"
-            "Чтобы отправить готовую работу на проверку, нужно состоять "
-            "в сообществе ИКФ. Если еще не вступил(а), не переживай: "
-            "твой черновик останется на месте.",
+            "✨ <b>Добро пожаловать! Я Фосген — бот сообщества ИКФ.</b>\\n\\n"
+            "📚 Здесь можно подать свою работу на проверку, "
+            "сохранить черновик и вернуться к нему позже.\\n\\n"
+            "🔎 <b>Перед заполнением анкеты проверь:</b>\\n"
+            "1. <b>Подписка.</b> Ты вступил(а) в @ff_info_ru — "
+            "без подписки отправить работу на проверку нельзя.\\n"
+            "2. <b>Интернет.</b> Соединение стабильно: попробуй переключиться "
+            "между Wi-Fi и мобильной сетью, если страница не загружается.\\n"
+            "3. <b>VPN и прокси.</b> Если они включены, проверь, не мешают ли "
+            "открытию Mini App. При проблемах попробуй другое соединение.\\n"
+            "4. <b>Telegram.</b> Обнови приложение и открывай анкету "
+            "кнопкой внутри бота, а не по ссылке из стороннего браузера.\\n"
+            "5. <b>Текст и вложения.</b> Подготовь описание и изображения, "
+            "проверь формат и размер файлов перед отправкой.\\n\\n"
+            "🛟 <b>Если появилась ошибка:</b> не создавай вторую заявку "
+            "сразу. Проверь статус черновика, сохрани важный текст "
+            "и повторно открой анкету через бота. "
+            "Если ошибка осталась — пришли администрации скриншот "
+            "и укажи устройство и этап, на котором возникла проблема.\\n\\n"
+            "💜 <b>Готово? Нажимай «Заполнить анкету»!</b>",
             reply_markup=keyboard,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
         )
 
     @app.dp.message(Command("writers_delivery"))
