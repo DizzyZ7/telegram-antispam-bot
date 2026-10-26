@@ -241,6 +241,7 @@ def register_writers_submission_handlers(
     membership_registry: Any | None = None,
     membership_chat_id: int | None = None,
 ) -> PendingCommentStore:
+    from .admin_queue import register_admin_queue
     pending_comments = PendingCommentStore()
     message_handler_start = len(app.dp.message.handlers)
     callback_handler_start = len(app.dp.callback_query.handlers)
@@ -899,6 +900,9 @@ def register_writers_submission_handlers(
             f"✅ Комментарий сохранен: {escaped_comment}{suffix}",
             parse_mode="HTML",
         )
+
+    if getattr(service, 'storage', None) is not None:
+        register_admin_queue(app, service.storage, config)
 
     new_message_handlers = app.dp.message.handlers[message_handler_start:]
     if new_message_handlers:

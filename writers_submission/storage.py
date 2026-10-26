@@ -226,6 +226,109 @@ class PostgresWritersSubmissionStorage:
         async with pool.acquire() as connection:
             async with connection.transaction():
                 await self._initialize_schema(connection)
+                await connection.execute("""
+                CREATE TABLE IF NOT EXISTS writers_publication_queue (
+                    submission_id UUID PRIMARY KEY REFERENCES writers_submissions(id) ON DELETE CASCADE,
+                    state TEXT NOT NULL CHECK (state IN ('SCHEDULED', 'PUBLISHED')),
+                    scheduled_at BIGINT NOT NULL,
+                    scheduled_by BIGINT NOT NULL,
+                    priority BOOLEAN NOT NULL DEFAULT FALSE,
+                    published_at BIGINT,
+                    post_url TEXT,
+                    updated_at BIGINT NOT NULL
+                )
+            """)
+
+                await connection.execute("""
+                    CREATE TABLE IF NOT EXISTS writers_publication_audit (
+                        id BIGSERIAL PRIMARY KEY,
+                        submission_id UUID NOT NULL REFERENCES writers_submissions(id) ON DELETE CASCADE,
+                        admin_id BIGINT NOT NULL,
+                        action TEXT NOT NULL,
+                        old_value TEXT,
+                        new_value TEXT,
+                        created_at BIGINT NOT NULL
+                    )
+                """)
+                await connection.execute(
+                    "ALTER TABLE writers_publication_queue "
+                    "ADD COLUMN IF NOT EXISTS priority BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+
+    async def list_publication_admin(self, category: str, offset: int = 0):
+        conditions = {
+            "review": "s.status IN ('SUBMITTED','IN_REVIEW','CHANGES_REQUESTED')",
+            "approved": "s.status = 'APPROVED' AND q.submission_id IS NULL",
+            "queue": "q.state = 'SCHEDULED'",
+            "published": "q.state = 'PUBLISHED'",
+        }
+        if category not in conditions:
+            raise ValueError("Invalid publication category")
+        return await self._require_pool().fetch(
+            "SELECT s.id, s.status, r.title, q.scheduled_at, q.post_url "
+            "FROM writers_submissions s "
+            "JOIN writers_submission_revisions r ON r.id = "
+            "COALESCE(s.current_submitted_revision_id, s.current_draft_revision_id) "
+            "LEFT JOIN writers_publication_queue q ON q.submission_id = s.id "
+            "WHERE " + conditions[category] +
+            " ORDER BY q.scheduled_at ASC NULLS LAST, s.updated_at DESC, s.id "
+            "LIMIT 5 OFFSET $1", max(0, int(offset)),
+        )
+
+    async def schedule_publication(self, submission_id, scheduled_at: int, admin_id: int):
+        async with self._require_pool().acquire() as conn:
+            async with conn.transaction():
+                previous = await conn.fetchrow(
+                    "SELECT scheduled_at, state FROM writers_publication_queue "
+                    "WHERE submission_id = $1 FOR UPDATE", submission_id,
+                )
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO writers_publication_queue
+                        (submission_id, state, scheduled_at, scheduled_by, updated_at)
+                    SELECT id, 'SCHEDULED', $2, $3, EXTRACT(EPOCH FROM now())::BIGINT
+                    FROM writers_submissions WHERE id = $1 AND status = 'APPROVED'
+                    ON CONFLICT (submission_id) DO UPDATE SET
+                        scheduled_at = EXCLUDED.scheduled_at,
+                        scheduled_by = EXCLUDED.scheduled_by,
+                        updated_at = EXCLUDED.updated_at
+                    WHERE writers_publication_queue.state = 'SCHEDULED'
+                    RETURNING submission_id
+                    """, submission_id, int(scheduled_at), int(admin_id),
+                )
+                if row:
+                    await conn.execute(
+                        "INSERT INTO writers_publication_audit "
+                        "(submission_id, admin_id, action, old_value, new_value, created_at) "
+                        "VALUES ($1, $2, 'SCHEDULE', $3, $4, EXTRACT(EPOCH FROM now())::BIGINT)",
+                        submission_id, int(admin_id),
+                        str(previous["scheduled_at"]) if previous else None,
+                        str(int(scheduled_at)),
+                    )
+                return row
+
+    async def update_publication_priority(self, submission_id, priority: bool, admin_id: int):
+        async with self._require_pool().acquire() as conn:
+            async with conn.transaction():
+                old = await conn.fetchrow(
+                    "SELECT priority, state FROM writers_publication_queue "
+                    "WHERE submission_id = $1 FOR UPDATE", submission_id,
+                )
+                if old is None or old["state"] != "SCHEDULED":
+                    return False
+                await conn.execute(
+                    "UPDATE writers_publication_queue SET priority = $2, "
+                    "updated_at = EXTRACT(EPOCH FROM now())::BIGINT "
+                    "WHERE submission_id = $1",
+                    submission_id, bool(priority),
+                )
+                await conn.execute(
+                    "INSERT INTO writers_publication_audit "
+                    "(submission_id, admin_id, action, old_value, new_value, created_at) "
+                    "VALUES ($1, $2, 'PRIORITY', $3, $4, EXTRACT(EPOCH FROM now())::BIGINT)",
+                    submission_id, int(admin_id), str(bool(old["priority"])), str(bool(priority)),
+                )
+                return True
 
     async def _initialize_schema(self, connection: asyncpg.Connection) -> None:
         await connection.execute(
