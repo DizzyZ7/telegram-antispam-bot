@@ -1,6 +1,7 @@
 """Telegram moderator menu for publication queues."""
 from __future__ import annotations
 import html
+import calendar
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from uuid import UUID
@@ -78,70 +79,131 @@ def register_admin_queue(app, storage, config):
         if len(rows) == 5:
             nav.append(InlineKeyboardButton(text="▶️", callback_data=f"wadmin:{category}:{page+1}"))
         markup = InlineKeyboardMarkup(inline_keyboard=entry_buttons + ([nav] if nav else []) + [
-            [InlineKeyboardButton(text="🏠 Меню", callback_data="wadmin:review:0")]
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="wadmin:home")]
         ])
         await callback.message.edit_text("\n\n".join(lines), parse_mode="HTML", reply_markup=markup)
         await callback.answer()
 
-    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:date:")))
-    async def choose_day(callback):
+
+    @app.dp.callback_query(lambda c: c.data == "wadmin:home")
+    async def home(callback):
+        if not callback.from_user or callback.from_user.id not in admins:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        await callback.message.edit_text("📚 Управление заявками ИКФ", reply_markup=keyboard())
+        await callback.answer()
+
+    @app.dp.callback_query(lambda c: c.data == "wadmin:noop")
+    async def noop(callback):
+        await callback.answer()
+
+    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith(("wadmin:date:", "wadmin:month:"))))
+    async def calendar_page(callback):
         if not callback.from_user or callback.from_user.id not in admins:
             await callback.answer("Нет доступа", show_alert=True)
             return
         try:
-            _, _, work_id, offset_raw = callback.data.split(":")
-            work_id = str(UUID(work_id))
-            offset = int(offset_raw)
-            if not 0 <= offset <= 90:
+            _, kind, raw_id, value = callback.data.split(":")
+            work_id = UUID(raw_id)
+            today = datetime.now(ZoneInfo("Europe/Moscow")).date()
+            day = today + timedelta(days=int(value)) if kind == "date" else datetime.strptime(value, "%Y%m").date()
+            if day < today.replace(day=1) or day > today + timedelta(days=730):
                 raise ValueError
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             await callback.answer("Неверная дата", show_alert=True)
             return
-        day = datetime.now(ZoneInfo("Europe/Moscow")).date() + timedelta(days=offset)
-        buttons = []
-        for hour in (10, 12, 15, 18, 20):
+        first = day.replace(day=1)
+        previous = (first - timedelta(days=1)).replace(day=1)
+        following = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+        buttons = [[InlineKeyboardButton(text=f"📅 {first:%m.%Y}", callback_data="wadmin:noop")],
+                   [InlineKeyboardButton(text=name, callback_data="wadmin:noop") for name in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")]]
+        for week in calendar.Calendar().monthdayscalendar(first.year, first.month):
             buttons.append([InlineKeyboardButton(
-                text=f"{hour:02d}:00 МСК",
-                callback_data=f"wadmin:slot:{work_id}:{offset}:{hour}",
-            )])
-        navigation = []
-        if offset:
-            navigation.append(InlineKeyboardButton(text="◀️ День", callback_data=f"wadmin:date:{work_id}:{offset-1}"))
-        if offset < 90:
-            navigation.append(InlineKeyboardButton(text="День ▶️", callback_data=f"wadmin:date:{work_id}:{offset+1}"))
-        if navigation:
-            buttons.append(navigation)
-        await callback.message.edit_text(
-            f"📅 Выберите время публикации на {day:%d.%m.%Y} (Москва):",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        )
+                text=str(d) if d and today <= first.replace(day=d) <= today + timedelta(days=730) else "·",
+                callback_data=f"wadmin:day:{work_id}:{first.year:04d}{first.month:02d}{d:02d}" if d and today <= first.replace(day=d) <= today + timedelta(days=730) else "wadmin:noop",
+            ) for d in week])
+        buttons.append([
+            InlineKeyboardButton(text="◀️", callback_data=f"wadmin:month:{work_id}:{previous:%Y%m}" if first > today.replace(day=1) else "wadmin:noop"),
+            InlineKeyboardButton(text="▶️", callback_data=f"wadmin:month:{work_id}:{following:%Y%m}" if following <= today + timedelta(days=730) else "wadmin:noop"),
+        ])
+        buttons.append([InlineKeyboardButton(text="🏠 Меню", callback_data="wadmin:home")])
+        await callback.message.edit_text("📅 Выберите дату публикации (МСК):", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
 
-    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:slot:")))
+    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith(("wadmin:day:", "wadmin:hour:"))))
+    async def choose_time(callback):
+        if not callback.from_user or callback.from_user.id not in admins:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        try:
+            parts = callback.data.split(":")
+            work_id = UUID(parts[2])
+            day = datetime.strptime(parts[3], "%Y%m%d").date()
+            today = datetime.now(ZoneInfo("Europe/Moscow")).date()
+            if not today <= day <= today + timedelta(days=730):
+                raise ValueError
+            hour = int(parts[4]) if parts[1] == "hour" else None
+            if hour is not None and not 0 <= hour <= 23:
+                raise ValueError
+        except (ValueError, TypeError, IndexError):
+            await callback.answer("Неверная дата", show_alert=True)
+            return
+        if hour is None:
+            buttons = [[InlineKeyboardButton(text=f"{h:02d}:00", callback_data=f"wadmin:hour:{work_id}:{day:%Y%m%d}:{h}") for h in range(i, i+4)] for i in range(0, 24, 4)]
+        else:
+            buttons = [[InlineKeyboardButton(text=f"{hour:02d}:{m:02d}", callback_data=f"wadmin:pick:{work_id}:{day:%Y%m%d}:{hour:02d}{m:02d}") for m in range(i, i+15, 5)] for i in range(0, 60, 15)]
+        buttons.append([InlineKeyboardButton(text="◀️ Календарь", callback_data=f"wadmin:month:{work_id}:{day:%Y%m}"),
+                        InlineKeyboardButton(text="🏠 Меню", callback_data="wadmin:home")])
+        await callback.message.edit_text(f"🕒 {day:%d.%m.%Y} МСК. Выберите {'час' if hour is None else 'минуты'}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:pick:")))
     async def confirm_slot(callback):
         if not callback.from_user or callback.from_user.id not in admins:
             await callback.answer("Нет доступа", show_alert=True)
             return
         try:
-            _, _, work_id, offset_raw, hour_raw = callback.data.split(":")
-            work_id = UUID(work_id)
-            offset, hour = int(offset_raw), int(hour_raw)
-            if not 0 <= offset <= 90 or hour not in (10, 12, 15, 18, 20):
+            _, _, raw_id, date_key, hhmm = callback.data.split(":")
+            work_id = UUID(raw_id)
+            if len(date_key) != 8 or len(hhmm) != 4:
+                raise ValueError
+            slot = datetime.strptime(date_key + hhmm, "%Y%m%d%H%M").replace(tzinfo=ZoneInfo("Europe/Moscow"))
+            if slot <= datetime.now(ZoneInfo("Europe/Moscow")) or slot > datetime.now(ZoneInfo("Europe/Moscow")) + timedelta(days=731):
                 raise ValueError
         except (ValueError, TypeError):
-            await callback.answer("Неверное время", show_alert=True)
+            await callback.answer("Время уже прошло или некорректно", show_alert=True)
             return
-        local = datetime.now(ZoneInfo("Europe/Moscow")).date() + timedelta(days=offset)
-        slot = datetime(local.year, local.month, local.day, hour, tzinfo=ZoneInfo("Europe/Moscow"))
-        if slot.timestamp() <= datetime.now(timezone.utc).timestamp():
-            await callback.answer("Время уже прошло. Выберите другое.", show_alert=True)
-            return
-        markup = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"wadmin:save:{work_id}:{int(slot.timestamp())}")],
-            [InlineKeyboardButton(text="◀️ Изменить", callback_data=f"wadmin:date:{work_id}:{offset}")],
-        ])
-        await callback.message.edit_text(f"📚 Назначить публикацию на {slot:%d.%m.%Y %H:%M} МСК?", reply_markup=markup)
+        await callback.message.edit_text(
+            f"📚 Назначить публикацию на {slot:%d.%m.%Y %H:%M} МСК?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"wadmin:save:{work_id}:{int(slot.timestamp())}")],
+                [InlineKeyboardButton(text="◀️ Изменить", callback_data=f"wadmin:day:{work_id}:{date_key}")],
+                [InlineKeyboardButton(text="🏠 Меню", callback_data="wadmin:home")],
+            ]),
+        )
         await callback.answer()
+
+    @app.dp.message(Command("time"))
+    async def manual_time(message):
+        if not message.from_user or message.from_user.id not in admins or message.chat.type != "private":
+            return
+        parts = (message.text or "").split()
+        if len(parts) != 4:
+            await message.answer("Формат: /time UUID ДД.ММ.ГГГГ ЧЧ:ММ\\nПример: /time 7507c432-d24f-477d-9d33-66a8bc5a4938 30.10.2026 18:30")
+            return
+        try:
+            work_id = UUID(parts[1])
+            local = datetime.strptime(parts[2] + " " + parts[3], "%d.%m.%Y %H:%M").replace(tzinfo=ZoneInfo("Europe/Moscow"))
+            if local <= datetime.now(ZoneInfo("Europe/Moscow")) or local > datetime.now(ZoneInfo("Europe/Moscow")) + timedelta(days=731):
+                raise ValueError
+        except ValueError:
+            await message.answer("Неверная дата или время. Укажите будущее время по МСК.")
+            return
+        saved = await storage.schedule_publication(work_id, int(local.timestamp()), message.from_user.id)
+        if not saved:
+            await message.answer("Работа не одобрена или уже опубликована.")
+            return
+        await message.answer(f"✅ Дата сохранена: {local:%d.%m.%Y %H:%M} МСК. Автор получит уведомление. Публикация остается ручной.")
 
     @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:save:")))
     async def save_slot(callback):
