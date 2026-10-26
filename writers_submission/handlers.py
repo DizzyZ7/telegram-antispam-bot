@@ -117,12 +117,12 @@ class PendingCommentStore:
 
 
 class WritersSubmissionStartFilter(BaseFilter):
-    """Match only the private /start writers_submit deep-link entry."""
+    """Match private plain /start and the writers_submit deep link only."""
 
     async def __call__(self, message: Message) -> bool:
         return (
             _chat_type_value(message.chat) == "private"
-            and _is_writers_submit_start(message)
+            and _is_writers_start(message)
         )
 
 
@@ -212,6 +212,14 @@ def _chat_type_value(chat: Any) -> str:
     return str(getattr(value, "value", value))
 
 
+def _is_writers_start(message: Message) -> bool:
+    text = str(getattr(message, "text", "") or "").strip()
+    parts = text.split(maxsplit=1)
+    return bool(parts and parts[0].split("@")[0] == "/start" and (
+        len(parts) == 1 or parts[1].strip() == "writers_submit"
+    ))
+
+
 def _is_writers_submit_start(message: Message) -> bool:
     text = str(getattr(message, "text", "") or "").strip()
     if not text:
@@ -270,13 +278,9 @@ def register_writers_submission_handlers(
             except Exception:
                 LOGGER.exception("WRITERS_COMMUNITY_MEMBER_EVENT_SAVE_FAILED")
 
-    @app.dp.message(CommandStart())
+    @app.dp.message(CommandStart(), WritersSubmissionStartFilter())
     async def writers_submission_start(message: Message) -> None:
         if _chat_type_value(message.chat) != "private":
-            return
-        # Preserve other deep-link entry points for their dedicated handlers.
-        parts = str(getattr(message, "text", "") or "").strip().split(maxsplit=1)
-        if len(parts) == 2 and parts[1].strip() != "writers_submit":
             return
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
