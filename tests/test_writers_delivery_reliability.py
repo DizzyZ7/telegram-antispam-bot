@@ -90,18 +90,18 @@ class ModerationPacketResumptionTests(unittest.IsolatedAsyncioTestCase):
         self.storage.mark_outbox_retryable.assert_awaited_once()
         calls = self.storage.record_outbox_progress.await_args_list
         self.assertEqual([call.kwargs["key"] for call in calls], [
-            "card", "preview", "file:" + str(self.first_id),
+            "card", "file:" + str(self.first_id),
         ])
         self.assertEqual(
-            [call.kwargs["message_id"] for call in calls], [10, 10, 11]
+            [call.kwargs["message_id"] for call in calls], [10, 11]
         )
         self.storage.mark_outbox_delivered.assert_not_awaited()
-        self.assertEqual(self.bot.send_message.await_count, 2)
+        self.assertEqual(self.bot.send_message.await_count, 1)
 
         resumed = SimpleNamespace(
             **{**vars(self.item),
                "attempt_count": 2,
-               "progress": {"card": 10, "preview": 10, "file:" + str(self.first_id): 11}}
+               "progress": {"card": 10, "file:" + str(self.first_id): 11}}
         )
         self.storage.claim_due_outbox.return_value = [resumed]
         self.bot.send_document.side_effect = [
@@ -109,10 +109,10 @@ class ModerationPacketResumptionTests(unittest.IsolatedAsyncioTestCase):
         ]
         await self.worker.run_once(now=110)
 
-        self.assertEqual(self.bot.send_message.await_count, 2)
+        self.assertEqual(self.bot.send_message.await_count, 1)
         self.storage.mark_outbox_delivered.assert_awaited_once_with(
             outbox_id=self.item.id, worker_id="moderation-test", now=110,
-            delivery_chat_id=-100321, delivery_message_ids=(10, 10, 11, 12),
+            delivery_chat_id=-100321, delivery_message_ids=(10, 11, 12),
         )
         self.assertEqual(
             self.storage.record_outbox_progress.await_args.kwargs["key"],

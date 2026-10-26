@@ -568,7 +568,7 @@ class WritersDeliveryWorker:
                         work_charge=charge,
                     )
                     + "\n💎 Своя обложка оплачивается отдельно (если выбрана)."
-                    + "\n\nОформленный пост, вложения и цветовой макет — ответами на эту карточку."
+                    + "\n\nВложения и цветовой макет — ответами на эту карточку. Готовый пост будет подготовлен после одобрения."
                 ),
                 parse_mode="HTML",
                 reply_markup=build_moderation_keyboard(
@@ -591,44 +591,8 @@ class WritersDeliveryWorker:
             "chat_id": moderation_chat_id,
             "reply_parameters": ReplyParameters(message_id=int(card_message_id)),
         }
-        # The moderator receives an immediately copyable, formatted post
-        # even before approval. It is a REPLY to the operational card, not
-        # an automatic publication in the public channel.
-        preview_message_id = progress.get("preview")
-        if not preview_message_id:
-            try:
-                formatted_post = render_owner_promo(context)
-            except ValueError:
-                # Pathological legacy records may contain URLs far longer
-                # than Telegram's 4096-char message limit. Never lose the
-                # whole moderation packet because its preview is too big.
-                LOGGER.warning(
-                    "WRITERS_MODERATION_PREVIEW_COMPACT_FALLBACK submission_id=%s",
-                    item.submission_id,
-                )
-                formatted_post = (
-                    "« <b>" + _escaped_preview(
-                        unquoted_work_title(context.title), max_units=235
-                    ) + "</b> »\n\n"
-                    + _escaped_preview(context.description, max_units=600)
-                    + "\n\n⚠️ Полный текст не поместился. "
-                    "Проверь поля в карточке модерации.\n\n"
-                    "• • • • • • • • ✦ • • • • • • • •"
-                )
-            preview = await self.bot.send_message(
-                **reply_kwargs,
-                text=formatted_post,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-            preview_message_id = getattr(preview, "message_id", None)
-            if preview_message_id is None:
-                raise RuntimeError("Telegram moderation preview has no message_id")
-            await self._checkpoint_moderation_message(
-                item, key="preview", message_id=int(preview_message_id),
-                chat_id=moderation_chat_id, now=now,
-            )
-        message_ids.append(int(preview_message_id))
+        # Publication-ready post is created only after review approval
+        # via OWNER_PREVIEW outbox. Moderation receives the application only.
         details = getattr(context, "details", None) or {}
         if details.get("visual_mode") == "palette":
             palette_message_id = progress.get("palette")
