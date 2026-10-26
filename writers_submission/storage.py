@@ -331,7 +331,7 @@ class PostgresWritersSubmissionStorage:
                         SELECT $2, s.id, s.current_submitted_revision_id,
                                'AUTHOR_NOTIFICATION', 'PENDING', 0,
                                EXTRACT(EPOCH FROM now())::BIGINT,
-                               '{"action":"APPROVE"}'::text,
+                               json_build_object('action', 'APPROVE', 'scheduled_at', $3)::text,
                                'author:' || s.id::text || ':' ||
                                s.current_submitted_revision_id::text || ':APPROVE',
                                EXTRACT(EPOCH FROM now())::BIGINT,
@@ -340,7 +340,29 @@ class PostgresWritersSubmissionStorage:
                         WHERE s.id = $1 AND s.status = 'APPROVED'
                           AND s.current_submitted_revision_id IS NOT NULL
                         ON CONFLICT (dedupe_key) DO NOTHING
-                        """, submission_id, uuid4(),
+                        """, submission_id, uuid4(), int(scheduled_at),
+                    )
+                if row and previous is not None and int(previous["scheduled_at"]) != int(scheduled_at):
+                    await conn.execute(
+                        """
+                        INSERT INTO writers_submission_outbox(
+                            id, submission_id, revision_id, event_type, state,
+                            attempt_count, next_attempt_at, payload_json,
+                            dedupe_key, created_at, updated_at
+                        )
+                        SELECT $2, s.id, s.current_submitted_revision_id,
+                               'AUTHOR_NOTIFICATION', 'PENDING', 0,
+                               EXTRACT(EPOCH FROM now())::BIGINT,
+                               json_build_object('kind', 'RESCHEDULE',
+                                                 'scheduled_at', $3)::text,
+                               'author:reschedule:' || s.id::text || ':' || $3::text,
+                               EXTRACT(EPOCH FROM now())::BIGINT,
+                               EXTRACT(EPOCH FROM now())::BIGINT
+                        FROM writers_submissions s
+                        WHERE s.id = $1 AND s.status = 'APPROVED'
+                          AND s.current_submitted_revision_id IS NOT NULL
+                        ON CONFLICT (dedupe_key) DO NOTHING
+                        """, submission_id, uuid4(), int(scheduled_at),
                     )
                 return row
 
@@ -2978,6 +3000,19 @@ class PostgresWritersSubmissionStorage:
     ) -> AuthorNotificationContext:
         pool = self._require_pool()
         kind = str(notification_kind).strip() if notification_kind else None
+
+        if kind == "RESCHEDULE":
+            row = await pool.fetchrow(
+                "SELECT s.author_user_id, r.title FROM writers_submissions s "
+                "JOIN writers_submission_revisions r ON r.submission_id = s.id "
+                "WHERE s.id = $1 AND r.id = $2", submission_id, revision_id,
+            )
+            if row is None:
+                raise NotFoundError("Author notification context was not found")
+            return AuthorNotificationContext(
+                author_user_id=int(row["author_user_id"]),
+                title=str(row["title"]), action=kind, comment=None,
+            )
 
         if kind in {"SUBMISSION_ACCEPTED", "WITHDRAWN"}:
             row = await pool.fetchrow(
