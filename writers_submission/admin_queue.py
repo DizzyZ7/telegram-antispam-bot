@@ -1,6 +1,9 @@
 """Telegram moderator menu for publication queues."""
 from __future__ import annotations
 import html
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+from uuid import UUID
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -36,8 +39,11 @@ def register_admin_queue(app, storage, config):
             return
         rows = await storage.list_publication_admin(category, page * 5)
         lines = [f"📚 <b>{CATEGORIES[category]}</b> · страница {page+1}"]
+        entry_buttons = []
         for item in rows:
             lines.append("• <b>" + html.escape(str(item["title"])[:100]) + "</b>\n<code>" + str(item["id"]) + "</code>")
+            if category in ("approved", "queue"):
+                entry_buttons.append([InlineKeyboardButton(text="📅 " + str(item["title"])[:30], callback_data="wadmin:date:" + str(item["id"]) + ":0")])
         if not rows:
             lines.append("Заявок пока нет.")
         nav = []
@@ -45,7 +51,7 @@ def register_admin_queue(app, storage, config):
             nav.append(InlineKeyboardButton(text="◀️", callback_data=f"wadmin:{category}:{page-1}"))
         if len(rows) == 5:
             nav.append(InlineKeyboardButton(text="▶️", callback_data=f"wadmin:{category}:{page+1}"))
-        markup = InlineKeyboardMarkup(inline_keyboard=([nav] if nav else []) + [
+        markup = InlineKeyboardMarkup(inline_keyboard=entry_buttons + ([nav] if nav else []) + [
             [InlineKeyboardButton(text="🏠 Меню", callback_data="wadmin:review:0")]
         ])
         await callback.message.edit_text("\n\n".join(lines), parse_mode="HTML", reply_markup=markup)
