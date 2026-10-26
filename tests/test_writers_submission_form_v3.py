@@ -209,7 +209,8 @@ class NewSubmissionFormTests(unittest.TestCase):
         self.assertIn("Основные персонажи / пейринг: Рика/Момои", post)
         self.assertIn('8️⃣ <a href="https://ficbook.net/readfic/12345">Читать на Фикбук</a>', post)
         self.assertIn('💬 <a href="https://t.me/zippaket0514">ТГ-канал</a>', post)
-        self.assertTrue(post.endswith("• • • • • • • • ✦ • • • • • • • •"))
+        self.assertTrue(post.endswith('📩 Отправляйте заявку <a href="https://t.me/Fosgen_AntiSpam_bot?start=writers_submit">Фосгену</a>, чтобы попасть в канал ИКФ'))
+        self.assertIn("• • • • • • • • ✦ • • • • • • • •", post)
         self.assertLess(post.index("« <b>Название</b> »"), post.index(DESCRIPTION))
         self.assertLess(post.index("ПРЕДУПРЕЖДЕНИЯ"), post.index("#Приоритетчудояйца"))
         self.assertLess(post.index("Читать на Фикбук"), post.index("✦"))
@@ -319,7 +320,8 @@ class NewSubmissionFormTests(unittest.TestCase):
             moderation.index("Статья с текстом зарисовки в Telegraph (один из драбблов сборника):"),
         )
         self.assertEqual(moderation.count("https://telegra.ph/One-Drabble-10-14"), 1)
-        self.assertTrue(post.endswith("• • • • • • • • ✦ • • • • • • • •"))
+        self.assertTrue(post.endswith('📩 Отправляйте заявку <a href="https://t.me/Fosgen_AntiSpam_bot?start=writers_submit">Фосгену</a>, чтобы попасть в канал ИКФ'))
+        self.assertIn("• • • • • • • • ✦ • • • • • • • •", post)
 
     def test_drabble_collection_url_and_size_are_enforced_only_for_sketches(self):
         base = common_details(

@@ -145,8 +145,9 @@ def render_owner_promo(context: ModerationDeliveryContext, *, compact: bool = Fa
         is_telegram = domain in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}
         label = "ТГ-канал" if is_telegram else f"Дополнительная ссылка {i + 1}"
         lines.append(("💬 " if is_telegram else "🔗 ") + _link(url, label))
-    # Fixed ICФ ornamental divider at the very bottom, after every link.
-    lines += ["", "• • • • • • • • ✦ • • • • • • • •"]
+    # Invitation stays at the very end of the approved post, after all links.
+    lines += ["", "• • • • • • • • ✦ • • • • • • • •", "",
+              '📩 Отправляйте заявку <a href="https://t.me/Fosgen_AntiSpam_bot?start=writers_submit">Фосгену</a>, чтобы попасть в канал ИКФ']
     result = "\n".join(lines)
     # Telegram text is capped at 4096 chars. Use a conservative limit even
     # when HTML escaped entities and astral codepoints are counted.
