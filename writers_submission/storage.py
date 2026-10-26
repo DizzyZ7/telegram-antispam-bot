@@ -331,7 +331,7 @@ class PostgresWritersSubmissionStorage:
                         SELECT $2, s.id, s.current_submitted_revision_id,
                                'AUTHOR_NOTIFICATION', 'PENDING', 0,
                                EXTRACT(EPOCH FROM now())::BIGINT,
-                               json_build_object('action', 'APPROVE', 'scheduled_at', $3)::text,
+                               json_build_object('action', 'APPROVE', 'scheduled_at', $3::BIGINT)::text,
                                'author:' || s.id::text || ':' ||
                                s.current_submitted_revision_id::text || ':APPROVE',
                                EXTRACT(EPOCH FROM now())::BIGINT,
@@ -357,7 +357,7 @@ class PostgresWritersSubmissionStorage:
                                'AUTHOR_NOTIFICATION', 'PENDING', 0,
                                EXTRACT(EPOCH FROM now())::BIGINT,
                                json_build_object('kind', 'RESCHEDULE',
-                                                 'scheduled_at', $3)::text,
+                                                 'scheduled_at', $3::BIGINT)::text,
                                'author:reschedule:' || s.id::text || ':' || $3::text,
                                EXTRACT(EPOCH FROM now())::BIGINT,
                                EXTRACT(EPOCH FROM now())::BIGINT
