@@ -42,6 +42,11 @@ def register_admin_queue(app, storage, config):
         entry_buttons = []
         for item in rows:
             lines.append("• <b>" + html.escape(str(item["title"])[:100]) + "</b>\n<code>" + str(item["id"]) + "</code>")
+            if category == "queue":
+                entry_buttons.append([InlineKeyboardButton(
+                    text="⭐ Изменить приоритет · " + str(item["title"])[:24],
+                    callback_data="wadmin:priority:" + str(item["id"]) + ":1",
+                )])
             if category in ("approved", "queue"):
                 entry_buttons.append([InlineKeyboardButton(text="📅 " + str(item["title"])[:30], callback_data="wadmin:date:" + str(item["id"]) + ":0")])
         if not rows:
@@ -137,3 +142,23 @@ def register_admin_queue(app, storage, config):
         local = datetime.fromtimestamp(timestamp, ZoneInfo("Europe/Moscow"))
         await callback.message.edit_text(f"✅ Дата сохранена: {local:%d.%m.%Y %H:%M} МСК. Публикация пока не автоматическая.")
         await callback.answer()
+
+    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:priority:")))
+    async def change_priority(callback):
+        if not callback.from_user or callback.from_user.id not in admins:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        try:
+            _, _, work_id, flag = callback.data.split(":")
+            work_id = UUID(work_id)
+            if flag not in ("0", "1"):
+                raise ValueError
+        except (ValueError, TypeError):
+            await callback.answer("Неверная заявка", show_alert=True)
+            return
+        changed = await storage.update_publication_priority(work_id, flag == "1", callback.from_user.id)
+        if not changed:
+            await callback.answer("Изменить можно только запланированную публикацию", show_alert=True)
+            return
+        await callback.answer("Приоритет сохранен")
+        await callback.message.edit_text("⭐ Приоритет обновлен. Вернитесь в /writers_admin для просмотра очереди.")
