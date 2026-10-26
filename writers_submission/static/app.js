@@ -250,11 +250,20 @@
     let response;
     try {
       response = await fetch(path, request);
-      // Only repeat GET requests. Mutations may already have been committed.
+      // An expired cookie may cause Android WebView to reject an otherwise
+      // valid request. Refresh signed initData and retry reads only.
+      // Mutations are reconciled by their callers before any retry.
       if (response.status === 401 && path !== "/api/writers/session") {
         const restored = await refreshTelegramSession();
         if (restored && request.method === "GET") {
           response = await fetch(path, request);
+        } else if (restored && request.method !== "GET") {
+          const error = new Error(
+            "Сессия Telegram восстановлена. Проверяю сохранение перед повтором."
+          );
+          error.code = "session_restored_unconfirmed";
+          error.status = 401;
+          throw error;
         }
       }
     } catch (cause) {
@@ -1457,7 +1466,19 @@
               );
             } catch (error) {
               if (!await reconcileDraftSave(fields, expectedVersion, revisionId, error)) {
-                throw error;
+                if (error.code === "session_restored_unconfirmed") {
+                  // The rejected PATCH did not commit. The caller can safely
+                  // retry the same version after refreshing the signed cookie.
+                  const retry = await api(
+                    `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
+                    { method: "PATCH", json: { ...fields, expected_version: expectedVersion } }
+                  );
+                  state.current = verifiedDraftResponse(
+                    retry, state.current.id, expectedVersion
+                  );
+                } else {
+                  throw error;
+                }
               }
             }
           }
