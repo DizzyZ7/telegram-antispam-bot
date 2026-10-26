@@ -901,7 +901,8 @@ def register_writers_submission_handlers(
             parse_mode="HTML",
         )
 
-    register_admin_queue(app, service.storage, config)
+    if getattr(service, 'storage', None) is not None:
+        register_admin_queue(app, service.storage, config)
 
     new_message_handlers = app.dp.message.handlers[message_handler_start:]
     if new_message_handlers:
