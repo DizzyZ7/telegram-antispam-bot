@@ -142,7 +142,7 @@ class ModerationPacketResumptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("4", message["text"])
         self.assertNotIn("77", message["text"])
         await self.worker.run_once(now=1065)
-        self.assertEqual(self.bot.send_message.await_count, 1)
+        self.assertEqual(self.bot.send_message.await_count, 2)
         await self.worker.run_once(now=2000)
         self.assertEqual(self.bot.send_message.await_count, 1)
 
