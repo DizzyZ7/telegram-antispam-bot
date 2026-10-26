@@ -285,7 +285,7 @@ class PostgresWritersSubmissionStorage:
             "COALESCE(s.current_submitted_revision_id, s.current_draft_revision_id) "
             "LEFT JOIN writers_publication_queue q ON q.submission_id = s.id "
             "WHERE " + conditions[category] +
-            " ORDER BY q.scheduled_at ASC NULLS LAST, s.updated_at DESC, s.id "
+            " ORDER BY q.priority DESC NULLS LAST, q.scheduled_at ASC NULLS LAST, s.updated_at DESC, s.id "
             "LIMIT 5 OFFSET $1", max(0, int(offset)),
         )
 
