@@ -321,6 +321,59 @@ class PostgresWritersSubmissionStorage:
                     )
                 return row
 
+    async def update_publication_payment(self, submission_id, state: str, admin_id: int):
+        if state not in ("NOT_REQUIRED", "PENDING", "CONFIRMED"):
+            raise ValueError("Invalid payment state")
+        async with self._require_pool().acquire() as conn:
+            async with conn.transaction():
+                old = await conn.fetchrow(
+                    "SELECT priority_payment_state, state FROM writers_publication_queue "
+                    "WHERE submission_id = $1 FOR UPDATE", submission_id,
+                )
+                if old is None or old["state"] == "PUBLISHED":
+                    return False
+                await conn.execute(
+                    "UPDATE writers_publication_queue SET priority_payment_state = $2, "
+                    "updated_at = EXTRACT(EPOCH FROM now())::BIGINT WHERE submission_id = $1",
+                    submission_id, state,
+                )
+                await conn.execute(
+                    "INSERT INTO writers_publication_audit "
+                    "(submission_id, admin_id, action, old_value, new_value, created_at) "
+                    "VALUES ($1, $2, 'PAYMENT', $3, $4, EXTRACT(EPOCH FROM now())::BIGINT)",
+                    submission_id, int(admin_id), old["priority_payment_state"], state,
+                )
+                return True
+
+    async def unschedule_publication(self, submission_id, admin_id: int):
+        async with self._require_pool().acquire() as conn:
+            async with conn.transaction():
+                old = await conn.fetchrow(
+                    "SELECT scheduled_at, state FROM writers_publication_queue "
+                    "WHERE submission_id = $1 FOR UPDATE", submission_id,
+                )
+                if old is None or old["state"] != "SCHEDULED":
+                    return False
+                await conn.execute(
+                    "UPDATE writers_publication_queue SET state = 'UNSCHEDULED', "
+                    "updated_at = EXTRACT(EPOCH FROM now())::BIGINT WHERE submission_id = $1",
+                    submission_id,
+                )
+                await conn.execute(
+                    "INSERT INTO writers_publication_audit "
+                    "(submission_id, admin_id, action, old_value, new_value, created_at) "
+                    "VALUES ($1, $2, 'UNSCHEDULE', $3, NULL, EXTRACT(EPOCH FROM now())::BIGINT)",
+                    submission_id, int(admin_id), str(old["scheduled_at"]),
+                )
+                return True
+
+    async def get_publication_audit(self, submission_id):
+        return await self._require_pool().fetch(
+            "SELECT admin_id, action, old_value, new_value, created_at "
+            "FROM writers_publication_audit WHERE submission_id = $1 "
+            "ORDER BY id DESC LIMIT 10", submission_id,
+        )
+
     async def update_publication_priority(self, submission_id, priority: bool, admin_id: int):
         async with self._require_pool().acquire() as conn:
             async with conn.transaction():
