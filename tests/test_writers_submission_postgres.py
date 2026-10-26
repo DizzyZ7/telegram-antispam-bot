@@ -1717,7 +1717,7 @@ class WritersSubmissionPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(owner[0]["dedupe_key"], f"owner:{submitted.id}:{submitted.revision.id}:APPROVED")
         self.assertEqual(
             len([r for r in rows if r["event_type"] == "AUTHOR_NOTIFICATION"]),
-            2,  # submission received + author decision
+            1,  # submission received; approval notice waits for scheduling
         )
 
     async def test_rejected_submission_has_no_owner_preview(self):

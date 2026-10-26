@@ -6,6 +6,8 @@ import html
 import logging
 import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from contextlib import suppress
 from io import BytesIO
 from uuid import uuid4
@@ -76,7 +78,7 @@ def _action_value(value: object) -> str:
     return str(value)
 
 
-def _author_notification_text(context: Any) -> str:
+def _author_notification_text(context: Any, scheduled_at: int | None = None) -> str:
     action = _action_value(context.action)
     title = _escaped_preview(quote_work_title(context.title), max_units=500)
     comment = getattr(context, "comment", None)
@@ -85,6 +87,11 @@ def _author_notification_text(context: Any) -> str:
         lines = [
             "📨 <b>Работа принята и отправлена на проверку</b>",
             "",
+            f"<b>{title}</b>",
+        ]
+    elif action == "RESCHEDULE":
+        lines = [
+            "📅 <b>Дата публикации изменена</b>", "",
             f"<b>{title}</b>",
         ]
     elif action in {ReviewAction.APPROVE.value, "APPROVED"}:
@@ -117,6 +124,11 @@ def _author_notification_text(context: Any) -> str:
             "",
             f"<b>{title}</b>",
         ]
+
+    if scheduled_at is not None and action in {"APPROVE", "APPROVED", "RESCHEDULE"}:
+        local = datetime.fromtimestamp(int(scheduled_at), ZoneInfo("Europe/Moscow"))
+        lines.extend(("", f"📅 Дата публикации: <b>{local:%d.%m.%Y}</b>",
+                      f"🕒 Время: <b>{local:%H:%M} МСК</b>"))
 
     if comment:
         lines.extend(
@@ -690,7 +702,7 @@ class WritersDeliveryWorker:
         author_user_id = int(context.author_user_id)
         sent = await self.bot.send_message(
             chat_id=author_user_id,
-            text=_author_notification_text(context),
+            text=_author_notification_text(context, payload.get("scheduled_at")),
             parse_mode="HTML",
         )
         message_id = getattr(sent, "message_id", None)
