@@ -210,6 +210,23 @@
     return error;
   }
 
+  // Refresh a signed session once. Never trust initDataUnsafe for authentication.
+  let sessionRefreshPromise = null;
+  async function refreshTelegramSession() {
+    if (!tg || !tg.initData) return false;
+    if (!sessionRefreshPromise) {
+      sessionRefreshPromise = fetch("/api/writers/session", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ init_data: tg.initData }),
+      }).then(response => response.status === 204)
+        .catch(() => false)
+        .finally(() => { sessionRefreshPromise = null; });
+    }
+    return sessionRefreshPromise;
+  }
+
   async function api(path, options = {}) {
     const request = {
       method: options.method || "GET",
