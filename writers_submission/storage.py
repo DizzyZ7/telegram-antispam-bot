@@ -342,7 +342,10 @@ class PostgresWritersSubmissionStorage:
                         ON CONFLICT (dedupe_key) DO NOTHING
                         """, submission_id, uuid4(), int(scheduled_at),
                     )
-                if row and previous is not None and int(previous["scheduled_at"]) != int(scheduled_at):
+                if row and previous is not None and (
+                    previous["scheduled_at"] is None
+                    or int(previous["scheduled_at"]) != int(scheduled_at)
+                ):
                     await conn.execute(
                         """
                         INSERT INTO writers_submission_outbox(
