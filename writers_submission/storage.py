@@ -229,10 +229,11 @@ class PostgresWritersSubmissionStorage:
                 await connection.execute("""
                 CREATE TABLE IF NOT EXISTS writers_publication_queue (
                     submission_id UUID PRIMARY KEY REFERENCES writers_submissions(id) ON DELETE CASCADE,
-                    state TEXT NOT NULL CHECK (state IN ('SCHEDULED', 'PUBLISHED')),
+                    state TEXT NOT NULL CHECK (state IN ('SCHEDULED', 'UNSCHEDULED', 'PUBLISHED')),
                     scheduled_at BIGINT NOT NULL,
                     scheduled_by BIGINT NOT NULL,
                     priority BOOLEAN NOT NULL DEFAULT FALSE,
+                    priority_payment_state TEXT NOT NULL DEFAULT 'NOT_REQUIRED',
                     published_at BIGINT,
                     post_url TEXT,
                     updated_at BIGINT NOT NULL
@@ -254,24 +255,37 @@ class PostgresWritersSubmissionStorage:
                     "ALTER TABLE writers_publication_queue "
                     "ADD COLUMN IF NOT EXISTS priority BOOLEAN NOT NULL DEFAULT FALSE"
                 )
+                await connection.execute(
+                    "ALTER TABLE writers_publication_queue DROP CONSTRAINT IF EXISTS "
+                    "writers_publication_queue_state_check"
+                )
+                await connection.execute(
+                    "ALTER TABLE writers_publication_queue ADD CONSTRAINT "
+                    "writers_publication_queue_state_check "
+                    "CHECK (state IN ('SCHEDULED', 'UNSCHEDULED', 'PUBLISHED'))"
+                )
+                await connection.execute(
+                    "ALTER TABLE writers_publication_queue ADD COLUMN IF NOT EXISTS "
+                    "priority_payment_state TEXT NOT NULL DEFAULT 'NOT_REQUIRED'"
+                )
 
     async def list_publication_admin(self, category: str, offset: int = 0):
         conditions = {
             "review": "s.status IN ('SUBMITTED','IN_REVIEW','CHANGES_REQUESTED')",
-            "approved": "s.status = 'APPROVED' AND q.submission_id IS NULL",
+            "approved": "s.status = 'APPROVED' AND (q.submission_id IS NULL OR q.state = 'UNSCHEDULED')",
             "queue": "q.state = 'SCHEDULED'",
             "published": "q.state = 'PUBLISHED'",
         }
         if category not in conditions:
             raise ValueError("Invalid publication category")
         return await self._require_pool().fetch(
-            "SELECT s.id, s.status, r.title, q.scheduled_at, q.post_url "
+            "SELECT s.id, s.status, r.title, q.scheduled_at, q.post_url, q.priority, q.priority_payment_state "
             "FROM writers_submissions s "
             "JOIN writers_submission_revisions r ON r.id = "
             "COALESCE(s.current_submitted_revision_id, s.current_draft_revision_id) "
             "LEFT JOIN writers_publication_queue q ON q.submission_id = s.id "
             "WHERE " + conditions[category] +
-            " ORDER BY q.scheduled_at ASC NULLS LAST, s.updated_at DESC, s.id "
+            " ORDER BY q.scheduled_at ASC NULLS LAST, q.priority DESC NULLS LAST, s.updated_at DESC, s.id "
             "LIMIT 5 OFFSET $1", max(0, int(offset)),
         )
 
@@ -289,10 +303,11 @@ class PostgresWritersSubmissionStorage:
                     SELECT id, 'SCHEDULED', $2, $3, EXTRACT(EPOCH FROM now())::BIGINT
                     FROM writers_submissions WHERE id = $1 AND status = 'APPROVED'
                     ON CONFLICT (submission_id) DO UPDATE SET
+                        state = 'SCHEDULED',
                         scheduled_at = EXCLUDED.scheduled_at,
                         scheduled_by = EXCLUDED.scheduled_by,
                         updated_at = EXCLUDED.updated_at
-                    WHERE writers_publication_queue.state = 'SCHEDULED'
+                    WHERE writers_publication_queue.state IN ('SCHEDULED', 'UNSCHEDULED')
                     RETURNING submission_id
                     """, submission_id, int(scheduled_at), int(admin_id),
                 )
@@ -306,6 +321,59 @@ class PostgresWritersSubmissionStorage:
                         str(int(scheduled_at)),
                     )
                 return row
+
+    async def update_publication_payment(self, submission_id, state: str, admin_id: int):
+        if state not in ("NOT_REQUIRED", "PENDING", "CONFIRMED"):
+            raise ValueError("Invalid payment state")
+        async with self._require_pool().acquire() as conn:
+            async with conn.transaction():
+                old = await conn.fetchrow(
+                    "SELECT priority_payment_state, state FROM writers_publication_queue "
+                    "WHERE submission_id = $1 FOR UPDATE", submission_id,
+                )
+                if old is None or old["state"] == "PUBLISHED":
+                    return False
+                await conn.execute(
+                    "UPDATE writers_publication_queue SET priority_payment_state = $2, "
+                    "updated_at = EXTRACT(EPOCH FROM now())::BIGINT WHERE submission_id = $1",
+                    submission_id, state,
+                )
+                await conn.execute(
+                    "INSERT INTO writers_publication_audit "
+                    "(submission_id, admin_id, action, old_value, new_value, created_at) "
+                    "VALUES ($1, $2, 'PAYMENT', $3, $4, EXTRACT(EPOCH FROM now())::BIGINT)",
+                    submission_id, int(admin_id), old["priority_payment_state"], state,
+                )
+                return True
+
+    async def unschedule_publication(self, submission_id, admin_id: int):
+        async with self._require_pool().acquire() as conn:
+            async with conn.transaction():
+                old = await conn.fetchrow(
+                    "SELECT scheduled_at, state FROM writers_publication_queue "
+                    "WHERE submission_id = $1 FOR UPDATE", submission_id,
+                )
+                if old is None or old["state"] != "SCHEDULED":
+                    return False
+                await conn.execute(
+                    "UPDATE writers_publication_queue SET state = 'UNSCHEDULED', "
+                    "updated_at = EXTRACT(EPOCH FROM now())::BIGINT WHERE submission_id = $1",
+                    submission_id,
+                )
+                await conn.execute(
+                    "INSERT INTO writers_publication_audit "
+                    "(submission_id, admin_id, action, old_value, new_value, created_at) "
+                    "VALUES ($1, $2, 'UNSCHEDULE', $3, NULL, EXTRACT(EPOCH FROM now())::BIGINT)",
+                    submission_id, int(admin_id), str(old["scheduled_at"]),
+                )
+                return True
+
+    async def get_publication_audit(self, submission_id):
+        return await self._require_pool().fetch(
+            "SELECT admin_id, action, old_value, new_value, created_at "
+            "FROM writers_publication_audit WHERE submission_id = $1 "
+            "ORDER BY id DESC LIMIT 10", submission_id,
+        )
 
     async def update_publication_priority(self, submission_id, priority: bool, admin_id: int):
         async with self._require_pool().acquire() as conn:
