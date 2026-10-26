@@ -273,6 +273,29 @@ class PostgresWritersSubmissionStorage:
             """, submission_id, int(scheduled_at), int(admin_id),
         )
 
+    async def update_publication_priority(self, submission_id, priority: bool, admin_id: int):
+        async with self._require_pool().acquire() as conn:
+            async with conn.transaction():
+                old = await conn.fetchrow(
+                    "SELECT priority, state FROM writers_publication_queue "
+                    "WHERE submission_id = $1 FOR UPDATE", submission_id,
+                )
+                if old is None or old["state"] != "SCHEDULED":
+                    return False
+                await conn.execute(
+                    "UPDATE writers_publication_queue SET priority = $2, "
+                    "updated_at = EXTRACT(EPOCH FROM now())::BIGINT "
+                    "WHERE submission_id = $1",
+                    submission_id, bool(priority),
+                )
+                await conn.execute(
+                    "INSERT INTO writers_publication_audit "
+                    "(submission_id, admin_id, action, old_value, new_value, created_at) "
+                    "VALUES ($1, $2, 'PRIORITY', $3, $4, EXTRACT(EPOCH FROM now())::BIGINT)",
+                    submission_id, int(admin_id), str(bool(old["priority"])), str(bool(priority)),
+                )
+                return True
+
     async def _initialize_schema(self, connection: asyncpg.Connection) -> None:
         await connection.execute(
             """
