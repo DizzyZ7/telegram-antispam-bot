@@ -276,19 +276,36 @@ class PostgresWritersSubmissionStorage:
         )
 
     async def schedule_publication(self, submission_id, scheduled_at: int, admin_id: int):
-        return await self._require_pool().fetchrow(
-            """
-            INSERT INTO writers_publication_queue
-                (submission_id, state, scheduled_at, scheduled_by, updated_at)
-            SELECT id, 'SCHEDULED', $2, $3, EXTRACT(EPOCH FROM now())::BIGINT
-            FROM writers_submissions WHERE id = $1 AND status = 'APPROVED'
-            ON CONFLICT (submission_id) DO UPDATE SET
-                state = 'SCHEDULED', scheduled_at = EXCLUDED.scheduled_at,
-                scheduled_by = EXCLUDED.scheduled_by, updated_at = EXCLUDED.updated_at
-            WHERE writers_publication_queue.state = 'SCHEDULED'
-            RETURNING submission_id
-            """, submission_id, int(scheduled_at), int(admin_id),
-        )
+        async with self._require_pool().acquire() as conn:
+            async with conn.transaction():
+                previous = await conn.fetchrow(
+                    "SELECT scheduled_at, state FROM writers_publication_queue "
+                    "WHERE submission_id = $1 FOR UPDATE", submission_id,
+                )
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO writers_publication_queue
+                        (submission_id, state, scheduled_at, scheduled_by, updated_at)
+                    SELECT id, 'SCHEDULED', $2, $3, EXTRACT(EPOCH FROM now())::BIGINT
+                    FROM writers_submissions WHERE id = $1 AND status = 'APPROVED'
+                    ON CONFLICT (submission_id) DO UPDATE SET
+                        scheduled_at = EXCLUDED.scheduled_at,
+                        scheduled_by = EXCLUDED.scheduled_by,
+                        updated_at = EXCLUDED.updated_at
+                    WHERE writers_publication_queue.state = 'SCHEDULED'
+                    RETURNING submission_id
+                    """, submission_id, int(scheduled_at), int(admin_id),
+                )
+                if row:
+                    await conn.execute(
+                        "INSERT INTO writers_publication_audit "
+                        "(submission_id, admin_id, action, old_value, new_value, created_at) "
+                        "VALUES ($1, $2, 'SCHEDULE', $3, $4, EXTRACT(EPOCH FROM now())::BIGINT)",
+                        submission_id, int(admin_id),
+                        str(previous["scheduled_at"]) if previous else None,
+                        str(int(scheduled_at)),
+                    )
+                return row
 
     async def update_publication_priority(self, submission_id, priority: bool, admin_id: int):
         async with self._require_pool().acquire() as conn:
