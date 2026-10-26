@@ -228,6 +228,17 @@ class PostgresWritersSubmissionStorage:
                 await self._initialize_schema(connection)
 
     async def _initialize_schema(self, connection: asyncpg.Connection) -> None:
+        await connection.execute("""
+            CREATE TABLE IF NOT EXISTS writers_publication_queue (
+                submission_id UUID PRIMARY KEY REFERENCES writers_submissions(id) ON DELETE CASCADE,
+                state TEXT NOT NULL CHECK (state IN ('SCHEDULED', 'PUBLISHED')),
+                scheduled_at BIGINT NOT NULL,
+                scheduled_by BIGINT NOT NULL,
+                published_at BIGINT,
+                post_url TEXT,
+                updated_at BIGINT NOT NULL
+            )
+        """)
         await connection.execute(
             """
             CREATE TABLE IF NOT EXISTS writers_author_contacts (
