@@ -150,7 +150,7 @@
   function requestFailure(status, code, message = "", reference = "") {
     const details = String(message || "").trim();
     const lookup = {
-      unauthorized: "Сессия Telegram истекла. Закрой и снова открой Mini App через бота.",
+      unauthorized: "Сессия Telegram не подтверждена. Скопируй текст анкеты и открой Mini App через бота заново.",
       not_found: "Черновик не найден или больше недоступен. Вернись к списку работ.",
       conflict: "Черновик изменился в другой вкладке. Проверь сохраненные данные перед повтором.",
       payload_too_large: "Файл или запрос слишком большой. Для вложения предел — 20 МБ.",
