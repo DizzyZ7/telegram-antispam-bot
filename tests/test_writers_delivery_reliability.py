@@ -144,7 +144,7 @@ class ModerationPacketResumptionTests(unittest.IsolatedAsyncioTestCase):
         await self.worker.run_once(now=1065)
         self.assertEqual(self.bot.send_message.await_count, 1)
         await self.worker.run_once(now=2000)
-        self.assertEqual(self.bot.send_message.await_count, 1)
+        self.assertEqual(self.bot.send_message.await_count, 2)
 
 
 if __name__ == "__main__":
