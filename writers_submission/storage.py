@@ -229,10 +229,11 @@ class PostgresWritersSubmissionStorage:
                 await connection.execute("""
                 CREATE TABLE IF NOT EXISTS writers_publication_queue (
                     submission_id UUID PRIMARY KEY REFERENCES writers_submissions(id) ON DELETE CASCADE,
-                    state TEXT NOT NULL CHECK (state IN ('SCHEDULED', 'PUBLISHED')),
+                    state TEXT NOT NULL CHECK (state IN ('SCHEDULED', 'UNSCHEDULED', 'PUBLISHED')),
                     scheduled_at BIGINT NOT NULL,
                     scheduled_by BIGINT NOT NULL,
                     priority BOOLEAN NOT NULL DEFAULT FALSE,
+                    priority_payment_state TEXT NOT NULL DEFAULT 'NOT_REQUIRED',
                     published_at BIGINT,
                     post_url TEXT,
                     updated_at BIGINT NOT NULL
@@ -254,18 +255,31 @@ class PostgresWritersSubmissionStorage:
                     "ALTER TABLE writers_publication_queue "
                     "ADD COLUMN IF NOT EXISTS priority BOOLEAN NOT NULL DEFAULT FALSE"
                 )
+                await connection.execute(
+                    "ALTER TABLE writers_publication_queue DROP CONSTRAINT IF EXISTS "
+                    "writers_publication_queue_state_check"
+                )
+                await connection.execute(
+                    "ALTER TABLE writers_publication_queue ADD CONSTRAINT "
+                    "writers_publication_queue_state_check "
+                    "CHECK (state IN ('SCHEDULED', 'UNSCHEDULED', 'PUBLISHED'))"
+                )
+                await connection.execute(
+                    "ALTER TABLE writers_publication_queue ADD COLUMN IF NOT EXISTS "
+                    "priority_payment_state TEXT NOT NULL DEFAULT 'NOT_REQUIRED'"
+                )
 
     async def list_publication_admin(self, category: str, offset: int = 0):
         conditions = {
             "review": "s.status IN ('SUBMITTED','IN_REVIEW','CHANGES_REQUESTED')",
-            "approved": "s.status = 'APPROVED' AND q.submission_id IS NULL",
+            "approved": "s.status = 'APPROVED' AND (q.submission_id IS NULL OR q.state = 'UNSCHEDULED')",
             "queue": "q.state = 'SCHEDULED'",
             "published": "q.state = 'PUBLISHED'",
         }
         if category not in conditions:
             raise ValueError("Invalid publication category")
         return await self._require_pool().fetch(
-            "SELECT s.id, s.status, r.title, q.scheduled_at, q.post_url "
+            "SELECT s.id, s.status, r.title, q.scheduled_at, q.post_url, q.priority, q.priority_payment_state "
             "FROM writers_submissions s "
             "JOIN writers_submission_revisions r ON r.id = "
             "COALESCE(s.current_submitted_revision_id, s.current_draft_revision_id) "
@@ -292,7 +306,7 @@ class PostgresWritersSubmissionStorage:
                         scheduled_at = EXCLUDED.scheduled_at,
                         scheduled_by = EXCLUDED.scheduled_by,
                         updated_at = EXCLUDED.updated_at
-                    WHERE writers_publication_queue.state = 'SCHEDULED'
+                    WHERE writers_publication_queue.state IN ('SCHEDULED', 'UNSCHEDULED')
                     RETURNING submission_id
                     """, submission_id, int(scheduled_at), int(admin_id),
                 )
