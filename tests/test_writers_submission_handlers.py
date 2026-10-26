@@ -432,10 +432,12 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(subscribe.text, "📢 Подписаться на ИКФ")
         self.assertEqual(subscribe.url, "https://t.me/ff_info_ru")
         welcome = message.answer.await_args.args[0]
-        self.assertIn("Официальный Telegram", welcome)
+        self.assertIn("официальном обновленном Telegram", welcome)
         self.assertIn("VPN", welcome)
-        self.assertIn("Подписка на ИКФ", welcome)
+        self.assertIn("@ff_info_ru", welcome)
         self.assertEqual(kwargs["parse_mode"], "HTML")
+        self.assertIn("\n\n", welcome)
+        self.assertNotIn(r"\n", welcome)
 
     async def test_non_moderator_callback_is_denied_before_token_resolution(self):
         callback = moderation_callback("ws:c:opaque-token", actor_id=9999)
