@@ -117,12 +117,12 @@ class PendingCommentStore:
 
 
 class WritersSubmissionStartFilter(BaseFilter):
-    """Match only the private /start writers_submit deep-link entry."""
+    """Match private plain /start and the writers_submit deep link only."""
 
     async def __call__(self, message: Message) -> bool:
         return (
             _chat_type_value(message.chat) == "private"
-            and _is_writers_submit_start(message)
+            and _is_writers_start(message)
         )
 
 
@@ -212,6 +212,14 @@ def _chat_type_value(chat: Any) -> str:
     return str(getattr(value, "value", value))
 
 
+def _is_writers_start(message: Message) -> bool:
+    text = str(getattr(message, "text", "") or "").strip()
+    parts = text.split(maxsplit=1)
+    return bool(parts and parts[0].split("@")[0] == "/start" and (
+        len(parts) == 1 or parts[1].strip() == "writers_submit"
+    ))
+
+
 def _is_writers_submit_start(message: Message) -> bool:
     text = str(getattr(message, "text", "") or "").strip()
     if not text:
@@ -272,27 +280,55 @@ def register_writers_submission_handlers(
 
     @app.dp.message(CommandStart(), WritersSubmissionStartFilter())
     async def writers_submission_start(message: Message) -> None:
-        if not _is_writers_submit_start(message):
-            return
         if _chat_type_value(message.chat) != "private":
             return
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="✒️ Отправить работу",
-                        web_app=WebAppInfo(url=str(config.public_url)),
-                    )
-                ]
+                [InlineKeyboardButton(
+                    text="✒️ Заполнить анкету",
+                    web_app=WebAppInfo(url=str(config.public_url)),
+                )],
+                [InlineKeyboardButton(
+                    text="📢 Подписаться на ИКФ",
+                    url="https://t.me/ff_info_ru",
+                )],
             ]
         )
         await message.answer(
-            "✒️ Привет! Здесь можно заполнить заявку и сохранять черновик "
-            "в своем темпе. 💛\n\n"
-            "Чтобы отправить готовую работу на проверку, нужно состоять "
-            "в сообществе ИКФ. Если еще не вступил(а), не переживай: "
-            "твой черновик останется на месте.",
+            "✨ <b>Добро пожаловать! Я Фосген — бот сообщества ИКФ.</b>\\n\\n"
+            "📚 Здесь можно подать свою работу на проверку, "
+            "сохранить черновик и вернуться к нему позже.\\n\\n"
+            "🔎 <b>Перед заполнением анкеты проверь:</b>\\n"
+            "1. <b>Официальный Telegram.</b> Используй актуальную версию "
+            "Telegram для Android или iPhone из официального магазина "
+            "приложений либо с telegram.org. Сторонние клиенты и "
+            "модификации могут некорректно работать с Mini App.\\n"
+            "2. <b>Подписка на ИКФ.</b> Убедись, что подписан(а) на "
+            "@ff_info_ru: без подписки отправить работу на проверку нельзя.\\n"
+            "3. <b>Интернет.</b> Проверь соединение. Если страница "
+            "не открывается, попробуй переключить Wi-Fi и мобильную сеть.\\n"
+            "4. <b>VPN, прокси и блокировщики.</b> Они иногда мешают "
+            "загрузке анкеты. При сбое попробуй другое подключение "
+            "или временно отключи их, если это безопасно.\\n"
+            "5. <b>Открытие анкеты.</b> Запускай ее кнопкой ниже "
+            "непосредственно в Telegram, не через сторонний браузер.\\n"
+            "6. <b>Обновление приложения.</b> Установи свежую версию "
+            "Telegram и при необходимости полностью закрой и открой его.\\n"
+            "7. <b>Текст и файлы.</b> Подготовь описание и изображения, "
+            "проверь формат и размер вложений. Не закрывай окно "
+            "во время загрузки или сохранения.\\n"
+            "8. <b>Свободное место и разрешения.</b> Если не получается "
+            "выбрать изображение, проверь доступ Telegram к фото и файлам, "
+            "а также свободную память устройства.\\n\\n"
+            "🛟 <b>Если появилась ошибка:</b> не создавай вторую заявку "
+            "сразу. Проверь статус черновика, сохрани важный текст "
+            "и повторно открой анкету через бота. "
+            "Если ошибка осталась — пришли администрации скриншот "
+            "и укажи устройство и этап, на котором возникла проблема.\\n\\n"
+            "💜 <b>Готово? Нажимай «Заполнить анкету»!</b>",
             reply_markup=keyboard,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
         )
 
     @app.dp.message(Command("writers_delivery"))

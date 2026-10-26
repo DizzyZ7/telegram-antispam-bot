@@ -374,7 +374,7 @@ class WritersOwnerDeliveryRecoveryHandlerTests(unittest.IsolatedAsyncioTestCase)
 
 
 class WritersSubmissionStartFilterTests(unittest.IsolatedAsyncioTestCase):
-    async def test_start_filter_matches_only_private_writers_submit(self):
+    async def test_start_filter_matches_private_plain_and_writers_submit(self):
         filter_ = WritersSubmissionStartFilter()
 
         private_target = start_message(private=True)
@@ -382,7 +382,7 @@ class WritersSubmissionStartFilterTests(unittest.IsolatedAsyncioTestCase):
 
         plain_start = start_message(private=True)
         plain_start.text = "/start"
-        self.assertFalse(await filter_(plain_start))
+        self.assertTrue(await filter_(plain_start))
 
         other_start = start_message(private=True)
         other_start.text = "/start something_else"
@@ -426,8 +426,16 @@ class WritersSubmissionHandlerTests(unittest.IsolatedAsyncioTestCase):
         kwargs = message.answer.await_args.kwargs
         keyboard = kwargs["reply_markup"]
         button = keyboard.inline_keyboard[0][0]
-        self.assertEqual(button.text, "✒️ Отправить работу")
+        self.assertEqual(button.text, "✒️ Заполнить анкету")
         self.assertEqual(button.web_app.url, self.config.public_url)
+        subscribe = keyboard.inline_keyboard[1][0]
+        self.assertEqual(subscribe.text, "📢 Подписаться на ИКФ")
+        self.assertEqual(subscribe.url, "https://t.me/ff_info_ru")
+        welcome = message.answer.await_args.args[0]
+        self.assertIn("Официальный Telegram", welcome)
+        self.assertIn("VPN", welcome)
+        self.assertIn("Подписка на ИКФ", welcome)
+        self.assertEqual(kwargs["parse_mode"], "HTML")
 
     async def test_non_moderator_callback_is_denied_before_token_resolution(self):
         callback = moderation_callback("ws:c:opaque-token", actor_id=9999)
