@@ -111,22 +111,17 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(document_kwargs["reply_parameters"].message_id, 10)
         self.assertIn(str(item.submission_id), document_kwargs["caption"])
 
-        self.assertEqual(self.bot.send_message.await_count, 2)
+        self.assertEqual(self.bot.send_message.await_count, 1)
         text = self.bot.send_message.await_args_list[0].kwargs["text"]
         self.assertIn("&lt;b&gt;Опасное &amp; название&lt;/b&gt;", text)
         self.assertNotIn("<script>", text)
         self.assertIn("https://example.test/work?a=1&amp;b=2", text)
-        preview = self.bot.send_message.await_args_list[1].kwargs
-        self.assertEqual(preview["parse_mode"], "HTML")
-        self.assertEqual(preview["reply_parameters"].message_id, 10)
-        self.assertIn("« <b>&lt;b&gt;Опасное &amp; название&lt;/b&gt;</b> »", preview["text"])
-        self.assertTrue(preview["text"].endswith("• • • • • • • • ✦ • • • • • • • •"))
         self.storage.mark_outbox_delivered.assert_awaited_once_with(
             outbox_id=item.id,
             worker_id="worker-test",
             now=100,
             delivery_chat_id=-100111,
-            delivery_message_ids=(10, 10, 11),
+            delivery_message_ids=(10, 11),
         )
         self.storage.mark_outbox_retryable.assert_not_awaited()
         self.storage.mark_outbox_permanent_failure.assert_not_awaited()
@@ -243,7 +238,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.bot.send_document.await_args.kwargs["chat_id"], 2039781854
         )
-        self.assertEqual(self.bot.send_message.await_count, 2)
+        self.assertEqual(self.bot.send_message.await_count, 1)
         card = self.bot.send_message.await_args_list[0].kwargs
         self.assertEqual(card["chat_id"], 2039781854)
         self.assertIn("Новая работа на модерацию", card["text"])
@@ -254,7 +249,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(card["reply_markup"].inline_keyboard)
         self.storage.mark_outbox_delivered.assert_awaited_once_with(
             outbox_id=item.id, worker_id="worker-test", now=145,
-            delivery_chat_id=2039781854, delivery_message_ids=(10, 10, 11),
+            delivery_chat_id=2039781854, delivery_message_ids=(10, 11),
         )
 
     async def test_palette_mockup_and_files_are_replies_to_same_packet(self):
@@ -267,7 +262,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             "palette_colors": ["#AABBCC", "#112233", "#445566", "#778899"],
         }
         await self.worker.run_once(now=148)
-        self.assertEqual(self.bot.send_message.await_count, 2)
+        self.assertEqual(self.bot.send_message.await_count, 1)
         self.bot.send_photo.assert_awaited_once()
         kwargs = self.bot.send_photo.await_args.kwargs
         self.assertEqual(kwargs["chat_id"], self.config.moderation_chat_id)
@@ -278,7 +273,7 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(str(item.submission_id), doc["caption"])
         self.storage.mark_outbox_delivered.assert_awaited_once()
         ids = self.storage.mark_outbox_delivered.await_args.kwargs["delivery_message_ids"]
-        self.assertEqual(ids, (10, 10, 12, 11))
+        self.assertEqual(ids, (10, 12, 11))
 
     async def test_incoming_v3_application_delivers_copy_ready_decorated_post_to_moderator(self):
         item = moderation_item()
@@ -306,29 +301,15 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         await self.worker.run_once(now=151)
 
-        self.assertEqual(self.bot.send_message.await_count, 2)
-        card, preview = (call.kwargs for call in self.bot.send_message.await_args_list)
+        self.assertEqual(self.bot.send_message.await_count, 1)
+        card = self.bot.send_message.await_args_list[0].kwargs
         self.assertEqual(card["chat_id"], -100111)
         self.assertTrue(card["reply_markup"].inline_keyboard)
         self.assertIn("Автор: <code>77</code>", card["text"])
-        self.assertEqual(preview["chat_id"], -100111)
-        self.assertEqual(preview["reply_parameters"].message_id, 10)
-        self.assertEqual(preview["parse_mode"], "HTML")
-        self.assertTrue(preview["disable_web_page_preview"])
-        self.assertTrue(preview["text"].startswith("« <b>Название</b> »\n\n"))
-        self.assertIn("• Ангст • Hurt/comfort • Сюрреализм •", preview["text"])
-        self.assertIn(
-            "<tg-spoiler>× Буллинг × &lt;Опасность&gt; &amp; тревога ×</tg-spoiler>",
-            preview["text"],
-        )
-        self.assertIn("#Фандом | #Макси | #Фемслэш | #NC17 | #ВПроцессе", preview["text"])
-        self.assertIn("8️⃣ <a href=", preview["text"])
-        self.assertTrue(preview["text"].endswith(
-            "• • • • • • • • ✦ • • • • • • • •"
-        ))
+        self.assertNotIn("« <b>Название</b> »", card["text"])
         self.storage.mark_outbox_delivered.assert_awaited_once_with(
             outbox_id=item.id, worker_id="worker-test", now=151,
-            delivery_chat_id=-100111, delivery_message_ids=(10, 20, 11),
+            delivery_chat_id=-100111, delivery_message_ids=(10, 11),
         )
 
     async def test_paid_cover_uuid_labels_correct_attachment_not_first_photo(self):
@@ -411,9 +392,6 @@ class WritersDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("…", sent)
         self.assertNotIn("<script>", sent)
         self.assertEqual(context.body_text, original_body)
-        preview = self.bot.send_message.await_args_list[1].kwargs["text"]
-        self.assertLessEqual(len(preview.encode("utf-16-le")) // 2, 3900)
-        self.assertTrue(preview.endswith("• • • • • • • • ✦ • • • • • • • •"))
         self.storage.mark_outbox_delivered.assert_awaited_once()
         self.storage.mark_outbox_permanent_failure.assert_not_awaited()
 
