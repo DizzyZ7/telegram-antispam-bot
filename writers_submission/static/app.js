@@ -388,7 +388,7 @@
         main_genres: genres,
         warnings_present: selectedChoice("warningsPresent"),
         warnings: selectedChoice("warningsPresent") === "yes" ? warningList : [],
-        size_category: sketch ? "" : selectedChoice("sizeCategory"),
+        size_category: sketch ? "" : (selectedChoice("sizeCategory") === "мини" ? "" : selectedChoice("sizeCategory")),
         rating: form.rating.value.trim(),
         completion: sketch ? "" : selectedChoice("completion"),
         size_words: !sketch && selectedChoice("completion") === "завершен" ? positiveNumberOrNull(form.sizeWords) : null,
