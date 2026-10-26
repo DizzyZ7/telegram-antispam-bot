@@ -227,6 +227,26 @@ class PostgresWritersSubmissionStorage:
             async with connection.transaction():
                 await self._initialize_schema(connection)
 
+    async def list_publication_admin(self, category: str, offset: int = 0):
+        conditions = {
+            "review": "s.status IN ('SUBMITTED','IN_REVIEW','CHANGES_REQUESTED')",
+            "approved": "s.status = 'APPROVED' AND q.submission_id IS NULL",
+            "queue": "q.state = 'SCHEDULED'",
+            "published": "q.state = 'PUBLISHED'",
+        }
+        if category not in conditions:
+            raise ValueError("Invalid publication category")
+        return await self._require_pool().fetch(
+            "SELECT s.id, s.status, r.title, q.scheduled_at, q.post_url "
+            "FROM writers_submissions s "
+            "JOIN writers_submission_revisions r ON r.id = "
+            "COALESCE(s.current_submitted_revision_id, s.current_draft_revision_id) "
+            "LEFT JOIN writers_publication_queue q ON q.submission_id = s.id "
+            "WHERE " + conditions[category] +
+            " ORDER BY q.scheduled_at ASC NULLS LAST, s.updated_at DESC, s.id "
+            "LIMIT 5 OFFSET $1", max(0, int(offset)),
+        )
+
     async def _initialize_schema(self, connection: asyncpg.Connection) -> None:
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS writers_publication_queue (
