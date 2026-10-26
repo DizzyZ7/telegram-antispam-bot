@@ -56,3 +56,84 @@ def register_admin_queue(app, storage, config):
         ])
         await callback.message.edit_text("\n\n".join(lines), parse_mode="HTML", reply_markup=markup)
         await callback.answer()
+
+    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:date:")))
+    async def choose_day(callback):
+        if not callback.from_user or callback.from_user.id not in admins:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        try:
+            _, _, work_id, offset_raw = callback.data.split(":")
+            work_id = str(UUID(work_id))
+            offset = int(offset_raw)
+            if not 0 <= offset <= 90:
+                raise ValueError
+        except (ValueError, TypeError):
+            await callback.answer("Неверная дата", show_alert=True)
+            return
+        day = datetime.now(ZoneInfo("Europe/Moscow")).date() + timedelta(days=offset)
+        buttons = []
+        for hour in (10, 12, 15, 18, 20):
+            buttons.append([InlineKeyboardButton(
+                text=f"{hour:02d}:00 МСК",
+                callback_data=f"wadmin:slot:{work_id}:{offset}:{hour}",
+            )])
+        navigation = []
+        if offset:
+            navigation.append(InlineKeyboardButton(text="◀️ День", callback_data=f"wadmin:date:{work_id}:{offset-1}"))
+        if offset < 90:
+            navigation.append(InlineKeyboardButton(text="День ▶️", callback_data=f"wadmin:date:{work_id}:{offset+1}"))
+        if navigation:
+            buttons.append(navigation)
+        await callback.message.edit_text(
+            f"📅 Выберите время публикации на {day:%d.%m.%Y} (Москва):",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+        await callback.answer()
+
+    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:slot:")))
+    async def confirm_slot(callback):
+        if not callback.from_user or callback.from_user.id not in admins:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        try:
+            _, _, work_id, offset_raw, hour_raw = callback.data.split(":")
+            work_id = UUID(work_id)
+            offset, hour = int(offset_raw), int(hour_raw)
+            if not 0 <= offset <= 90 or hour not in (10, 12, 15, 18, 20):
+                raise ValueError
+        except (ValueError, TypeError):
+            await callback.answer("Неверное время", show_alert=True)
+            return
+        local = datetime.now(ZoneInfo("Europe/Moscow")).date() + timedelta(days=offset)
+        slot = datetime(local.year, local.month, local.day, hour, tzinfo=ZoneInfo("Europe/Moscow"))
+        if slot.timestamp() <= datetime.now(timezone.utc).timestamp():
+            await callback.answer("Время уже прошло. Выберите другое.", show_alert=True)
+            return
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"wadmin:save:{work_id}:{int(slot.timestamp())}")],
+            [InlineKeyboardButton(text="◀️ Изменить", callback_data=f"wadmin:date:{work_id}:{offset}")],
+        ])
+        await callback.message.edit_text(f"📚 Назначить публикацию на {slot:%d.%m.%Y %H:%M} МСК?", reply_markup=markup)
+        await callback.answer()
+
+    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:save:")))
+    async def save_slot(callback):
+        if not callback.from_user or callback.from_user.id not in admins:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        try:
+            _, _, work_id, timestamp = callback.data.split(":")
+            work_id, timestamp = UUID(work_id), int(timestamp)
+            if timestamp <= datetime.now(timezone.utc).timestamp():
+                raise ValueError
+        except (ValueError, TypeError):
+            await callback.answer("Дата устарела", show_alert=True)
+            return
+        saved = await storage.schedule_publication(work_id, timestamp, callback.from_user.id)
+        if not saved:
+            await callback.answer("Работа не одобрена или уже опубликована", show_alert=True)
+            return
+        local = datetime.fromtimestamp(timestamp, ZoneInfo("Europe/Moscow"))
+        await callback.message.edit_text(f"✅ Дата сохранена: {local:%d.%m.%Y %H:%M} МСК. Публикация пока не автоматическая.")
+        await callback.answer()
