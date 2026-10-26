@@ -303,6 +303,7 @@ class PostgresWritersSubmissionStorage:
                     SELECT id, 'SCHEDULED', $2, $3, EXTRACT(EPOCH FROM now())::BIGINT
                     FROM writers_submissions WHERE id = $1 AND status = 'APPROVED'
                     ON CONFLICT (submission_id) DO UPDATE SET
+                        state = 'SCHEDULED',
                         scheduled_at = EXCLUDED.scheduled_at,
                         scheduled_by = EXCLUDED.scheduled_by,
                         updated_at = EXCLUDED.updated_at
