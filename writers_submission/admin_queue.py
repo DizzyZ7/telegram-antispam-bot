@@ -15,6 +15,20 @@ def keyboard():
         for key, label in CATEGORIES.items()
     ])
 
+def is_queue_page_callback(data: str | None) -> bool:
+    """Only list pages; never consume date, payment or priority callbacks."""
+    if not data:
+        return False
+    parts = data.split(":")
+    return (
+        len(parts) == 3
+        and parts[0] == "wadmin"
+        and parts[1] in CATEGORIES
+        and parts[2].isdigit()
+        and 0 <= int(parts[2]) <= 10000
+    )
+
+
 def register_admin_queue(app, storage, config):
     admins = set(map(int, config.moderator_ids)) | {int(config.owner_user_id)}
 
@@ -24,7 +38,7 @@ def register_admin_queue(app, storage, config):
             return
         await message.answer("📚 Управление заявками ИКФ", reply_markup=keyboard())
 
-    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:")))
+    @app.dp.callback_query(lambda c: is_queue_page_callback(c.data))
     async def pages(callback):
         if not callback.from_user or callback.from_user.id not in admins:
             await callback.answer("Нет доступа", show_alert=True)
