@@ -320,6 +320,28 @@ class PostgresWritersSubmissionStorage:
                         str(previous["scheduled_at"]) if previous else None,
                         str(int(scheduled_at)),
                     )
+                if row and previous is None:
+                    await conn.execute(
+                        """
+                        INSERT INTO writers_submission_outbox(
+                            id, submission_id, revision_id, event_type, state,
+                            attempt_count, next_attempt_at, payload_json,
+                            dedupe_key, created_at, updated_at
+                        )
+                        SELECT $2, s.id, s.current_submitted_revision_id,
+                               'AUTHOR_NOTIFICATION', 'PENDING', 0,
+                               EXTRACT(EPOCH FROM now())::BIGINT,
+                               '{"action":"APPROVE"}'::text,
+                               'author:' || s.id::text || ':' ||
+                               s.current_submitted_revision_id::text || ':APPROVE',
+                               EXTRACT(EPOCH FROM now())::BIGINT,
+                               EXTRACT(EPOCH FROM now())::BIGINT
+                        FROM writers_submissions s
+                        WHERE s.id = $1 AND s.status = 'APPROVED'
+                          AND s.current_submitted_revision_id IS NOT NULL
+                        ON CONFLICT (dedupe_key) DO NOTHING
+                        """, submission_id, uuid4(),
+                    )
                 return row
 
     async def update_publication_payment(self, submission_id, state: str, admin_id: int):
@@ -2794,37 +2816,39 @@ class PostgresWritersSubmissionStorage:
                     json.dumps({"action": action.value}, separators=(",", ":")),
                     now,
                 )
-                await connection.execute(
-                    """
-                    INSERT INTO writers_submission_outbox(
-                        id,
+                # Approval notification is queued only after a publication date is chosen.
+                if action is not ReviewAction.APPROVE:
+                    await connection.execute(
+                        """
+                        INSERT INTO writers_submission_outbox(
+                            id,
+                            submission_id,
+                            revision_id,
+                            event_type,
+                            state,
+                            attempt_count,
+                            next_attempt_at,
+                            payload_json,
+                            dedupe_key,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES(
+                            $1, $2, $3, 'AUTHOR_NOTIFICATION', 'PENDING',
+                            0, $4, $5, $6, $4, $4
+                        )
+                        ON CONFLICT (dedupe_key) DO NOTHING
+                        """,
+                        uuid4(),
                         submission_id,
                         revision_id,
-                        event_type,
-                        state,
-                        attempt_count,
-                        next_attempt_at,
-                        payload_json,
-                        dedupe_key,
-                        created_at,
-                        updated_at
+                        now,
+                        json.dumps(
+                            {"action": action.value},
+                            separators=(",", ":"),
+                        ),
+                        f"author:{submission_id}:{revision_id}:{action.value}",
                     )
-                    VALUES(
-                        $1, $2, $3, 'AUTHOR_NOTIFICATION', 'PENDING',
-                        0, $4, $5, $6, $4, $4
-                    )
-                    ON CONFLICT (dedupe_key) DO NOTHING
-                    """,
-                    uuid4(),
-                    submission_id,
-                    revision_id,
-                    now,
-                    json.dumps(
-                        {"action": action.value},
-                        separators=(",", ":"),
-                    ),
-                    f"author:{submission_id}:{revision_id}:{action.value}",
-                )
                 # Approval never posts in a public community/channel.
                 # Its separate durable job delivers ONLY to the owner DM.
                 if action is ReviewAction.APPROVE:
