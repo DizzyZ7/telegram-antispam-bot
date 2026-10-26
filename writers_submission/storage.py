@@ -226,7 +226,7 @@ class PostgresWritersSubmissionStorage:
         async with pool.acquire() as connection:
             async with connection.transaction():
                 await self._initialize_schema(connection)
-            await connection.execute("""
+                await connection.execute("""
                 CREATE TABLE IF NOT EXISTS writers_publication_queue (
                     submission_id UUID PRIMARY KEY REFERENCES writers_submissions(id) ON DELETE CASCADE,
                     state TEXT NOT NULL CHECK (state IN ('SCHEDULED', 'PUBLISHED')),
