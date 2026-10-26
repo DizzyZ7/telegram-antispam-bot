@@ -45,7 +45,14 @@ def register_admin_queue(app, storage, config):
             if category == "queue":
                 entry_buttons.append([InlineKeyboardButton(
                     text="⭐ Изменить приоритет · " + str(item["title"])[:24],
-                    callback_data="wadmin:priority:" + str(item["id"]) + ":1",
+                    callback_data="wadmin:priority:" + str(item["id"]) + (":0" if item["priority"] else ":1"),
+                )])
+                entry_buttons.append([
+                    InlineKeyboardButton(text="💳 Оплата", callback_data="wadmin:paymenu:" + str(item["id"])),
+                    InlineKeyboardButton(text="📜 История", callback_data="wadmin:history:" + str(item["id"])),
+                ])
+                entry_buttons.append([InlineKeyboardButton(
+                    text="⏸ Снять с расписания", callback_data="wadmin:unschedule:" + str(item["id"]),
                 )])
             if category in ("approved", "queue"):
                 entry_buttons.append([InlineKeyboardButton(text="📅 " + str(item["title"])[:30], callback_data="wadmin:date:" + str(item["id"]) + ":0")])
@@ -162,3 +169,86 @@ def register_admin_queue(app, storage, config):
             return
         await callback.answer("Приоритет сохранен")
         await callback.message.edit_text("⭐ Приоритет обновлен. Вернитесь в /writers_admin для просмотра очереди.")
+
+    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:paymenu:")))
+    async def payment_menu(callback):
+        if not callback.from_user or callback.from_user.id not in admins:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        try:
+            work_id = UUID(callback.data.split(":")[2])
+        except (ValueError, IndexError):
+            await callback.answer("Неверная заявка", show_alert=True)
+            return
+        choices = (("Ожидает оплаты", "PENDING"), ("Оплата подтверждена", "CONFIRMED"),
+                   ("Оплата не требуется", "NOT_REQUIRED"))
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=label, callback_data=f"wadmin:pay:{work_id}:{state}")]
+            for label, state in choices
+        ])
+        await callback.message.edit_text(
+            "💳 Статус оплаты приоритетного размещения (200 ₽). Подтверждайте только после проверки платежа.",
+            reply_markup=markup,
+        )
+        await callback.answer()
+
+    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:pay:")))
+    async def save_payment(callback):
+        if not callback.from_user or callback.from_user.id not in admins:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        try:
+            _, _, raw_id, state = callback.data.split(":")
+            work_id = UUID(raw_id)
+            if state not in ("NOT_REQUIRED", "PENDING", "CONFIRMED"):
+                raise ValueError
+        except (ValueError, TypeError):
+            await callback.answer("Неверный статус", show_alert=True)
+            return
+        if not await storage.update_publication_payment(work_id, state, callback.from_user.id):
+            await callback.answer("Изменение недоступно", show_alert=True)
+            return
+        await callback.message.edit_text("✅ Статус оплаты сохранен. /writers_admin")
+        await callback.answer()
+
+    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:unschedule:")))
+    async def unschedule(callback):
+        if not callback.from_user or callback.from_user.id not in admins:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        try:
+            work_id = UUID(callback.data.split(":")[2])
+        except (ValueError, IndexError):
+            await callback.answer("Неверная заявка", show_alert=True)
+            return
+        if not await storage.unschedule_publication(work_id, callback.from_user.id):
+            await callback.answer("Нельзя снять с расписания", show_alert=True)
+            return
+        await callback.message.edit_text(
+            "⏸ Дата снята. Заявка одобрена, оплата и история сохранены. /writers_admin"
+        )
+        await callback.answer()
+
+    @app.dp.callback_query(lambda c: bool(c.data and c.data.startswith("wadmin:history:")))
+    async def history(callback):
+        if not callback.from_user or callback.from_user.id not in admins:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        try:
+            work_id = UUID(callback.data.split(":")[2])
+        except (ValueError, IndexError):
+            await callback.answer("Неверная заявка", show_alert=True)
+            return
+        rows = await storage.get_publication_audit(work_id)
+        lines = ["📜 Последние изменения публикации:"]
+        for row in rows:
+            stamp = datetime.fromtimestamp(row["created_at"], ZoneInfo("Europe/Moscow"))
+            lines.append(
+                f"{stamp:%d.%m.%Y %H:%M} · {html.escape(str(row['action']))} · "
+                f"{html.escape(str(row['old_value']))} → {html.escape(str(row['new_value']))} "
+                f"(админ {row['admin_id']})"
+            )
+        await callback.message.edit_text(
+            "\n".join(lines) if rows else "История пока пуста.", parse_mode="HTML"
+        )
+        await callback.answer()
