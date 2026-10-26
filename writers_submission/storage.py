@@ -344,6 +344,34 @@ class PostgresWritersSubmissionStorage:
                     )
                 return row
 
+    async def mark_publication_published(self, submission_id, post_url: str, admin_id: int):
+        """Manual confirmation only: never send a post to the channel."""
+        post_url = post_url.strip()
+        if not (post_url.startswith("https://t.me/") and len(post_url) <= 500):
+            raise ValueError("A Telegram post URL is required")
+        async with self._require_pool().acquire() as conn:
+            async with conn.transaction():
+                old = await conn.fetchrow(
+                    "SELECT state FROM writers_publication_queue "
+                    "WHERE submission_id = $1 FOR UPDATE", submission_id,
+                )
+                if old is None or old["state"] != "SCHEDULED":
+                    return False
+                await conn.execute(
+                    "UPDATE writers_publication_queue SET state = 'PUBLISHED', "
+                    "post_url = $2, published_at = EXTRACT(EPOCH FROM now())::BIGINT, "
+                    "updated_at = EXTRACT(EPOCH FROM now())::BIGINT "
+                    "WHERE submission_id = $1", submission_id, post_url,
+                )
+                await conn.execute(
+                    "INSERT INTO writers_publication_audit "
+                    "(submission_id, admin_id, action, old_value, new_value, created_at) "
+                    "VALUES ($1, $2, 'PUBLISHED', 'SCHEDULED', $3, "
+                    "EXTRACT(EPOCH FROM now())::BIGINT)",
+                    submission_id, int(admin_id), post_url,
+                )
+                return True
+
     async def update_publication_payment(self, submission_id, state: str, admin_id: int):
         if state not in ("NOT_REQUIRED", "PENDING", "CONFIRMED"):
             raise ValueError("Invalid payment state")
