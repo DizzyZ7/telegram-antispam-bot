@@ -333,7 +333,7 @@ _SURREAL_ENDINGS = (
     "Ответственным назначили табуретку. Она не возражала.",
 )
 _SURREAL_OPENERS: dict[GreetingKind, tuple[str, ...]] = {
-    "morning": ("Доброе утро. Срочная сводка:", "Утренняя оперативка:", "Пока вы спали, выяснилось:"),
+    "morning": ("Доброе утро. Срочная сводка:", "Утренняя оперативка:", "Пока город спал, выяснилось:"),
     "night": ("Ночная сводка:", "Перед сном стало известно:", "Спокойной ночи. Последние новости:"),
 }
 
@@ -425,7 +425,13 @@ def choose_greeting_reply(
     style = _context_style(context_messages, rng)
     options = list(_REPLIES[style][kind])
     recent = {_normalized(item) for item in recent_replies if item}
-    if rng.random() < 0.35:
+    # Keep clearly themed replies stable; surreal surprises fit unthemed chat.
+    context_tokens = _tokens(tuple(context_messages)[-8:])
+    has_clear_theme = any(
+        sum(token in keywords for token in context_tokens) >= 2
+        for keywords in _STYLE_KEYWORDS.values()
+    )
+    if not has_clear_theme and rng.random() < 0.35:
         surreal = _surreal_greeting(kind, recent, rng)
         if surreal is not None:
             return GreetingReply(kind=kind, style="surreal", text=surreal)
