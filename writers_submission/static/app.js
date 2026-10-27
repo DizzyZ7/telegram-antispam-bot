@@ -2121,6 +2121,34 @@
       if (!state.current) return;
       await openSubmission(state.current.id);
     });
+    $("supportButton").addEventListener("click", async () => {
+      const consent = window.confirm(
+        "Отправить администратору техническое обращение? Передадим только Telegram ID, платформу и категорию ошибки. Текст анкеты и файлы не отправляются."
+      );
+      if (!consent) return;
+      const button = $("supportButton");
+      button.disabled = true;
+      try {
+        const platform = tg && ["android", "ios", "tdesktop", "web"].includes(tg.platform)
+          ? tg.platform : "unknown";
+        const category = state.bootstrapped ? "save_failed" : "session_failed";
+        const response = await fetch("/api/writers/support", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            init_data: tg && tg.initData ? tg.initData : "",
+            category, platform,
+          }),
+        });
+        if (!response.ok) throw new Error("support request failed");
+        window.alert("Обращение отправлено администрации ИКФ.");
+      } catch (_) {
+        window.alert("Не удалось отправить обращение. Открой анкету заново через бота или напиши администрации напрямую.");
+      } finally {
+        button.disabled = false;
+      }
+    });
     $("saveButton").addEventListener("click", () => { void saveDraftAndFiles(); });
     $("submitButton").addEventListener("click", submitCurrent);
     $("fileInput").addEventListener("change", (event) => {
