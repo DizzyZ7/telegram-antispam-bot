@@ -300,8 +300,9 @@ class EntertainmentService:
             trigger_text=direct_trigger,
         )
         result = GenerationV3().generate(request, rng=self.rng)
-        if result is not None and is_novel_generated_text(
-            result.text, context.source_messages, recent_outputs
+        if (result is not None
+            and is_novel_generated_text(result.text, context.source_messages, recent_outputs)
+            and (not direct_trigger or is_contextually_relevant(result.text, direct_trigger))
         ):
             styled = choose_voice_variant(result.text, recent_outputs, rng=self.rng)
             return apply_emoji_style(
