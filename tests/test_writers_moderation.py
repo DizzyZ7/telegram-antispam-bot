@@ -22,6 +22,14 @@ EVALUATION_PATH = Path(__file__).parents[1] / "data" / "writers_moderation_eval.
 
 
 class ProhibitedLanguageTests(unittest.TestCase):
+    def test_missing_proeb_prefix_in_prediction_and_short_reply(self) -> None:
+        self.assertIsNotNone(detect_prohibited_language(
+            "Сегодня можно проебать день впустую."
+        ))
+        self.assertIsNotNone(detect_prohibited_language("Проебать"))
+        self.assertIsNone(detect_prohibited_language("Сегодня можно провести день полезно."))
+
+
     @staticmethod
     def _load_evaluation_data() -> dict:
         return json.loads(EVALUATION_PATH.read_text(encoding="utf-8"))
