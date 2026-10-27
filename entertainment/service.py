@@ -289,6 +289,27 @@ class EntertainmentService:
         """Generate a novel phrase, then optionally apply local emoji culture."""
         if not context.source_messages:
             return None, None
+        # Use the newer topic-aware composer first; keep v2 as a safe fallback.
+        from .generation_v3 import GenerationMode, GenerationRequest, GenerationV3
+
+        request = GenerationRequest(
+            source_messages=context.source_messages,
+            context_messages=context.context_messages,
+            recent_bot_outputs=recent_outputs,
+            mode=GenerationMode.DIRECT_REPLY if direct_trigger else GenerationMode.AUTONOMOUS,
+            trigger_text=direct_trigger,
+        )
+        # Preserve direct-reply behavior until the v3 conversational contract is fully validated.
+        result = GenerationV3().generate(request, rng=self.rng) if not direct_trigger else None
+        if (result is not None
+            and is_novel_generated_text(result.text, context.source_messages, recent_outputs)
+            and (not direct_trigger or is_contextually_relevant(result.text, direct_trigger))
+        ):
+            styled = choose_voice_variant(result.text, recent_outputs, rng=self.rng)
+            return apply_emoji_style(
+                styled, context, recent_signatures=recent_signatures, rng=self.rng
+            )
+
         for _ in range(5):
             generated = generate_chat_text(
                 context.source_messages,
