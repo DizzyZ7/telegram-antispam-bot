@@ -188,7 +188,7 @@ class EntertainmentServiceAutonomyTests(unittest.IsolatedAsyncioTestCase):
         actions = await self.storage.recent_actions(-1001, 10, since=self.NOW - 1_800)
         self.assertEqual(actions[0].metadata["output"], novel)
 
-    async def test_no_action_is_recorded_when_all_generation_attempts_fail(self) -> None:
+    async def test_surreal_fallback_when_all_corpus_generation_attempts_fail(self) -> None:
         await self.seed_memory()
         copied = "старое сообщение номер 0 про чат и мемы"
         message = FakeMessage(message_id=905)
@@ -199,11 +199,11 @@ class EntertainmentServiceAutonomyTests(unittest.IsolatedAsyncioTestCase):
             await self.service(seed=6).observe_message(message)
 
         self.assertEqual(generator.call_count, 5)
-        self.assertEqual(message.replies, [])
-        self.assertEqual(
-            await self.storage.recent_actions(-1001, 10, since=self.NOW - 1_800),
-            [],
-        )
+        self.assertEqual(len(message.replies), 1)
+        self.assertTrue(message.replies[0])
+        actions = await self.storage.recent_actions(-1001, 10, since=self.NOW - 1_800)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].metadata["output"], message.replies[0])
 
 
 if __name__ == "__main__":
