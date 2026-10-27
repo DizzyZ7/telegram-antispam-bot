@@ -236,7 +236,7 @@ class _RateLimiter:
         # Creating drafts no longer requires live group membership. Keep
         # signed-session users able to save freely, but bound new draft spam.
         # Edits to existing drafts use their own independent rate bucket.
-        limit = min(self.limit, 12) if bucket == "create" else self.limit
+        limit = 3 if bucket == "support" else (min(self.limit, 12) if bucket == "create" else self.limit)
         return count <= limit
 
 
