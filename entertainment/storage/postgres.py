@@ -50,6 +50,16 @@ class PostgresEntertainmentStorage:
             async with connection.transaction():
                 await connection.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS entertainment_daily_meme (
+                        chat_id BIGINT NOT NULL,
+                        local_date DATE NOT NULL,
+                        sent_at BIGINT NOT NULL,
+                        PRIMARY KEY (chat_id, local_date)
+                    )
+                    """
+                )
+                await connection.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS entertainment_chat_settings (
                         chat_id BIGINT PRIMARY KEY,
                         enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -339,6 +349,29 @@ class PostgresEntertainmentStorage:
             messages_120m=int(row["messages_120m"] or 0),
             active_users_60m=int(row["active_users_60m"] or 0),
         )
+
+    async def send_daily_meme_once(self, bot: object, chat_id: int, local_date: object, now: int) -> bool:
+        """Serialize daily senders in PostgreSQL, including across bot replicas."""
+        pool = self._require_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock($1)",
+                    int(chat_id),
+                )
+                already_sent = await connection.fetchval(
+                    "SELECT 1 FROM entertainment_daily_meme WHERE chat_id=$1 AND local_date=$2",
+                    int(chat_id), local_date,
+                )
+                if already_sent:
+                    return False
+                # Failure rolls back the transaction, allowing a later retry.
+                await bot.send_message(chat_id=int(chat_id), text="мем")
+                await connection.execute(
+                    "INSERT INTO entertainment_daily_meme(chat_id, local_date, sent_at) VALUES ($1,$2,$3)",
+                    int(chat_id), local_date, int(now),
+                )
+                return True
 
     async def record_action(self, record: EntertainmentActionRecord) -> int:
         value = await self._require_pool().fetchval(
