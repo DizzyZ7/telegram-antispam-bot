@@ -299,7 +299,8 @@ class EntertainmentService:
             mode=GenerationMode.DIRECT_REPLY if direct_trigger else GenerationMode.AUTONOMOUS,
             trigger_text=direct_trigger,
         )
-        result = GenerationV3().generate(request, rng=self.rng)
+        # Preserve direct-reply behavior until the v3 conversational contract is fully validated.
+        result = GenerationV3().generate(request, rng=self.rng) if not direct_trigger else None
         if (result is not None
             and is_novel_generated_text(result.text, context.source_messages, recent_outputs)
             and (not direct_trigger or is_contextually_relevant(result.text, direct_trigger))
