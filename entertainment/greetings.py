@@ -307,6 +307,51 @@ _REPLIES: dict[str, dict[GreetingKind, tuple[str, ...]]] = {
 }
 
 
+# Grammar-based absurdist greetings: coherent mini-stories, not word salad.
+_SURREAL_ACTORS = (
+    "енот", "голуби", "капибара", "кабачок", "тапок", "холодильник",
+    "чайник", "кот", "жаба", "пельмень", "луна", "будильник",
+)
+_SURREAL_EVENTS = (
+    "открыл министерство потерянных носков",
+    "защитил диссертацию по квантовому борщу",
+    "потребовал внеочередное собрание холодильников",
+    "возглавил тайный профсоюз подушек",
+    "объявил себя временным директором понедельника",
+    "выкупил все акции здравого смысла",
+    "ввел налог на слишком серьезные лица",
+    "отправил солнце на внеплановую переаттестацию",
+)
+_SURREAL_ENDINGS = (
+    "Комиссия просит больше не задавать вопросов.",
+    "В качестве доказательства предъявлен огурец.",
+    "Очевидцы подтверждают: все было абсолютно официально.",
+    "Теперь этим занимается отдел чрезвычайных пельменей.",
+    "Протокол подписан лапой, возражений не поступило.",
+    "Ситуацию контролирует единственный трезвый батон.",
+    "Документы исчезли при загадочных обстоятельствах.",
+    "Ответственным назначили табуретку. Она не возражала.",
+)
+_SURREAL_OPENERS: dict[GreetingKind, tuple[str, ...]] = {
+    "morning": ("Доброе утро. Срочная сводка:", "Утренняя оперативка:", "Пока вы спали, выяснилось:"),
+    "night": ("Ночная сводка:", "Перед сном стало известно:", "Спокойной ночи. Последние новости:"),
+}
+
+
+def _surreal_greeting(kind: GreetingKind, recent: set[str], rng: random.Random) -> str | None:
+    """Bounded sampling from 2,304 combinations; no unbounded retry loops."""
+    for _ in range(24):
+        text = (
+            f"{rng.choice(_SURREAL_OPENERS[kind])} "
+            f"{rng.choice(_SURREAL_ACTORS).capitalize()} "
+            f"{rng.choice(_SURREAL_EVENTS)}. "
+            f"{rng.choice(_SURREAL_ENDINGS)}"
+        )
+        if _normalized(text) not in recent:
+            return text
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class GreetingReply:
     kind: GreetingKind
@@ -380,6 +425,10 @@ def choose_greeting_reply(
     style = _context_style(context_messages, rng)
     options = list(_REPLIES[style][kind])
     recent = {_normalized(item) for item in recent_replies if item}
+    if rng.random() < 0.35:
+        surreal = _surreal_greeting(kind, recent, rng)
+        if surreal is not None:
+            return GreetingReply(kind=kind, style="surreal", text=surreal)
     fresh = [item for item in options if _normalized(item) not in recent]
     if not fresh:
         # When a theme is exhausted, switch themes before repeating a greeting.
