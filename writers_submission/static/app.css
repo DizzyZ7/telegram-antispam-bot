@@ -355,8 +355,41 @@ textarea {
   backdrop-filter: blur(16px);
 }
 
+.sticky-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
 .sticky-actions .button {
-  flex: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: clamp(12px, 3.5vw, 15px);
+  line-height: 1.25;
+  padding: 12px 8px;
+}
+
+.sticky-actions #supportButton {
+  grid-column: 1 / -1;
+  min-height: 42px;
+  padding: 9px 12px;
+  font-size: 14px;
+}
+
+@media (max-width: 420px) {
+  .sticky-actions {
+    bottom: calc(6px + env(safe-area-inset-bottom));
+    padding: 8px;
+    gap: 7px;
+  }
 }
 
 .detail-meta {
