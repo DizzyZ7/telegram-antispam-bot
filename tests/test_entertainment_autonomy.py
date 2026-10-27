@@ -272,12 +272,12 @@ class AutonomousDecisionTests(unittest.TestCase):
         )
         self.assertEqual(select_action(peak, [direct], rng=random.Random(1)), direct)
 
-    def test_non_direct_same_action_type_is_not_repeated_back_to_back(self) -> None:
+    def test_non_direct_same_action_type_allowed_after_cooldown(self) -> None:
         context = self.context(
             recent_actions=(self.action(seconds_ago=500, action_type=EntertainmentActionType.REMIXED_PHRASE),),
             human_messages=10,
         )
-        self.assertIsNone(select_action(context, [self.candidate()], rng=random.Random(1)))
+        self.assertEqual(select_action(context, [self.candidate()], rng=random.Random(1)), self.candidate())
         direct = self.candidate(
             EntertainmentActionType.CONTEXTUAL_REPLY,
             trigger_message_id=888,
