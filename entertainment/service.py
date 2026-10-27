@@ -333,6 +333,23 @@ class EntertainmentService:
                 recent_signatures=recent_signatures,
                 rng=self.rng,
             )
+        # A failed corpus generation should not make autonomous banter silent.
+        # Reuse the safe, bounded absurdist grammar, without affecting direct replies.
+        if not direct_trigger:
+            from .greetings import _surreal_greeting, _normalized
+            from .moderation_safety import is_safe_entertainment_reply
+
+            recent = {_normalized(item) for item in recent_outputs}
+            for _ in range(3):
+                kind = self.rng.choice(("morning", "night"))
+                surreal = _surreal_greeting(kind, recent, self.rng)
+                if surreal is None or not is_safe_entertainment_reply(surreal):
+                    continue
+                if not is_novel_generated_text(
+                    surreal, context.source_messages, recent_outputs
+                ):
+                    continue
+                return surreal, None
         return None, None
 
     @staticmethod
