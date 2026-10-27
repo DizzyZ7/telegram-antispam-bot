@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import asyncpg
+import aiohttp
 from aiohttp import web
 
 from .models import (
@@ -235,7 +236,7 @@ class _RateLimiter:
         # Creating drafts no longer requires live group membership. Keep
         # signed-session users able to save freely, but bound new draft spam.
         # Edits to existing drafts use their own independent rate bucket.
-        limit = min(self.limit, 12) if bucket == "create" else self.limit
+        limit = 3 if bucket == "support" else (min(self.limit, 12) if bucket == "create" else self.limit)
         return count <= limit
 
 
@@ -523,6 +524,52 @@ def create_writers_web_app(
         )
         return response
 
+    async def support_report(request: web.Request) -> web.Response:
+        require_origin(request)
+        payload = await _bounded_json(request)
+        try:
+            identity = verify_telegram_init_data(
+                payload.get("init_data"),
+                bot_token=bot_token,
+                now=int(now_fn()),
+                max_age_seconds=int(config.init_data_max_age_seconds),
+            )
+        except AuthorizationError:
+            return _error("telegram_auth_invalid", status=401)
+        if not rate_limiter.check(user_id=identity.user_id, bucket="support",
+                                  now=int(now_fn())):
+            return _error("rate_limited", status=429)
+        # Only a predefined error category and platform are accepted.
+        category = str(payload.get("category", ""))[:40]
+        if category not in ("save_failed", "submit_failed", "session_failed", "other"):
+            return _error("validation_error", status=422)
+        platform = str(payload.get("platform", ""))[:20]
+        if platform not in ("android", "ios", "tdesktop", "web", "unknown"):
+            platform = "unknown"
+        message = (
+            "🛟 Mini App: обращение в техподдержку\\n"
+            f"Telegram ID: {identity.user_id}\\n"
+            f"Платформа: {platform}\\n"
+            f"Проблема: {category}\\n"
+            "Диагностика: без текста анкеты, файлов, cookies и токенов."
+        )
+        try:
+            timeout = aiohttp.ClientTimeout(total=8)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json={"chat_id": -5507483046, "text": message},
+                ) as response:
+                    result = await response.json(content_type=None)
+                    if response.status != 200 or not result.get("ok"):
+                        LOGGER.warning("WRITERS_SUPPORT_DELIVERY_FAILED status=%s", response.status)
+                        return _error("support_unavailable", status=503)
+        except (aiohttp.ClientError, TimeoutError, ValueError):
+            LOGGER.warning("WRITERS_SUPPORT_DELIVERY_UNAVAILABLE")
+            return _error("support_unavailable", status=503)
+        LOGGER.info("WRITERS_SUPPORT_REPORT_SENT")
+        return _json_response({"status": "sent"})
+
     async def delete_session(request: web.Request) -> web.Response:
         require_origin(request)
         # Verify an existing cookie when present; clearing remains deterministic.
@@ -786,6 +833,7 @@ def create_writers_web_app(
     app.router.add_get("/writers/", mini_app)
     app.router.add_get("/writers/{asset:app\\.(?:js|css)}", static_asset)
     app.router.add_post("/api/writers/session", create_session)
+    app.router.add_post("/api/writers/support", support_report)
     app.router.add_delete("/api/writers/session", delete_session)
     app.router.add_get("/api/writers/submissions", list_submissions)
     app.router.add_post("/api/writers/submissions", create_submission)
