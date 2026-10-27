@@ -134,6 +134,29 @@ class GreetingBehaviorTests(unittest.TestCase):
         normalized = [mod._normalized(item) for item in texts]
         self.assertEqual(len(normalized), len(set(normalized)))
 
+    def test_surreal_greetings_are_diverse_and_not_recent_repeats(self) -> None:
+        mod = self.module()
+        rng = random.Random(2026)
+        seen = set()
+        for kind in ("morning", "night"):
+            for _ in range(60):
+                text = mod._surreal_greeting(kind, {mod._normalized(x) for x in seen}, rng)
+                self.assertIsNotNone(text)
+                self.assertNotIn(text, seen)
+                self.assertTrue(mod._normalized(text))
+                seen.add(text)
+        self.assertEqual(len(seen), 120)
+
+    def test_surreal_greetings_pass_output_safety(self) -> None:
+        mod = self.module()
+        from entertainment.moderation_safety import is_safe_entertainment_reply
+        rng = random.Random(77)
+        for kind in ("morning", "night"):
+            for _ in range(80):
+                text = mod._surreal_greeting(kind, set(), rng)
+                self.assertIsNotNone(text)
+                self.assertTrue(is_safe_entertainment_reply(text), text)
+
     def test_all_curated_replies_avoid_personal_attacks(self) -> None:
         mod = self.module()
         banned = {
