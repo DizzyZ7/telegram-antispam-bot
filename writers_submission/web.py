@@ -398,8 +398,33 @@ def create_writers_web_app(
                 status=500,
             )
 
+    @web.middleware
+    async def writers_request_diagnostics(
+        request: web.Request,
+        handler: Callable[[web.Request], Any],
+    ) -> web.StreamResponse:
+        # No query strings, user identifiers, headers, cookies or payloads in logs.
+        if not request.path.startswith("/api/writers/"):
+            return await handler(request)
+        started = time.monotonic()
+        status = 500
+        try:
+            response = await handler(request)
+            status = response.status
+            return response
+        except web.HTTPException as exc:
+            status = exc.status
+            raise
+        finally:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            if status >= 400 or request.method != "GET":
+                LOGGER.warning(
+                    "WRITERS_HTTP_REQUEST method=%s path=%s status=%s elapsed_ms=%s",
+                    request.method, request.path, status, elapsed_ms,
+                )
+
     app = web.Application(
-        middlewares=[security_headers, domain_errors],
+        middlewares=[writers_request_diagnostics, security_headers, domain_errors],
         client_max_size=max(
             _JSON_BODY_LIMIT,
             int(config.max_file_bytes) + 128 * 1024,
