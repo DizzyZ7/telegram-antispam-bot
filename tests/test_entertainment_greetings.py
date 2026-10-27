@@ -109,6 +109,31 @@ class GreetingBehaviorTests(unittest.TestCase):
         self.assertEqual(second.style, "art")
         self.assertNotEqual(first.text, second.text)
 
+    def test_broad_meme_themes_have_morning_and_night_variants(self) -> None:
+        mod = self.module()
+        for theme in ("gaming", "animals", "cosmos", "food", "office"):
+            with self.subTest(theme=theme):
+                self.assertGreaterEqual(len(mod._REPLIES[theme]["morning"]), 5)
+                self.assertGreaterEqual(len(mod._REPLIES[theme]["night"]), 5)
+
+    def test_exhausted_theme_switches_to_a_fresh_greeting(self) -> None:
+        mod = self.module()
+        exhausted = tuple(mod._REPLIES["technical"]["morning"])
+        reply = mod.choose_greeting_reply(
+            "morning",
+            context_messages=("сервер код деплой",),
+            recent_replies=exhausted,
+            rng=random.Random(9),
+        )
+        self.assertEqual(reply.style, "technical")
+        self.assertNotIn(reply.text, exhausted)
+
+    def test_curated_greetings_are_unique_after_normalization(self) -> None:
+        mod = self.module()
+        texts = list(mod.iter_greeting_texts())
+        normalized = [mod._normalized(item) for item in texts]
+        self.assertEqual(len(normalized), len(set(normalized)))
+
     def test_all_curated_replies_avoid_personal_attacks(self) -> None:
         mod = self.module()
         banned = {
