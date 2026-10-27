@@ -458,8 +458,16 @@ class EntertainmentService:
         return stored_record
 
     async def run_supervisor_tick(self) -> None:
-        """Evaluate only recently active in-process scopes; never scan full history."""
+        """Evaluate recently active scopes and dispatch the once-daily meme."""
         now = int(self._now_fn())
+        if -1002619489118 in self.chat_ids:
+            sender = getattr(self.storage, "send_daily_meme_once", None)
+            if callable(sender):
+                try:
+                    moscow_date = datetime.fromtimestamp(now, ZoneInfo("Europe/Moscow")).date()
+                    await sender(self.app.bot, -1002619489118, moscow_date, now)
+                except Exception:
+                    LOGGER.exception("ENTERTAINMENT_DAILY_MEME_FAILED")
         for key, message in list(self._active_topics.items()):
             chat_id, topic_id = key
             try:
