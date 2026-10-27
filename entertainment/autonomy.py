@@ -211,12 +211,9 @@ def select_action(
             continue
         if context.phase is ConversationPhase.PEAK and not candidate.is_direct:
             continue
-        if (
-            last_action is not None
-            and candidate.action_type is last_action.action_type
-            and not candidate.is_direct
-        ):
-            continue
+        # Do not permanently silence the only autonomous text candidate.
+        # The presence budget already enforces cooldowns and message gaps;
+        # repeating an action *type* is not repeating its generated content.
 
         score = _candidate_score(candidate, rng)
         if score < 0.45:
