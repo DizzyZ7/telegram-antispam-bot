@@ -1,11 +1,19 @@
 import random
 import unittest
 
-from entertainment.grammar_composer import generate_grammar_message, _agree_past, _vocabulary
+from entertainment.grammar_composer import generate_grammar_message, _agree_past, _vocabulary, _adjectives, _agree_adjective
 from entertainment.moderation_safety import is_safe_entertainment_reply
 
 
 class GrammarComposerTests(unittest.TestCase):
+    def test_adjective_agreement(self):
+        self.assertEqual(_agree_adjective("странный", "masc"), "странный")
+        self.assertEqual(_agree_adjective("странный", "femn"), "странная")
+        self.assertEqual(_agree_adjective("странный", "neut"), "странное")
+
+    def test_learns_adjective_lemmas(self):
+        self.assertIn("странный", _adjectives(["Странная сковорода", "Странные роботы"]))
+
     def test_gender_agreement(self):
         self.assertEqual(_agree_past("объявил", "femn"), "объявила")
         self.assertEqual(_agree_past("объявил", "neut"), "объявило")
