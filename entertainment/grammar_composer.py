@@ -66,7 +66,7 @@ def _vocabulary(messages: list[str]) -> list[tuple[str, str]]:
             if word in _STOP or not is_safe_entertainment_reply(word):
                 continue
             parsed = analyzer().parse(word)[0]
-            if parsed.tag.POS != "NOUN" or parsed.tag.number == "plur":
+            if parsed.tag.POS != "NOUN":
                 continue
             if parsed.tag.animacy != "inan" or parsed.tag.gender not in {"masc", "femn", "neut"}:
                 continue
@@ -76,7 +76,7 @@ def _vocabulary(messages: list[str]) -> list[tuple[str, str]]:
             lemma = nominative.word
             if len(lemma) < 3 or lemma in _STOP or not is_safe_entertainment_reply(lemma):
                 continue
-            counts[(lemma, str(parsed.tag.gender))] += 1
+            counts[(lemma, str(lemma_tag.gender))] += 1
     return [entry for entry, _ in counts.most_common(64)]
 
 
