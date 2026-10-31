@@ -333,6 +333,15 @@ class EntertainmentService:
                 recent_signatures=recent_signatures,
                 rng=self.rng,
             )
+        # When corpus generation cannot form a coherent novel phrase, build
+        # a complete Russian sentence from vocabulary rather than copy chat.
+        if not direct_trigger:
+            from .grammar_composer import generate_grammar_message
+            composed = generate_grammar_message(
+                context.source_messages, recent_outputs, self.rng
+            )
+            if composed is not None:
+                return composed, None
         # A failed corpus generation should not make autonomous banter silent.
         # Reuse the safe, bounded absurdist grammar, without affecting direct replies.
         if not direct_trigger:
