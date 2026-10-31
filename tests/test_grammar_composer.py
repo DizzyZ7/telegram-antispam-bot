@@ -5,7 +5,18 @@ from entertainment.grammar_composer import generate_grammar_message, _agree_past
 from entertainment.moderation_safety import is_safe_entertainment_reply
 
 
-class GrammarComposerTests(unittest.TestCase):\n    def test_gender_agreement(self):\n        self.assertEqual(_agree_past("объявил", "femn"), "объявила")\n        self.assertEqual(_agree_past("объявил", "neut"), "объявило")\n        self.assertEqual(_agree_past("объявил", "masc"), "объявил")\n\n    def test_learns_noun_lemmas_not_chat_verbs(self):\n        words = _vocabulary(["Холодильники работают", "Сковорода приехала", "Сковороды"])\n        self.assertIn(("сковорода", "femn"), words)\n        self.assertIn(("холодильник", "masc"), words)\n        self.assertNotIn(("работают", "masc"), words)\n
+class GrammarComposerTests(unittest.TestCase):
+    def test_gender_agreement(self):
+        self.assertEqual(_agree_past("объявил", "femn"), "объявила")
+        self.assertEqual(_agree_past("объявил", "neut"), "объявило")
+        self.assertEqual(_agree_past("объявил", "masc"), "объявил")
+
+    def test_learns_noun_lemmas_not_chat_verbs(self):
+        words = _vocabulary(["Холодильники работают", "Сковорода приехала", "Сковороды"])
+        self.assertIn(("сковорода", "femn"), words)
+        self.assertIn(("холодильник", "masc"), words)
+        self.assertNotIn(("работают", "masc"), words)
+
     def test_new_complete_safe_sentences(self):
         sources = ["Кот гуляет", "Робот работает", "Пельмень приехал"]
         text = generate_grammar_message(sources, [], random.Random(4))
