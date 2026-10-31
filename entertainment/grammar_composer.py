@@ -9,6 +9,9 @@ from __future__ import annotations
 import random
 import re
 from collections import Counter
+from functools import lru_cache
+
+import pymorphy3
 
 from .moderation_safety import is_safe_entertainment_reply
 from .novelty import is_novel_generated_text
@@ -48,15 +51,13 @@ _ENDINGS = (
 _OPENERS = ("Срочные новости:", "По последним данным,", "Тем временем", "Выяснилось:")
 
 
+@lru_cache(maxsize=1)
+def _analyzer() -> pymorphy3.MorphAnalyzer:
+    return pymorphy3.MorphAnalyzer()
+
+
 def _vocabulary(messages: list[str]) -> list[tuple[str, str]]:
-    """Extract noun lemmas, rejecting verbs, inflected forms and unsafe words."""
-    from functools import lru_cache
-
-    import pymorphy3
-
-    @lru_cache(maxsize=1)
-    def analyzer() -> pymorphy3.MorphAnalyzer:
-        return pymorphy3.MorphAnalyzer()
+    """Extract inanimate noun lemmas, rejecting verbs and unsafe words."""
 
     counts: Counter[tuple[str, str]] = Counter()
     for message in messages:
@@ -65,15 +66,16 @@ def _vocabulary(messages: list[str]) -> list[tuple[str, str]]:
         for word in set(_WORD.findall(message.casefold().replace("ё", "е"))):
             if word in _STOP or not is_safe_entertainment_reply(word):
                 continue
-            parsed = analyzer().parse(word)[0]
+            parsed = _analyzer().parse(word)[0]
             if parsed.tag.POS != "NOUN":
-                continue
-            if parsed.tag.animacy != "inan" or parsed.tag.gender not in {"masc", "femn", "neut"}:
                 continue
             nominative = parsed.inflect({"nomn", "sing"})
             if nominative is None:
                 continue
             lemma = nominative.word
+            lemma_tag = _analyzer().parse(lemma)[0].tag
+            if lemma_tag.animacy != "inan" or lemma_tag.gender not in {"masc", "femn", "neut"}:
+                continue
             if len(lemma) < 3 or lemma in _STOP or not is_safe_entertainment_reply(lemma):
                 continue
             counts[(lemma, str(lemma_tag.gender))] += 1
