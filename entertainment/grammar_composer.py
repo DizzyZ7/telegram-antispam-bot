@@ -100,7 +100,8 @@ def generate_grammar_message(
         return None
     for _ in range(32):
         subject, gender = rng.choice(subjects)
-        verb, object_phrase = rng.choice(_ACTIONS)\n        verb = _agree_past(verb, gender)
+        verb, object_phrase = rng.choice(_ACTIONS)
+        verb = _agree_past(verb, gender)
         opener = rng.choice(_OPENERS)
         ending = rng.choice(_ENDINGS)
         if opener == "Тем временем":
