@@ -82,9 +82,9 @@ def _vocabulary(messages: list[str]) -> list[tuple[str, str]]:
 
 def _agree_past(verb: str, gender: str) -> str:
     if gender == "femn":
-        return verb[:-1] + "а"
+        return verb + "а"
     if gender == "neut":
-        return verb[:-1] + "о"
+        return verb + "о"
     return verb
 
 
