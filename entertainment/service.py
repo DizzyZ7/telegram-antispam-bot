@@ -289,6 +289,13 @@ class EntertainmentService:
         """Generate a novel phrase, then optionally apply local emoji culture."""
         if not context.source_messages:
             return None, None
+        # Autonomous messages must stand alone: corpus fragments are not jokes.
+        # Contextual replies still use the existing topic-aware generation.
+        if not direct_trigger:
+            from .autonomous_humor import choose_autonomous_joke
+            joke = choose_autonomous_joke(recent_outputs, self.rng)
+            if joke is not None:
+                return joke, None
         # Use the newer topic-aware composer first; keep v2 as a safe fallback.
         from .generation_v3 import GenerationMode, GenerationRequest, GenerationV3
 
