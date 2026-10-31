@@ -82,6 +82,32 @@ def _vocabulary(messages: list[str]) -> list[tuple[str, str]]:
     return [entry for entry, _ in counts.most_common(64)]
 
 
+def _adjectives(messages: list[str]) -> list[str]:
+    """Collect adjective lemmas; inflect only through pymorphy3."""
+    counts: Counter[str] = Counter()
+    for message in messages:
+        if "http://" in message or "https://" in message or "@" in message:
+            continue
+        for word in set(_WORD.findall(message.casefold().replace("ё", "е"))):
+            if word in _STOP or not is_safe_entertainment_reply(word):
+                continue
+            parsed = _analyzer().parse(word)[0]
+            if parsed.tag.POS != "ADJF":
+                continue
+            lemma = parsed.normal_form
+            if len(lemma) >= 4 and is_safe_entertainment_reply(lemma):
+                counts[lemma] += 1
+    return [word for word, _ in counts.most_common(48)]
+
+
+def _agree_adjective(adjective: str, gender: str) -> str | None:
+    parsed = _analyzer().parse(adjective)[0]
+    if parsed.tag.POS != "ADJF":
+        return None
+    inflected = parsed.inflect({"nomn", "sing", gender})
+    return inflected.word if inflected else None
+
+
 def _agree_past(verb: str, gender: str) -> str:
     if gender == "femn":
         return verb + "а"
@@ -97,21 +123,26 @@ def generate_grammar_message(
 ) -> str | None:
     """Compose a new complete sentence; reject unsafe/replayed output."""
     learned = _vocabulary(source_messages)
+    adjectives = _adjectives(source_messages)
     subjects = list(dict.fromkeys([*learned[:24], *((seed, "masc") for seed in _SEEDS)]))
     if not subjects:
         return None
     for _ in range(32):
         subject, gender = rng.choice(subjects)
+        modifier = None
+        if adjectives and rng.random() < 0.7:
+            modifier = _agree_adjective(rng.choice(adjectives), gender)
+        described_subject = f"{modifier} {subject}" if modifier else subject
         verb, object_phrase = rng.choice(_ACTIONS)
         verb = _agree_past(verb, gender)
         opener = rng.choice(_OPENERS)
         ending = rng.choice(_ENDINGS)
         if opener == "Тем временем":
-            candidate = f"{opener} {subject} {verb} {object_phrase}. {ending}"
+            candidate = f"{opener} {described_subject} {verb} {object_phrase}. {ending}"
         elif opener == "По последним данным,":
             candidate = f"{opener} {subject} {verb} {object_phrase}. {ending}"
         else:
-            candidate = f"{opener} {subject.capitalize()} {verb} {object_phrase}. {ending}"
+            candidate = f"{opener} {described_subject.capitalize()} {verb} {object_phrase}. {ending}"
         if (is_safe_entertainment_reply(candidate)
             and is_novel_generated_text(candidate, source_messages, recent_outputs)):
             return candidate
