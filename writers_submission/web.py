@@ -32,6 +32,7 @@ from .security import (
     verify_telegram_init_data,
 )
 from .uploads import BODY_MAX, validate_submission_fields
+from .support import support_message
 
 _JSON_BODY_LIMIT = BODY_MAX * 12 + 64 * 1024
 _IDEMPOTENCY_KEY_MAX = 128
@@ -338,8 +339,8 @@ def create_writers_web_app(
             asyncpg.exceptions.InterfaceError,
         ) as exc:
             LOGGER.warning(
-                "WRITERS_FORM_DATABASE_UNAVAILABLE method=%s error_type=%s",
-                request.method, type(exc).__name__,
+                "WRITERS_FORM_DATABASE_UNAVAILABLE reference=%s method=%s error_type=%s",
+                request.get("writers_reference", ""), request.method, type(exc).__name__,
             )
             response = _error("database_unavailable", status=503)
             response.headers["Retry-After"] = "5"
@@ -389,7 +390,7 @@ def create_writers_web_app(
             }.get(exc.status, "http_error")
             return _error(code, status=exc.status)
         except Exception:
-            reference = uuid4().hex[:12]
+            reference = request.get("writers_reference") or uuid4().hex[:12]
             LOGGER.exception(
                 "WRITERS_FORM_UNHANDLED_ERROR reference=%s method=%s",
                 reference, request.method,
@@ -407,22 +408,27 @@ def create_writers_web_app(
         # No query strings, user identifiers, headers, cookies or payloads in logs.
         if not request.path.startswith("/api/writers/"):
             return await handler(request)
+        reference = uuid4().hex[:12]
+        request["writers_reference"] = reference
         started = time.monotonic()
         status = 500
         try:
             response = await handler(request)
             status = response.status
+            response.headers["X-Request-ID"] = reference
             return response
         except web.HTTPException as exc:
             status = exc.status
             raise
         finally:
             elapsed_ms = int((time.monotonic() - started) * 1000)
-            if status >= 400 or request.method != "GET":
-                LOGGER.warning(
-                    "WRITERS_HTTP_REQUEST method=%s path=%s status=%s elapsed_ms=%s",
-                    request.method, request.path, status, elapsed_ms,
-                )
+            log = LOGGER.warning if status >= 400 else LOGGER.info
+            log(
+                "WRITERS_HTTP_REQUEST reference=%s method=%s path=%s status=%s elapsed_ms=%s",
+                reference, request.method,
+                getattr(request.match_info.route.resource, "canonical", "/api/writers/unknown"),
+                status, elapsed_ms,
+            )
 
     app = web.Application(
         middlewares=[writers_request_diagnostics, security_headers, domain_errors],
@@ -535,23 +541,28 @@ def create_writers_web_app(
                 max_age_seconds=int(config.init_data_max_age_seconds),
             )
         except AuthorizationError:
-            return _error("telegram_auth_invalid", status=401)
-        if not rate_limiter.check(user_id=identity.user_id, bucket="support",
+            # Support remains available when launch data expires but the
+            # authenticated editor session is still valid. No database needed.
+            try:
+                user_id = actor_id(request)
+            except AuthorizationError:
+                return _error("telegram_auth_invalid", status=401)
+            username = None
+        else:
+            user_id, username = identity.user_id, identity.username
+        if not rate_limiter.check(user_id=user_id, bucket="support",
                                   now=int(now_fn())):
             return _error("rate_limited", status=429)
-        # Only a predefined error category and platform are accepted.
+        # All diagnostic fields are strictly allowlisted by support_message.
         category = str(payload.get("category", ""))[:40]
         if category not in ("save_failed", "submit_failed", "session_failed", "other"):
             return _error("validation_error", status=422)
-        platform = str(payload.get("platform", ""))[:20]
-        if platform not in ("android", "ios", "tdesktop", "web", "unknown"):
-            platform = "unknown"
-        message = (
-            "🛟 Mini App: обращение в техподдержку\\n"
-            f"Telegram ID: {identity.user_id}\\n"
-            f"Платформа: {platform}\\n"
-            f"Проблема: {category}\\n"
-            "Диагностика: без текста анкеты, файлов, cookies и токенов."
+        reference = request["writers_reference"]
+        message = support_message(
+            user_id=user_id, username=username, category=category,
+            platform=payload.get("platform"), diagnostics=payload.get("diagnostics"),
+            user_agent=request.headers.get("User-Agent", ""), reference=reference,
+            now=int(now_fn()),
         )
         try:
             timeout = aiohttp.ClientTimeout(total=8)
@@ -567,8 +578,8 @@ def create_writers_web_app(
         except (aiohttp.ClientError, TimeoutError, ValueError):
             LOGGER.warning("WRITERS_SUPPORT_DELIVERY_UNAVAILABLE")
             return _error("support_unavailable", status=503)
-        LOGGER.info("WRITERS_SUPPORT_REPORT_SENT")
-        return _json_response({"status": "sent"})
+        LOGGER.info("WRITERS_SUPPORT_REPORT_SENT reference=%s", reference)
+        return _json_response({"status": "sent", "reference": reference})
 
     async def delete_session(request: web.Request) -> web.Response:
         require_origin(request)
