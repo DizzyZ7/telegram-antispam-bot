@@ -95,7 +95,8 @@
     });
   }
 
-  function setBanner(message, kind = "") {
+  function setBanner(message, kind = "", error = null, operation = "other") {
+    if (error) recordLocalSupportFailure(error, operation);
     const banner = $("connectionBanner");
     banner.textContent = message || "";
     banner.className = "banner";
@@ -105,7 +106,8 @@
     banner.classList.toggle("hidden", !message);
   }
 
-  function setEditorError(message) {
+  function setEditorError(message, error = null, operation = "other") {
+    if (error) recordLocalSupportFailure(error, operation);
     const banner = $("editorError");
     banner.textContent = message || "";
     banner.classList.toggle("hidden", !message);
@@ -208,27 +210,179 @@
     const error = new Error(explanation);
     error.code = code || "request_failed";
     error.status = status;
+    error.field = supportValidationField(details);
+    error.rule = supportValidationRule(details);
+    error.reference = supportReference(reference);
     return error;
+  }
+
+  // Memory only: stable technical fields, never form values, filenames,
+  // URLs, initData, cookie contents, raw error messages or stack traces.
+  const supportDiagnostics = { lastFailure: null, recentRequests: [] };
+  const supportErrorCodes = new Set([
+    "ok", "request_failed", "network_error", "request_timeout", "invalid_response",
+    "unauthorized", "telegram_auth_invalid", "session_restored_unconfirmed",
+    "not_found", "conflict", "payload_too_large", "rate_limited", "validation_error",
+    "database_unavailable", "expected_version_required", "idempotency_key_required",
+    "idempotency_key_invalid", "telegram_file_staging_unavailable", "eligibility_unavailable",
+    "not_eligible", "bad_request", "forbidden", "origin_forbidden", "internal_error",
+    "upstream_unavailable", "service_unavailable", "gateway_timeout", "http_error",
+    "upload_network_error", "upload_timeout", "upload_invalid_response", "upload_aborted",
+    "client_error", "client_validation_failed", "telegram_unavailable", "init_data_missing",
+  ]);
+
+  function supportReference(value) {
+    return typeof value === "string" && /^[a-f0-9]{12}$/i.test(value) ? value : "";
+  }
+
+  function supportValidationField(message) {
+    const text = String(message || "");
+    const fields = [
+      [/description|описани|минимум 3.*предложени/i, "description"], [/title|названи/i, "title"],
+      [/main_genres/i, "main_genres"], [/genre|жанр/i, "genre"],
+      [/warnings?|предупреждени/i, "warnings"], [/extra_links/i, "extra_links"],
+      [/external_url|ссылк/i, "external_url"], [/body_text/i, "body_text"],
+      [/palette_colors/i, "palette_colors"], [/cover_file_id/i, "cover_file_id"],
+      [/fandom|фандом/i, "fandom"], [/work_type/i, "work_type"],
+      [/file|PNG|JPEG|DOCX|TXT|файл|изображени/i, "file"],
+    ];
+    const match = fields.find(([pattern]) => pattern.test(text));
+    return match ? match[1] : "unknown";
+  }
+
+  function supportValidationRule(message) {
+    const text = String(message || "");
+    const rules = [
+      [/three sentences|не менее трех.*предложени|минимум 3.*предложени/i, "description_sentences"],
+      [/max 110 words|110 слов/i, "description_words"],
+      [/max 35 words|35 слов|230 символ/i, "sketch_description_length"],
+      [/maximum file count|максимум три файла/i, "file_count"],
+      [/file size|file.*maximum|20 МБ/i, "file_size"],
+      [/unsupported file extension|формат файла/i, "file_extension"],
+      [/MIME type.*match/i, "file_type_mismatch"],
+      [/file is empty|файл пуст/i, "file_empty"],
+      [/signature|header is invalid|ending is invalid|container is invalid|structure is invalid|поврежден/i, "file_invalid"],
+      [/UTF-8/i, "file_encoding"],
+      [/main_genres must have/i, "genre_count"],
+      [/must not repeat/i, "duplicates"],
+      [/warnings require|provide at least one content warning/i, "warnings_selection"],
+      [/HTTPS/i, "https_required"],
+      [/is required|нужно указать|заполни/i, "required"],
+      [/maximum length|слишком длин/i, "max_length"],
+    ];
+    const match = rules.find(([pattern]) => pattern.test(text));
+    return match ? match[1] : "unknown";
+  }
+
+  function supportOperation(path, method) {
+    const clean = String(path).split(/[?#]/)[0];
+    if (clean === "/api/writers/session") return "session";
+    if (clean === "/api/writers/submissions") return method === "POST" ? "create" : "list";
+    if (/\/files\/[^/]+$/.test(clean)) return "delete_file";
+    if (/\/files$/.test(clean)) return "upload";
+    if (/\/submit$/.test(clean)) return "submit";
+    if (/\/history$/.test(clean)) return "history";
+    if (/\/withdraw$/.test(clean)) return "withdraw";
+    if (/\/revisions$/.test(clean)) return "revision";
+    if (/^\/api\/writers\/submissions\/[^/]+$/.test(clean)) return method === "PATCH" ? "save" : "open";
+    return "other";
+  }
+
+  function recordSupportRequest(path, method, status, error, reference, started, preserveFailure = false) {
+    const event = {
+      operation: supportOperation(path, method), method,
+      status: Number.isInteger(status) && status >= 0 && status <= 599 ? status : 0,
+      code: error ? (supportErrorCodes.has(error.code) ? error.code : "request_failed") : "ok",
+      field: error && error.field || "unknown",
+      rule: error && error.rule || "unknown",
+      reference: supportReference(reference || error && error.reference),
+      at_ms: Date.now(), elapsed_ms: Math.max(0, Math.min(3600000, Date.now() - started)),
+    };
+    supportDiagnostics.recentRequests.push(event);
+    supportDiagnostics.recentRequests = supportDiagnostics.recentRequests.slice(-8);
+    // Recovery reads AND their session refresh belong to the initiating
+    // mutation. A later independent action may report its own newer failure.
+    if (error && (!preserveFailure || !supportDiagnostics.lastFailure)) {
+      supportDiagnostics.lastFailure = event;
+    }
+    if (error) error.supportRecorded = true;
+    return event;
+  }
+
+  function recordLocalSupportFailure(error, operation) {
+    if (error.supportRecorded) return;
+    const field = supportValidationField(error.message);
+    const diagnostic = {
+      code: error.code || (field !== "unknown" ? "client_validation_failed" : "client_error"),
+      field, rule: supportValidationRule(error.message),
+    };
+    const previous = supportDiagnostics.recentRequests[supportDiagnostics.recentRequests.length - 1];
+    const confirmation = error.code === "invalid_response" && previous && previous.code === "ok" &&
+      (previous.operation === operation || operation === "save" && previous.operation === "create");
+    const paths = { save: "/api/writers/submissions", submit: "/api/writers/submissions/local/submit", session: "/api/writers/session" };
+    const event = recordSupportRequest(paths[operation] || "", confirmation ? previous.method : "LOCAL",
+      confirmation ? previous.status : 0, diagnostic, confirmation ? previous.reference : "",
+      Date.now() - (confirmation ? previous.elapsed_ms : 0));
+    event.operation = operation;
+    error.supportRecorded = true;
+  }
+
+  function supportReportPayload() {
+    const last = supportDiagnostics.lastFailure;
+    const operation = last && last.operation;
+    const category = ["create", "save"].includes(operation) ? "save_failed"
+      : operation === "submit" ? "submit_failed" : operation === "session" ? "session_failed" : "other";
+    const platform = tg && ["android", "android_x", "ios", "tdesktop", "macos", "web", "weba", "webk", "unigram"].includes(tg.platform)
+      ? tg.platform : "unknown";
+    const current = state.current || {};
+    return {
+      init_data: tg && tg.initData ? tg.initData : "", category, platform,
+      diagnostics: {
+        schema: 1, build: "support-v1",
+        telegram_version: tg && /^[0-9]{1,4}(\.[0-9]{1,4}){0,3}$/.test(tg.version) ? tg.version : "unknown",
+        online: typeof navigator !== "undefined" && typeof navigator.onLine === "boolean" ? navigator.onLine : null,
+        bootstrapped: Boolean(state.bootstrapped), reload_required: Boolean(state.reloadRequired),
+        dirty: state.editSequence > state.savedSequence,
+        saving: Boolean(state.autosavePending), uploading: Boolean(state.uploadPending || state.uploadPreparing),
+        submitting: Boolean(state.submitting),
+        submission_id: typeof current.id === "string" && /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(current.id) ? current.id : null,
+        submission_version: Number.isSafeInteger(Number(current.version)) ? Number(current.version) : 0,
+        submission_status: ["DRAFT", "SUBMITTED", "IN_REVIEW", "APPROVED", "CHANGES_REQUESTED", "REJECTED", "WITHDRAWN"].includes(current.status) ? current.status : "unknown",
+        attachment_count: Math.min(3, state.attachments.length), pending_file_count: Math.min(3, state.pendingFiles.length),
+        last_failure: last, recent_requests: supportDiagnostics.recentRequests.slice(),
+      },
+    };
   }
 
   // Refresh a signed session once. Never trust initDataUnsafe for authentication.
   let sessionRefreshPromise = null;
-  async function refreshTelegramSession() {
+  async function refreshTelegramSession(preserveFailure = false) {
     if (!tg || !tg.initData) return false;
     if (!sessionRefreshPromise) {
+      const started = Date.now();
       sessionRefreshPromise = fetch("/api/writers/session", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ init_data: tg.initData }),
-      }).then(response => response.status === 204)
-        .catch(() => false)
+      }).then(response => {
+        const restored = response.status === 204;
+        recordSupportRequest("/api/writers/session", "POST", response.status,
+          restored ? null : { code: "telegram_auth_invalid" }, response.headers?.get?.("X-Request-ID"), started, preserveFailure);
+        return restored;
+      })
+        .catch(() => {
+          recordSupportRequest("/api/writers/session", "POST", 0, { code: "network_error" }, "", started, preserveFailure);
+          return false;
+        })
         .finally(() => { sessionRefreshPromise = null; });
     }
     return sessionRefreshPromise;
   }
 
   async function api(path, options = {}) {
+    const started = Date.now();
+    const preserveFailure = options.diagnosticRecovery === true;
     const request = {
       method: options.method || "GET",
       credentials: "same-origin",
@@ -240,6 +394,16 @@
     } else if (options.body !== undefined) {
       request.body = options.body;
     }
+    const verify = (payload, status, reference) => {
+      if (typeof options.verify !== "function") return;
+      try {
+        options.verify(payload);
+      } catch (error) {
+        error.code ||= "invalid_response";
+        recordSupportRequest(path, request.method, status, error, reference, started, preserveFailure);
+        throw error;
+      }
+    };
 
     const timeoutMs = options.timeoutMs || 30000;
     const controller = typeof AbortController === "function" ? new AbortController() : null;
@@ -254,7 +418,7 @@
       // valid request. Refresh signed initData and retry reads only.
       // Mutations are reconciled by their callers before any retry.
       if (response.status === 401 && path !== "/api/writers/session") {
-        const restored = await refreshTelegramSession();
+        const restored = await refreshTelegramSession(preserveFailure);
         if (restored && request.method === "GET") {
           response = await fetch(path, request);
         } else if (restored && request.method !== "GET") {
@@ -268,15 +432,21 @@
       }
     } catch (cause) {
       const timedOut = controller && controller.signal.aborted;
-      const error = new Error(timedOut
+      const error = cause && cause.code === "session_restored_unconfirmed" ? cause : new Error(timedOut
         ? "Сервер не ответил за 30 секунд. Операция могла выполниться — проверь статус перед повтором."
         : "Нет соединения с сервером. Проверь интернет и повтори действие.");
-      error.code = timedOut ? "request_timeout" : "network_error";
+      if (!error.code) error.code = timedOut ? "request_timeout" : "network_error";
+      recordSupportRequest(path, request.method, error.status || 0, error,
+        response?.headers?.get?.("X-Request-ID"), started, preserveFailure);
       throw error;
     } finally {
       if (timeout !== null) window.clearTimeout(timeout);
     }
-    if (response.status === 204) return null;
+    if (response.status === 204) {
+      verify(null, 204, response.headers?.get?.("X-Request-ID"));
+      recordSupportRequest(path, request.method, 204, null, response.headers?.get?.("X-Request-ID"), started);
+      return null;
+    }
 
     let payload = null;
     try {
@@ -288,20 +458,25 @@
       setReloadRequired(true);
     }
     if (!response.ok) {
-      throw requestFailure(
+      const error = requestFailure(
         response.status,
         payload && payload.error,
         payload && payload.message,
-        payload && payload.reference
+        response.headers?.get?.("X-Request-ID") || payload && payload.reference
       );
+      recordSupportRequest(path, request.method, response.status, error, error.reference, started, preserveFailure);
+      throw error;
     }
     if (!payload || typeof payload !== "object") {
       const error = new Error(
         "Сервер ответил без подтверждения. Проверь состояние черновика перед повтором."
       );
       error.code = "invalid_response";
+      recordSupportRequest(path, request.method, response.status, error, response.headers?.get?.("X-Request-ID"), started, preserveFailure);
       throw error;
     }
+    verify(payload, response.status, response.headers?.get?.("X-Request-ID"));
+    recordSupportRequest(path, request.method, response.status, null, response.headers?.get?.("X-Request-ID"), started);
     return payload;
   }
 
@@ -1352,6 +1527,7 @@
       method: "POST",
       headers: { "Idempotency-Key": state.createKey },
       json: fields,
+      verify: (response) => verifiedDraftResponse(response),
     });
     // A 2xx without a valid draft must never consume the idempotency key.
     const created = verifiedDraftResponse(payload);
@@ -1399,7 +1575,8 @@
     if (!uncertain || !state.current) return false;
     try {
       const payload = await api(
-        "/api/writers/submissions/" + encodeURIComponent(state.current.id)
+        "/api/writers/submissions/" + encodeURIComponent(state.current.id),
+        { diagnosticRecovery: true }
       );
       const remote = payload && payload.submission;
       if (!remote || remote.status !== "DRAFT" ||
@@ -1459,6 +1636,7 @@
                 {
                   method: "PATCH",
                   json: { ...fields, expected_version: expectedVersion },
+                  verify: (response) => verifiedDraftResponse(response, state.current.id, expectedVersion),
                 }
               );
               state.current = verifiedDraftResponse(
@@ -1471,7 +1649,8 @@
                   // retry the same version after refreshing the signed cookie.
                   const retry = await api(
                     `/api/writers/submissions/${encodeURIComponent(state.current.id)}`,
-                    { method: "PATCH", json: { ...fields, expected_version: expectedVersion } }
+                    { method: "PATCH", json: { ...fields, expected_version: expectedVersion },
+                      verify: (response) => verifiedDraftResponse(response, state.current.id, expectedVersion) }
                   );
                   state.current = verifiedDraftResponse(
                     retry, state.current.id, expectedVersion
@@ -1493,12 +1672,12 @@
       } catch (error) {
         setSaveState("Не сохранено");
         if (error.code === "conflict") {
-          setEditorError("Черновик обновился в другой вкладке. Скопируй важный текст перед перезагрузкой.");
+          setEditorError("Черновик обновился в другой вкладке. Скопируй важный текст перед перезагрузкой.", error, "save");
         } else {
           setEditorError(
             "Не удалось сохранить черновик: " +
             (error.message || "Проверь подключение к интернету.") +
-            ". Не закрывай форму и повтори сохранение."
+            ". Не закрывай форму и повтори сохранение.", error, "save"
           );
         }
         return false;
@@ -1548,7 +1727,8 @@
     if (!uncertain || !state.current) return false;
     try {
       const payload = await api(
-        "/api/writers/submissions/" + encodeURIComponent(state.current.id)
+        "/api/writers/submissions/" + encodeURIComponent(state.current.id),
+        { diagnosticRecovery: true }
       );
       const received = payload && payload.submission;
       if (!received) throw new Error("Сервер не вернул состояние заявки.");
@@ -1595,7 +1775,7 @@
     try {
       validateReadyForm();
     } catch (error) {
-      setEditorError(error.message);
+      setEditorError(error.message, error, "submit");
       return;
     }
     state.submitting = true;
@@ -1609,7 +1789,7 @@
       try {
         validateReadyForm();
       } catch (error) {
-        setEditorError(error.message);
+        setEditorError(error.message, error, "submit");
         return;
       }
       state.submitKey ||= makeIdempotencyKey("submit");
@@ -1621,15 +1801,10 @@
             method: "POST",
             headers: { "Idempotency-Key": state.submitKey },
             json: { expected_version: state.current.version },
+            verify: (response) => verifiedSubmittedResponse(response, state.current.id),
           }
         );
-        const accepted = payload && payload.submission;
-        if (!accepted || String(accepted.id) !== String(state.current.id) ||
-            !["SUBMITTED", "IN_REVIEW", "APPROVED", "CHANGES_REQUESTED", "REJECTED"].includes(accepted.status)) {
-          const error = new Error("Сервер не подтвердил изменение статуса заявки.");
-          error.code = "invalid_response";
-          throw error;
-        }
+        const accepted = verifiedSubmittedResponse(payload, state.current.id);
         await showAcceptedSubmission(accepted);
       } catch (error) {
         if (await confirmSubmissionAfterFailure(error)) return;
@@ -1645,6 +1820,17 @@
       lockFormDuringSubmission(false);
       updateActionAvailability();
     }
+  }
+
+  function verifiedSubmittedResponse(payload, expectedId) {
+    const accepted = payload && payload.submission;
+    if (!accepted || String(accepted.id) !== String(expectedId) ||
+        !["SUBMITTED", "IN_REVIEW", "APPROVED", "CHANGES_REQUESTED", "REJECTED"].includes(accepted.status)) {
+      const error = new Error("Сервер не подтвердил изменение статуса заявки.");
+      error.code = "invalid_response";
+      throw error;
+    }
+    return accepted;
   }
 
   const MAX_PHOTO_BYTES = 20 * 1024 * 1024;
@@ -1753,8 +1939,14 @@
   }
 
   function sendFileWithProgress(path, formData, onProgress, onTransferComplete) {
+    const started = Date.now();
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
+      const fail = (error) => {
+        recordSupportRequest(path, "POST", xhr.status || 0, error,
+          xhr.getResponseHeader?.("X-Request-ID"), started);
+        reject(error);
+      };
       xhr.open("POST", path, true);
       xhr.withCredentials = true; // Preserve the Telegram Mini App session.
       xhr.timeout = 300000;
@@ -1780,37 +1972,43 @@
           setReloadRequired(true);
         }
         if (xhr.status < 200 || xhr.status >= 300) {
-          reject(requestFailure(
+          fail(requestFailure(
             xhr.status,
             data && data.error,
             data && data.message,
-            data && data.reference
+            xhr.getResponseHeader?.("X-Request-ID") || data && data.reference
           ));
           return;
         }
         if (!data || !data.id) {
           const error = new Error("Сервер не подтвердил сохранение файла.");
           error.code = "upload_invalid_response";
-          reject(error);
+          fail(error);
           return;
         }
+        recordSupportRequest(path, "POST", xhr.status, null, xhr.getResponseHeader?.("X-Request-ID"), started);
         resolve(data);
       };
       xhr.onerror = () => {
         const error = new Error("Не удалось передать файл: соединение прервано. Проверь интернет.");
         error.code = "upload_network_error";
-        reject(error);
+        fail(error);
       };
       xhr.ontimeout = () => {
         const error = new Error("Сервер не подтвердил файл за пять минут.");
         error.code = "upload_timeout";
-        reject(error);
+        fail(error);
       };
-      xhr.onabort = () => reject(new Error("Загрузка файла прервана."));
+      xhr.onabort = () => {
+        const error = new Error("Загрузка файла прервана.");
+        error.code = "upload_aborted";
+        fail(error);
+      };
       try {
         xhr.send(formData);
       } catch (error) {
-        reject(error);
+        error.code = "upload_network_error";
+        fail(error);
       }
     });
   }
@@ -1846,7 +2044,7 @@
       updateUploadProgress(source, "Файл выбран. Загружаем его в черновик…", null, "waiting");
       return true;
     } catch (error) {
-      setEditorError(error.message || "Не удалось подготовить файл.");
+      setEditorError(error.message || "Не удалось подготовить файл.", error, "upload");
       updateUploadProgress(source, error.message || "Ошибка выбора файла", null, "error");
       return false;
     } finally {
@@ -1878,7 +2076,8 @@
       ? Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")
       : null;
     const payload = await api(
-      "/api/writers/submissions/" + encodeURIComponent(state.current.id)
+      "/api/writers/submissions/" + encodeURIComponent(state.current.id),
+      { diagnosticRecovery: true }
     );
     if (payload && payload.submission) state.current = payload.submission;
     const files = payload && Array.isArray(payload.files) ? payload.files : [];
@@ -2095,6 +2294,30 @@
     return true;
   }
 
+  async function sendSupportReport() {
+    const consent = window.confirm(
+      "Отправить администратору техническое обращение? Передадим Telegram ID, платформу и версию клиента, код и этап ошибки, номер запроса, состояние сети и черновика, количество вложений и последние технические запросы. Текст анкеты и файлы не отправляются."
+    );
+    if (!consent) return;
+    const button = $("supportButton");
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/writers/support", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(supportReportPayload()),
+      });
+      if (!response.ok) throw new Error("support request failed");
+      const result = await response.json();
+      const reference = supportReference(result.reference);
+      window.alert("Обращение отправлено администрации ИКФ." + (reference ? " Номер: " + reference + "." : ""));
+    } catch (_) {
+      window.alert("Не удалось отправить обращение. Открой анкету заново через бота или напиши администрации напрямую.");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   function bindEvents() {
     $("newWorkButton").addEventListener("click", () => { void newDraft(); });
     $("editorBackButton").addEventListener("click", async () => {
@@ -2121,34 +2344,7 @@
       if (!state.current) return;
       await openSubmission(state.current.id);
     });
-    $("supportButton").addEventListener("click", async () => {
-      const consent = window.confirm(
-        "Отправить администратору техническое обращение? Передадим только Telegram ID, платформу и категорию ошибки. Текст анкеты и файлы не отправляются."
-      );
-      if (!consent) return;
-      const button = $("supportButton");
-      button.disabled = true;
-      try {
-        const platform = tg && ["android", "ios", "tdesktop", "web"].includes(tg.platform)
-          ? tg.platform : "unknown";
-        const category = state.bootstrapped ? "save_failed" : "session_failed";
-        const response = await fetch("/api/writers/support", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            init_data: tg && tg.initData ? tg.initData : "",
-            category, platform,
-          }),
-        });
-        if (!response.ok) throw new Error("support request failed");
-        window.alert("Обращение отправлено администрации ИКФ.");
-      } catch (_) {
-        window.alert("Не удалось отправить обращение. Открой анкету заново через бота или напиши администрации напрямую.");
-      } finally {
-        button.disabled = false;
-      }
-    });
+    $("supportButton").addEventListener("click", sendSupportReport);
     $("saveButton").addEventListener("click", () => { void saveDraftAndFiles(); });
     $("submitButton").addEventListener("click", submitCurrent);
     $("fileInput").addEventListener("change", (event) => {
@@ -2232,7 +2428,7 @@
     } catch (error) {
       setBanner(
         error.message || "Не удалось открыть Writers Submission.",
-        "error"
+        "error", error, "session"
       );
     } finally {
       setBusy(false);

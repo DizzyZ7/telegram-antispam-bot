@@ -7,7 +7,7 @@ import unittest
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -629,6 +629,100 @@ class WritersSubmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["error"], "internal_error")
         self.assertEqual(len(payload["reference"]), 12)
         self.assertNotIn("private database traceback", str(payload))
+
+    async def test_failure_reference_correlates_json_header_and_safe_log(self):
+        self.service.submit.side_effect = RuntimeError("private database traceback")
+        with self.assertLogs("writers_submission.web", level="WARNING") as captured:
+            response = await self.client.post(
+                f"/api/writers/submissions/{self.item.id}/submit?secret=private-query",
+                json={"expected_version": 1},
+                headers={**self.auth_headers(), "Idempotency-Key": "reference-test"},
+            )
+        payload = await response.json()
+        self.assertEqual(response.headers.get("X-Request-ID"), payload["reference"])
+        summary = next(line for line in captured.output if "WRITERS_HTTP_REQUEST" in line)
+        self.assertIn(payload["reference"], summary)
+        self.assertNotIn("private-query", summary)
+
+    def support_transport(self):
+        response = MagicMock(status=200)
+        response.json = AsyncMock(return_value={"ok": True})
+        session = MagicMock()
+        session.post.return_value.__aenter__.return_value = response
+        factory = MagicMock()
+        factory.return_value.__aenter__.return_value = session
+        return factory, session
+
+    async def test_support_reports_actual_failure_and_sanitized_context_with_real_newlines(self):
+        factory, session = self.support_transport()
+        payload = {
+            "init_data": valid_init_data(), "category": "save_failed", "platform": "webk",
+            "diagnostics": {
+                "schema": 1, "build": "support-v1", "telegram_version": "8.0",
+                "online": True, "bootstrapped": True, "dirty": True,
+                "submission_id": str(self.item.id), "submission_version": 3,
+                "submission_status": "DRAFT", "pending_file_count": 1,
+                "attachment_count": 2, "body_text": "private-form-text",
+                "last_failure": {
+                    "operation": "save", "method": "PATCH", "status": 503,
+                    "code": "database_unavailable", "reference": "abcdef123456",
+                    "at_ms": 9_990_000, "elapsed_ms": 1234,
+                    "message": "private-exception-text", "token": "private-token",
+                },
+                "recent_requests": [{"operation": "open", "method": "GET", "status": 200, "code": "ok"}],
+            },
+        }
+        with patch("writers_submission.web.aiohttp.ClientSession", factory):
+            response = await self.client.post("/api/writers/support", json=payload,
+                headers={"Origin": PUBLIC_ORIGIN, "User-Agent": "Mozilla/5.0 (Linux; Android 14; private-device) Chrome/130.0.1.2"})
+        self.assertEqual(response.status, 200)
+        result = await response.json()
+        self.assertEqual(result["reference"], response.headers["X-Request-ID"])
+        message = session.post.call_args.kwargs["json"]["text"]
+        for expected in ["Telegram ID: 77", "webk", "Android 14", "Chrome 130.0.1.2", "PATCH", "503", "database_unavailable", "abcdef123456", str(self.item.id), "1234", "support-v1"]:
+            self.assertIn(expected, message)
+        self.assertIn("\n", message)
+        self.assertNotIn("\\n", message)
+        for secret in ["private-form-text", "private-exception-text", "private-token", "private-device", valid_init_data()]:
+            self.assertNotIn(secret, message)
+        self.assertLess(len(message), 4096)
+
+    async def test_support_accepts_valid_cookie_when_telegram_launch_data_expired(self):
+        factory, session = self.support_transport()
+        with patch("writers_submission.web.aiohttp.ClientSession", factory):
+            response = await self.client.post("/api/writers/support",
+                json={"init_data": valid_init_data(auth_date=NOW - 901), "category": "session_failed", "platform": "android"},
+                headers=self.auth_headers())
+        self.assertEqual(response.status, 200)
+        self.assertIn("Telegram ID: 77", session.post.call_args.kwargs["json"]["text"])
+
+    async def test_support_drops_unknown_diagnostic_values_and_keeps_legacy_payloads(self):
+        factory, session = self.support_transport()
+        with patch("writers_submission.web.aiohttp.ClientSession", factory):
+            for diagnostics in (None, {"last_failure": {"operation": "private-op", "method": "private-method", "code": "private-code", "status": True, "reference": "private-reference"}, "recent_requests": "private-trace", "submission_id": "private-id", "telegram_version": "private-version", "build": "private-build"}):
+                response = await self.client.post("/api/writers/support",
+                    json={"init_data": valid_init_data(), "category": "other", "platform": "unknown", "diagnostics": diagnostics},
+                    headers={"Origin": PUBLIC_ORIGIN})
+                self.assertEqual(response.status, 200)
+                self.assertNotIn("private-", session.post.call_args.kwargs["json"]["text"])
+
+    async def test_support_requires_verified_identity_origin_and_rate_limit(self):
+        factory, session = self.support_transport()
+        with patch("writers_submission.web.aiohttp.ClientSession", factory):
+            denied = await self.client.post("/api/writers/support",
+                json={"init_data": "forged", "category": "other", "telegram_id": 123},
+                headers={"Origin": PUBLIC_ORIGIN})
+            self.assertEqual(denied.status, 401)
+            wrong_origin = await self.client.post("/api/writers/support",
+                json={"init_data": valid_init_data(), "category": "other"},
+                headers={"Origin": "https://evil.example"})
+            self.assertEqual(wrong_origin.status, 403)
+            for expected in (200, 200, 200, 429):
+                response = await self.client.post("/api/writers/support",
+                    json={"init_data": valid_init_data(), "category": "other"},
+                    headers={"Origin": PUBLIC_ORIGIN})
+                self.assertEqual(response.status, expected)
+        self.assertEqual(session.post.call_count, 3)
 
     async def test_author_can_check_moderation_delivery_without_chat_receipts(self):
         expected = {str(self.item.id): {
