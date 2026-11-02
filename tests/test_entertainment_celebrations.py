@@ -7,7 +7,7 @@ from entertainment.celebrations import celebration_kind, celebration_context, fe
 
 class CelebrationTests(unittest.TestCase):
     def test_birthday(self):
-        for message in ("С днем рождения, Катя!", "С днём рождения!", "С ДР!", "Happy birthday!"):
+        for message in ("С днем рождения, Катя!", "С днём рождения!", "С ДР!", "СДР!", "С днюхой!", "С днем варенья!", "Happy birthday!"):
             self.assertEqual(celebration_kind(message), "birthday", message)
 
     def test_congratulation(self):

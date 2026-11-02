@@ -84,6 +84,13 @@ class EntertainmentService(SafetyEntertainmentService):
         exactly once; opted-out/short messages may reply with a safe authored
         phrase, but are never inserted into learned Culture Memory here.
         """
+        # Explicit addressed plans precede random replies and memory consent,
+        # while preserving the production topic and moderation boundaries.
+        if (self._message_scope_allowed(message)
+                and self._safe_text(getattr(message, "text", None))
+                and self._safe_text(getattr(message, "caption", None))
+                and await self.birthdays.observe(message, int(self._now_fn()))):
+            return
         is_reply = (
             self._human_direct_reply(message)
             and self._is_direct_trigger(message)
@@ -103,6 +110,12 @@ class EntertainmentService(SafetyEntertainmentService):
 
         if is_reply and (not regular_observation or not consent):
             await self.evaluate_topic(message)
+
+    async def run_supervisor_tick(self) -> None:
+        # The production presence supervisor replaces the base tick, so the
+        # explicit calendar must be called at this outer entry point as well.
+        await self.birthdays.tick(int(self._now_fn()))
+        await super().run_supervisor_tick()
 
     async def _dialogue_reply(
         self, message: Message, *, chat_id: int, topic_id: int, now: int

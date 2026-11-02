@@ -25,6 +25,7 @@ from .config import (
 )
 from .culture import CultureGenerationContext, apply_emoji_style, build_culture_context
 from .celebrations import celebration_kind, festive_reply
+from .birthdays import BirthdayCoordinator, BirthdayPlan, load_birthday_plans
 from .generation import generate_chat_text, tokenize
 from .memory import classify_memory_event
 from .models import (
@@ -56,6 +57,7 @@ class EntertainmentService:
         *,
         rng: random.Random | None = None,
         now_fn: Callable[[], float] | None = None,
+        birthday_plans: Iterable[BirthdayPlan] | None = None,
     ) -> None:
         self.app = app
         self.storage = storage
@@ -64,6 +66,16 @@ class EntertainmentService:
         self._now_fn = now_fn or time.time
         self._active_topics: dict[tuple[int, int], Any] = {}
         self._celebration_last_at: dict[tuple[int, int], int] = {}
+        self.birthdays = BirthdayCoordinator(
+            getattr(self.app, "bot", None), storage, self.chat_ids,
+            load_birthday_plans() if birthday_plans is None else birthday_plans,
+            now_fn=self._now_fn, generic_allowed=self._birthday_generic_allowed,
+        )
+
+    async def _birthday_generic_allowed(self, chat_id: int, now: int) -> bool:
+        settings = await self.storage.get_settings(chat_id)
+        return (settings.enabled and settings.autonomous_text_enabled
+                and not self._quiet_hours_active(settings, now))
 
     def is_allowed_chat(self, chat_id: int) -> bool:
         return int(chat_id) in self.chat_ids
@@ -507,6 +519,7 @@ class EntertainmentService:
     async def run_supervisor_tick(self) -> None:
         """Evaluate recently active scopes and dispatch the once-daily meme."""
         now = int(self._now_fn())
+        await self.birthdays.tick(now)
         if -1002619489118 in self.chat_ids:
             sender = getattr(self.storage, "send_daily_meme_once", None)
             if callable(sender):
@@ -562,6 +575,9 @@ class EntertainmentService:
         kind = celebration_kind(getattr(message, "text", None))
         if kind is None:
             return False
+        if kind == "birthday":
+            await self.birthdays.observe(message, now)
+            return True
         chat_id, topic_id = int(message.chat.id), self._topic_id(message)
         scope = (chat_id, topic_id)
         last = self._celebration_last_at.get(scope, 0)
@@ -599,6 +615,8 @@ class EntertainmentService:
 
     async def observe_message(self, message: Message) -> None:
         if not self._is_eligible_memory_sender(message):
+            return
+        if await self.birthdays.observe(message, int(self._now_fn())):
             return
 
         add_event = getattr(self.storage, "add_event", None)
