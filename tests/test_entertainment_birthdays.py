@@ -4,6 +4,7 @@ import asyncio
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from aiogram.methods import SendMessage
 from entertainment.birthdays import BirthdayCoordinator, BirthdayPlan, load_birthday_plans
 import entertainment.birthdays as birthday_module
 from entertainment import EntertainmentService
+from entertainment.models import EntertainmentSettings
 from entertainment.storage.sqlite import SQLiteEntertainmentStorage
 from entertainment.storage.postgres import PostgresEntertainmentStorage
 
@@ -48,8 +50,10 @@ class _BirthdayStorageCase(unittest.IsolatedAsyncioTestCase):
         self.path = Path(self.directory.name) / "birthdays.db"
         self.storage = SQLiteEntertainmentStorage(self.path)
         await self.storage.initialize()
+        self.addAsyncCleanup(self.storage.close)
         self.bot = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=99)))
-        self.coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [plan()])
+        self.clock_now = timestamp()
+        self.coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [plan()], now_fn=lambda: self.clock_now)
 
     async def asyncTearDown(self):
         await self.storage.close()
@@ -66,7 +70,7 @@ class BirthdayTests(_BirthdayStorageCase):
         await self.storage.close()
         self.storage = SQLiteEntertainmentStorage(self.path)
         await self.storage.initialize()
-        restarted = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [plan()])
+        restarted = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [plan()], now_fn=lambda: self.clock_now)
         await restarted.tick(timestamp(hour=13))
         self.assertEqual(self.bot.send_message.await_count, 1)
 
@@ -114,7 +118,7 @@ class BirthdayTests(_BirthdayStorageCase):
         second = BirthdayPlan(event_id="another-birthday", chat_id=CHAT,
                               username="AnotherExample", local_date="2026-11-03",
                               send_time="12:30", text="@AnotherExample, с днем рождения!")
-        coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [plan(), second])
+        coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [plan(), second], now_fn=lambda: self.clock_now)
         await coordinator.tick(timestamp())
         self.assertEqual(self.bot.send_message.await_count, 1)
 
@@ -181,7 +185,7 @@ class BirthdayTests(_BirthdayStorageCase):
 class GenericBirthdayTests(_BirthdayStorageCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
-        self.coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [])
+        self.coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [], now_fn=lambda: self.clock_now)
 
     async def test_first_birthday_phrase_triggers_once_and_repeated_phrases_do_not_spam(self):
         await self.coordinator.observe(message("С днем рождения!"), timestamp(hour=9))
@@ -199,7 +203,7 @@ class GenericBirthdayTests(_BirthdayStorageCase):
         await self.storage.close()
         self.storage = SQLiteEntertainmentStorage(self.path)
         await self.storage.initialize()
-        self.coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [])
+        self.coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [], now_fn=lambda: self.clock_now)
         for actor_id in (3, 4, 5):
             await self.coordinator.observe(message("С днем рождения!", message_thread_id=99,
                 from_user=SimpleNamespace(id=actor_id, is_bot=False),
@@ -209,6 +213,7 @@ class GenericBirthdayTests(_BirthdayStorageCase):
     async def test_new_moscow_day_has_a_new_slot(self):
         # Both instants are on the same UTC date, but different Moscow dates.
         for day, hour, minute in ((3, 23, 59), (4, 0, 1)):
+            self.clock_now = timestamp(day=day, hour=hour, minute=minute)
             for actor_id in (1, 2):
                 await self.coordinator.observe(message("С днем рождения!",
                     from_user=SimpleNamespace(id=actor_id, is_bot=False),
@@ -226,7 +231,7 @@ class GenericBirthdayTests(_BirthdayStorageCase):
         self.assertEqual(self.bot.send_message.await_count, 1)
 
     async def test_generic_party_reserves_planned_day_for_the_approved_recipient(self):
-        self.coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [plan()])
+        self.coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [plan()], now_fn=lambda: self.clock_now)
         for actor_id in (1, 2, 3):
             await self.coordinator.observe(message("@SomeoneElse, с днем рождения!",
                 from_user=SimpleNamespace(id=actor_id, is_bot=False)), timestamp(hour=9))
@@ -253,9 +258,106 @@ class GenericBirthdayTests(_BirthdayStorageCase):
             self.assertLess(len(text), 3500)
             self.assertNotRegex(text, r"[А-Яа-я][🦝🎂💛🌷✨💖🎁][А-Яа-я]")
 
+    async def test_generic_reactions_respect_disabled_settings_and_quiet_hours(self):
+        for settings in (replace(EntertainmentSettings(), enabled=False),
+                         replace(EntertainmentSettings(), autonomous_text_enabled=False),
+                         replace(EntertainmentSettings(), quiet_hours_start=8, quiet_hours_end=10)):
+            with self.subTest(settings=settings):
+                await self.storage._require_connection().execute("DELETE FROM entertainment_birthday_delivery")
+                await self.storage._require_connection().commit()
+                await self.storage.save_settings(CHAT, settings)
+                self.bot.send_message.reset_mock()
+                service = EntertainmentService(SimpleNamespace(bot=self.bot), self.storage, {CHAT},
+                                               now_fn=lambda: timestamp(hour=9), birthday_plans=[])
+                await service.observe_message(message("С днем рождения!"))
+                self.assertEqual(self.bot.send_message.await_count, 0)
+
+    async def test_explicit_personal_plan_still_works_with_ordinary_entertainment_disabled(self):
+        await self.storage.save_settings(CHAT, replace(EntertainmentSettings(), enabled=False, autonomous_text_enabled=False))
+        service = EntertainmentService(SimpleNamespace(bot=self.bot), self.storage, {CHAT},
+                                       now_fn=lambda: timestamp(hour=9), birthday_plans=[plan()])
+        await service.observe_message(message())
+        self.assertEqual(self.bot.send_message.await_count, 1)
+
+    async def test_competing_worker_can_retry_after_definite_rejection(self):
+        entered, complete = asyncio.Event(), asyncio.Event()
+        async def reject(**_kwargs):
+            entered.set()
+            await complete.wait()
+            raise TelegramBadRequest(method=SendMessage(chat_id=CHAT, text="test"), message="rejected")
+        self.bot.send_message.side_effect = reject
+        winner = asyncio.create_task(self.coordinator.observe(message("С днем рождения!"), timestamp(hour=9)))
+        await asyncio.wait_for(entered.wait(), 2)
+        other = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [], now_fn=lambda: self.clock_now)
+        await other.observe(message("С днем рождения!"), timestamp(hour=9))
+        complete.set()
+        await winner
+        self.bot.send_message.side_effect = None
+        await other.observe(message("С днем рождения!"), timestamp(hour=9))
+        self.assertEqual(self.bot.send_message.await_count, 2)
+
+    async def test_claim_delayed_past_midnight_cannot_send_on_expired_day(self):
+        self.clock_now = timestamp(hour=23, minute=59)
+        original_claim = self.storage.claim_birthday_delivery
+        async def delayed_claim(*args):
+            claimed = await original_claim(*args)
+            self.clock_now = timestamp(day=4, hour=0, minute=1)
+            return claimed
+        self.storage.claim_birthday_delivery = delayed_claim
+        before = message("С днем рождения!", date=datetime.fromtimestamp(self.clock_now, timezone.utc))
+        await self.coordinator.observe(before, self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 0)
+        self.storage.claim_birthday_delivery = original_claim
+        after = message("С днем рождения!", date=datetime.fromtimestamp(self.clock_now, timezone.utc))
+        await self.coordinator.observe(after, self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 1)
+
+    async def test_inflight_previous_day_blocks_new_day_and_ack_consumes_actual_delivery_day(self):
+        entered, complete = asyncio.Event(), asyncio.Event()
+        self.clock_now = timestamp(hour=23, minute=59)
+        async def delayed_send(**_kwargs):
+            if not entered.is_set():
+                entered.set()
+                await complete.wait()
+            return SimpleNamespace(message_id=99, date=datetime.fromtimestamp(self.clock_now, timezone.utc))
+        self.bot.send_message.side_effect = delayed_send
+        before = message("С днем рождения!", date=datetime.fromtimestamp(self.clock_now, timezone.utc))
+        first = asyncio.create_task(self.coordinator.observe(before, self.clock_now))
+        await asyncio.wait_for(entered.wait(), 2)
+        self.clock_now = timestamp(day=4, hour=0, minute=1)
+        after = message("С днем рождения!", date=datetime.fromtimestamp(self.clock_now, timezone.utc))
+        other = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [], now_fn=lambda: self.clock_now)
+        await other.observe(after, self.clock_now)
+        complete.set()
+        await first
+        await other.observe(after, self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 1)
+
+    async def test_uncertain_previous_day_is_not_followed_by_blind_new_day_send(self):
+        self.bot.send_message.side_effect = TimeoutError("unknown Telegram result")
+        await self.coordinator.observe(message("С днем рождения!"), timestamp(hour=9))
+        self.clock_now = timestamp(day=4, hour=9)
+        self.bot.send_message.side_effect = None
+        await self.coordinator.observe(message("С днем рождения!", date=datetime.fromtimestamp(self.clock_now, timezone.utc)), self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 1)
+
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "TEST_DATABASE_URL is not configured")
 class BirthdayPostgresTests(unittest.IsolatedAsyncioTestCase):
+    async def test_previous_day_pending_claim_blocks_new_day_and_ack_moves_quota(self):
+        storage = PostgresEntertainmentStorage(os.environ["TEST_DATABASE_URL"])
+        await storage.initialize()
+        prefix = "birthday-pg-cross-midnight"
+        try:
+            self.assertTrue(await storage.claim_birthday_delivery(CHAT, prefix + "-old", timestamp(hour=23, minute=59)))
+            self.assertFalse(await storage.claim_birthday_delivery(CHAT, prefix + "-new", timestamp(day=4, hour=0, minute=1)))
+            await storage.finish_birthday_delivery(CHAT, prefix + "-old", timestamp(day=4, hour=0, minute=1), "SENT", 123)
+            self.assertFalse(await storage.claim_birthday_delivery(CHAT, prefix + "-new", timestamp(day=4, hour=0, minute=2)))
+            self.assertTrue(await storage.claim_birthday_delivery(CHAT, prefix + "-later", timestamp(day=5)))
+        finally:
+            await storage._require_pool().execute("DELETE FROM entertainment_birthday_delivery WHERE chat_id=$1 AND event_id LIKE $2", CHAT, prefix + "%")
+            await storage.close()
+
     async def test_competing_claims_and_restart_are_durable(self):
         storage = PostgresEntertainmentStorage(os.environ["TEST_DATABASE_URL"])
         await storage.initialize()

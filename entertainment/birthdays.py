@@ -9,7 +9,8 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any, Iterable
+from time import time as wall_time
+from typing import Any, Awaitable, Callable, Iterable
 from zoneinfo import ZoneInfo
 
 from aiogram.exceptions import (
@@ -77,13 +78,16 @@ def load_birthday_plans(path: Path | None = None) -> tuple[BirthdayPlan, ...]:
 
 
 class BirthdayCoordinator:
-    def __init__(self, bot: Any, storage: Any, chat_ids: Iterable[int], plans: Iterable[BirthdayPlan]) -> None:
+    def __init__(self, bot: Any, storage: Any, chat_ids: Iterable[int], plans: Iterable[BirthdayPlan], *,
+                 now_fn: Callable[[], float] = wall_time,
+                 generic_allowed: Callable[[int, int], Awaitable[bool]] | None = None) -> None:
         self.bot = bot
         self.storage = storage
+        self._now_fn = now_fn
+        self._generic_allowed = generic_allowed
         allowed = frozenset(int(chat) for chat in chat_ids)
         self.chat_ids = allowed
         self.plans = tuple(p for p in plans if p.chat_id in allowed)
-        self._generic_checked: set[tuple[int, str]] = set()
 
     async def _send(self, plan: BirthdayPlan, now: int, topic_id: int = 0) -> None:
         await self._deliver(plan.chat_id, plan.event_id, plan.text, now, topic_id)
@@ -91,13 +95,19 @@ class BirthdayCoordinator:
     async def _deliver(self, chat_id: int, event_id: str, text: str, now: int, topic_id: int = 0) -> bool:
         if not await self.storage.claim_birthday_delivery(chat_id, event_id, now):
             return True
+        current = int(self._now_fn())
+        if datetime.fromtimestamp(current, MOSCOW).date() != datetime.fromtimestamp(now, MOSCOW).date():
+            # A claim may have waited on another DB transaction across midnight.
+            # Do not deliver an expired plan or spend the previous day's row now.
+            await self.storage.release_birthday_delivery(chat_id, event_id)
+            return False
         kwargs: dict[str, Any] = {"chat_id": chat_id, "text": html.escape(text)}
         if topic_id:
             kwargs["message_thread_id"] = topic_id
         try:
             sent = await self.bot.send_message(**kwargs)
         except TelegramNetworkError:
-            await self.storage.finish_birthday_delivery(chat_id, event_id, now, "UNCERTAIN", None)
+            await self.storage.finish_birthday_delivery(chat_id, event_id, int(self._now_fn()), "UNCERTAIN", None)
             LOGGER.error("BIRTHDAY_DELIVERY_UNCERTAIN event=%s", event_id)
             return True
         except (TelegramBadRequest, TelegramForbiddenError, TelegramNotFound,
@@ -109,10 +119,12 @@ class BirthdayCoordinator:
         except Exception:
             # A lost response may follow a successful send. Keep the claim and
             # require inspection, rather than posting a second congratulations.
-            await self.storage.finish_birthday_delivery(chat_id, event_id, now, "UNCERTAIN", None)
+            await self.storage.finish_birthday_delivery(chat_id, event_id, int(self._now_fn()), "UNCERTAIN", None)
             LOGGER.exception("BIRTHDAY_DELIVERY_UNCERTAIN event=%s", event_id)
             return True
-        await self.storage.finish_birthday_delivery(chat_id, event_id, now, "SENT", sent.message_id)
+        sent_at = getattr(sent, "date", None)
+        delivered_at = int(sent_at.timestamp()) if isinstance(sent_at, datetime) and sent_at.tzinfo else int(self._now_fn())
+        await self.storage.finish_birthday_delivery(chat_id, event_id, delivered_at, "SENT", sent.message_id)
         LOGGER.info("BIRTHDAY_DELIVERY_SENT event=%s message_id=%s", event_id, sent.message_id)
         return True
 
@@ -171,12 +183,10 @@ class BirthdayCoordinator:
         chat_id = int(message.chat.id)
         local_day = datetime.fromtimestamp(now, MOSCOW).date()
         key = (chat_id, local_day.isoformat())
-        self._generic_checked = {k for k in self._generic_checked if k[1] == key[1]}
-        if key in self._generic_checked:
+        if self._generic_allowed is not None and not await self._generic_allowed(chat_id, now):
             return
-        if await self._deliver(chat_id, f"chat-birthday-{key[1]}", birthday_greeting(chat_id, local_day), now,
-                               int(getattr(message, "message_thread_id", None) or 0)):
-            self._generic_checked.add(key)
+        await self._deliver(chat_id, f"chat-birthday-{key[1]}", birthday_greeting(chat_id, local_day), now,
+                            int(getattr(message, "message_thread_id", None) or 0))
 
     async def observe(self, message: Any, now: int) -> bool:
         chat = getattr(message, "chat", None)

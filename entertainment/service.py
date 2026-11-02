@@ -69,7 +69,13 @@ class EntertainmentService:
         self.birthdays = BirthdayCoordinator(
             getattr(self.app, "bot", None), storage, self.chat_ids,
             load_birthday_plans() if birthday_plans is None else birthday_plans,
+            now_fn=self._now_fn, generic_allowed=self._birthday_generic_allowed,
         )
+
+    async def _birthday_generic_allowed(self, chat_id: int, now: int) -> bool:
+        settings = await self.storage.get_settings(chat_id)
+        return (settings.enabled and settings.autonomous_text_enabled
+                and not self._quiet_hours_active(settings, now))
 
     def is_allowed_chat(self, chat_id: int) -> bool:
         return int(chat_id) in self.chat_ids

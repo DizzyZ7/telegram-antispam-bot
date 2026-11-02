@@ -10,6 +10,12 @@ achievements. Use 2304 combinations of complete authored warm paragraphs, with
 intact words and readable emoji placement. No chat-message copying or inferred
 personalization. The daily database key is `(chat_id, local_date)`. Confirmed
 failures can retry; uncertain/successful sends occupy the day's slot.
+Generic triggers preserve disabled entertainment/autonomous-text flags and quiet
+hours. Only the expressly approved addressed plan bypasses those ordinary controls.
+Do not cache failed claims as permanent success; the database is authoritative.
+Revalidate the live date after awaiting a claim, and record actual Telegram
+delivery date. A pending or uncertain previous-day request blocks the next day
+until its outcome is established, preventing cross-midnight duplicate deliveries.
 
 The user selected warm greeting variant 1 and identified the recipient by the
 exact Telegram username `Buketsireni`, describing her as a storyteller. They

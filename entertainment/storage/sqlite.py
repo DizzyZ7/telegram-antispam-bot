@@ -392,8 +392,10 @@ class SQLiteEntertainmentStorage:
     async def claim_birthday_delivery(self, chat_id: int, event_id: str, now: int) -> bool:
         connection = self._require_connection()
         cursor = await connection.execute(
-            "INSERT OR IGNORE INTO entertainment_birthday_delivery(chat_id,event_id,local_date,status,updated_at) VALUES (?,?,?,'CLAIMED',?)",
-            (int(chat_id), event_id, datetime.fromtimestamp(now, ZoneInfo("Europe/Moscow")).date().isoformat(), int(now)),
+            "INSERT OR IGNORE INTO entertainment_birthday_delivery(chat_id,event_id,local_date,status,updated_at) "
+            "SELECT ?,?,?,'CLAIMED',? WHERE NOT EXISTS (SELECT 1 FROM entertainment_birthday_delivery "
+            "WHERE chat_id=? AND status IN ('CLAIMED','UNCERTAIN'))",
+            (int(chat_id), event_id, datetime.fromtimestamp(now, ZoneInfo("Europe/Moscow")).date().isoformat(), int(now), int(chat_id)),
         )
         await connection.commit()
         return cursor.rowcount == 1
@@ -404,8 +406,8 @@ class SQLiteEntertainmentStorage:
             raise ValueError("Invalid birthday delivery status")
         connection = self._require_connection()
         await connection.execute(
-            "UPDATE entertainment_birthday_delivery SET status=?,updated_at=?,telegram_message_id=? WHERE chat_id=? AND event_id=? AND status='CLAIMED'",
-            (status, int(now), message_id, int(chat_id), event_id),
+            "UPDATE entertainment_birthday_delivery SET status=?,updated_at=?,telegram_message_id=?,local_date=? WHERE chat_id=? AND event_id=? AND status='CLAIMED'",
+            (status, int(now), message_id, datetime.fromtimestamp(now, ZoneInfo("Europe/Moscow")).date().isoformat(), int(chat_id), event_id),
         )
         await connection.commit()
 
