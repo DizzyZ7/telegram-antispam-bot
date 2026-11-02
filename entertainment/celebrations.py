@@ -6,7 +6,7 @@ import re
 import hashlib
 from datetime import datetime
 
-_BIRTHDAY = re.compile(r"(?iu)\b(?:с\s+дн(?:ем|ём|юхой)\s+рождени[яе]|с\s+др\b|happy\s+birthday)\b")
+_BIRTHDAY = re.compile(r"(?iu)\b(?:с\s+дн(?:ем|ём)\s+(?:рождени[яе]|варенья)|с\s+дню(?:хой|шкой)|с\s*др\b|happy\s+birthday)\b")
 _WISH = re.compile(r"(?iu)\b(?:поздравляю|поздравляем|поздравляем\s+тебя|с\s+праздником|с\s+юбилеем|поздравухи)\b")
 _NEGATION = re.compile(r"(?iu)\b(?:не\s+поздравля|не\s+день\s+рождения|вчера\s+был\s+день\s+рождения)")
 

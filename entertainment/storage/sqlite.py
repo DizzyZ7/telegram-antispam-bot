@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiosqlite
 
@@ -60,6 +62,13 @@ class SQLiteEntertainmentStorage:
         await self._ensure_settings_schema()
         await self._ensure_messages_schema()
         await self._ensure_actions_schema()
+        await self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS entertainment_birthday_delivery (
+                chat_id INTEGER NOT NULL, event_id TEXT NOT NULL, local_date TEXT NOT NULL,
+                status TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                telegram_message_id INTEGER, PRIMARY KEY (chat_id, local_date), UNIQUE(chat_id, event_id)
+            )"""
+        )
         await self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS ent_schema_migrations (
@@ -379,6 +388,34 @@ class SQLiteEntertainmentStorage:
             messages_120m=int(row[6]),
             active_users_60m=int(row[7]),
         )
+
+    async def claim_birthday_delivery(self, chat_id: int, event_id: str, now: int) -> bool:
+        connection = self._require_connection()
+        cursor = await connection.execute(
+            "INSERT OR IGNORE INTO entertainment_birthday_delivery(chat_id,event_id,local_date,status,updated_at) VALUES (?,?,?,'CLAIMED',?)",
+            (int(chat_id), event_id, datetime.fromtimestamp(now, ZoneInfo("Europe/Moscow")).date().isoformat(), int(now)),
+        )
+        await connection.commit()
+        return cursor.rowcount == 1
+
+    async def finish_birthday_delivery(self, chat_id: int, event_id: str, now: int,
+                                       status: str, message_id: int | None) -> None:
+        if status not in {"SENT", "UNCERTAIN"}:
+            raise ValueError("Invalid birthday delivery status")
+        connection = self._require_connection()
+        await connection.execute(
+            "UPDATE entertainment_birthday_delivery SET status=?,updated_at=?,telegram_message_id=? WHERE chat_id=? AND event_id=? AND status='CLAIMED'",
+            (status, int(now), message_id, int(chat_id), event_id),
+        )
+        await connection.commit()
+
+    async def release_birthday_delivery(self, chat_id: int, event_id: str) -> None:
+        connection = self._require_connection()
+        await connection.execute(
+            "DELETE FROM entertainment_birthday_delivery WHERE chat_id=? AND event_id=? AND status='CLAIMED'",
+            (int(chat_id), event_id),
+        )
+        await connection.commit()
 
     async def record_action(self, record: EntertainmentActionRecord) -> int:
         connection = self._require_connection()
