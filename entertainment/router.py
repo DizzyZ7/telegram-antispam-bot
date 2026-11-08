@@ -142,6 +142,12 @@ def register_entertainment_handlers(app: Any, service: EntertainmentService) -> 
 
     _promote_last_message_handler(app)
 
+    @dispatcher.message(chat_filter, Command(commands=["fun_search_status"]))
+    async def entertainment_search_status(message: Message) -> None:
+        await service.show_search_status(message)
+
+    _promote_last_message_handler(app)
+
     @dispatcher.message(chat_filter, Command(commands=["fun_on"]))
     async def entertainment_on(message: Message) -> None:
         await service.set_enabled(message, True)
@@ -219,6 +225,7 @@ def register_entertainment_handlers(app: Any, service: EntertainmentService) -> 
         "ENTERTAINMENT_SCOPE_READY "
         f"chat_ids={ids_label} learning=per_topic autonomy=state_driven "
         "behavior_modes=calm,alive,active culture_memory=on external_ai=off "
-        f"explicit_search={'tavily' if service.search_answers.enabled else 'off'}",
+        f"explicit_search={'tavily' if service.search_answers.enabled else 'off'} "
+        "search_status=/fun_search_status",
         flush=True,
     )
