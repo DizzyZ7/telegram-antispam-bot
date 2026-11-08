@@ -122,7 +122,8 @@ class TavilyClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body, {
             'query': 'Почему небо голубое?', 'search_depth': 'basic',
             'auto_parameters': False, 'include_answer': 'basic', 'max_results': 3,
-            'language': 'ru', 'safe_search': True, 'include_raw_content': False,
+            'language': 'ru', 'filter_by_language': True,
+            'safe_search': True, 'include_raw_content': False,
         })
         self.assertNotIn('synthetic-secret', repr(self.client))
 

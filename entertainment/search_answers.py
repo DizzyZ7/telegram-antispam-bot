@@ -110,6 +110,7 @@ class TavilySearchClient:
         body = {
             'query': question, 'search_depth': 'basic', 'auto_parameters': False,
             'include_answer': 'basic', 'max_results': 3, 'language': 'ru',
+            'filter_by_language': True,
             'safe_search': True, 'include_raw_content': False,
         }
         status = None
