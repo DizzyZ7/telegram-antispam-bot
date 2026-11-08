@@ -24,6 +24,27 @@ def payload(answer=ANSWER):
 
 
 class SearchQuestionTests(unittest.TestCase):
+    def test_explicit_imperative_search_requests_are_recognized(self):
+        for request in ('скажи погоду на завтра спб', 'расскажи о фотосинтезе',
+                        'объясни почему небо голубое', 'найди информацию о Марсе'):
+            for separator in (', ', ' '):
+                with self.subTest(request=request, separator=separator):
+                    self.assertEqual(extract_search_question('Фосген' + separator + request), request)
+
+    def test_any_text_after_name_is_a_search_request(self):
+        for name in ('фосген', 'Фосген', 'ФОСГЕН', 'фОсГеН'):
+            for request in ('погода на завтра спб', 'привет', 'скажи', 'скажите погоду', '2 + 2'):
+                for separator in (' ', ', ', ': ', '. ', ' — '):
+                    with self.subTest(name=name, request=request, separator=separator):
+                        self.assertEqual(extract_search_question(name + separator + request), request)
+
+    def test_address_requires_name_boundary_and_nonempty_subject(self):
+        for text in ('скажи погоду на завтра спб', 'Фосген', 'Фосген,   ',
+                     'Фосген!!!', 'Фосгенчик погода', 'Фосген2026 погода',
+                     'Я сказал: Фосген, найди информацию', '/Фосген, объясни фотосинтез'):
+            with self.subTest(text=text):
+                self.assertIsNone(extract_search_question(text))
+
     def test_factual_second_person_is_allowed_but_entertainment_remains_strict(self):
         text = 'Благодаря фотосинтезу вы получаете кислород.'
         self.assertEqual(checked_search_answer(text), text)
@@ -49,7 +70,7 @@ class SearchQuestionTests(unittest.TestCase):
             with self.subTest(incoming=incoming):
                 self.assertEqual(extract_search_question(incoming), 'почему небо голубое?')
         for incoming in (None, 'Почему небо голубое?', 'Я спросил Фосгена почему',
-                         '/Фосген почему небо голубое?', 'Фосген привет', 'Фосген'):
+                         '/Фосген почему небо голубое?', 'Фосген'):
             with self.subTest(incoming=incoming):
                 self.assertIsNone(extract_search_question(incoming))
 

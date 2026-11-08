@@ -14,9 +14,7 @@ from .language import analyze_token
 SEARCH_ENDPOINT = 'https://api.tavily.com/search'
 _MAX_RESPONSE_BYTES = 128 * 1024
 _ADDRESS = re.compile(
-    r'^\s*фосген(?:\s*[,!:—-]\s*|\s+)(?:а\s+)?'
-    r'((?:что|почему|как|кто|где|когда|зачем|сколько|'
-    r'как(?:ой|ая|ое|ие|ого|ому|ую|их|им|ими|ом)|чем)\b.+)\s*$',
+    r'^\s*фосген\b[\s,.:;!?—-]*(?:а\s+)?(.+?)\s*$',
     re.IGNORECASE | re.DOTALL,
 )
 _LINK = re.compile(r'https?://|www\.|t\.me/|<[^>]*>|\[[^\]]+\]\([^)]*\)', re.I)
@@ -41,7 +39,8 @@ def extract_search_question(text: str | None) -> str | None:
     if not isinstance(text, str):
         return None
     match = _ADDRESS.match(text)
-    return ' '.join(match.group(1).split()) if match else None
+    question = ' '.join(match.group(1).split()) if match else ''
+    return question if any(character.isalnum() for character in question) else None
 
 
 def checked_search_answer(value: object) -> str:
