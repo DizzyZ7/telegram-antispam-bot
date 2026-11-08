@@ -2,6 +2,8 @@
 
 Generation v3 is the default configured local fallback engine for Entertainment. The production service first tries learned grammatical fragments from accumulated conversation, then v3/v2 when that constructor has no viable result. Neither path loads external text corpora or scans the full long-term history on every request.
 
+An optional, separately routed factual-question feature uses Tavily only when `TAVILY_API_KEY` is set. It does not feed search results into local generation or Culture Memory. See [setup and limits](fosgen-search-answers.md).
+
 ## Накопительная речь: рабочий сервис с 08.11.2026
 
 Сохранение сообщения и использование его в собственной реплике разделены. Материал созревает минимум 86400 секунд от сохраненного `created_at`. Свежая речь задает тему, но не поставляет творческие фрагменты. Ограничение применяется в том числе к ручной генерации через рабочий сервис.

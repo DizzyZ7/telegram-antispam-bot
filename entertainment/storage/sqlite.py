@@ -168,6 +168,10 @@ class SQLiteEntertainmentStorage:
             "CREATE INDEX IF NOT EXISTS idx_ent_actions_scope_time "
             "ON ent_actions(chat_id, topic_id, created_at DESC, id DESC)"
         )
+        await connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ent_search_request "
+            "ON ent_actions(chat_id, trigger_message_id) WHERE action_type='search_reply'"
+        )
 
     async def close(self) -> None:
         if self.connection is None:
@@ -418,6 +422,20 @@ class SQLiteEntertainmentStorage:
             (int(chat_id), event_id),
         )
         await connection.commit()
+
+    async def claim_search_request(
+        self, chat_id: int, topic_id: int, message_id: int, created_at: int,
+    ) -> bool:
+        connection = self._require_connection()
+        async with connection.execute(
+            "INSERT INTO ent_actions(chat_id,topic_id,action_type,trigger_message_id,created_at,metadata_json) "
+            "VALUES(?,?,'search_reply',?,?,?) ON CONFLICT DO NOTHING",
+            (int(chat_id), int(topic_id), int(message_id), int(created_at),
+             '{"source":"web_search_v1","status":"claimed"}'),
+        ) as cursor:
+            claimed = cursor.rowcount == 1
+        await connection.commit()
+        return claimed
 
     async def record_action(self, record: EntertainmentActionRecord) -> int:
         connection = self._require_connection()

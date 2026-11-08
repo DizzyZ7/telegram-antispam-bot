@@ -154,6 +154,10 @@ class PostgresEntertainmentStorage:
                     """
                 )
                 await connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_ent_search_request "
+                    "ON ent_actions(chat_id,trigger_message_id) WHERE action_type='search_reply'"
+                )
+                await connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS ent_schema_migrations (
                         migration_key TEXT PRIMARY KEY,
@@ -412,6 +416,17 @@ class PostgresEntertainmentStorage:
             "DELETE FROM entertainment_birthday_delivery WHERE chat_id=$1 AND event_id=$2 AND status='CLAIMED'",
             int(chat_id), event_id,
         )
+
+    async def claim_search_request(
+        self, chat_id: int, topic_id: int, message_id: int, created_at: int,
+    ) -> bool:
+        value = await self._require_pool().fetchval(
+            "INSERT INTO ent_actions(chat_id,topic_id,action_type,trigger_message_id,created_at,metadata) "
+            "VALUES($1,$2,'search_reply',$3,$4,'{\"source\":\"web_search_v1\",\"status\":\"claimed\"}'::jsonb) "
+            "ON CONFLICT DO NOTHING RETURNING id",
+            int(chat_id), int(topic_id), int(message_id), int(created_at),
+        )
+        return value is not None
 
     async def record_action(self, record: EntertainmentActionRecord) -> int:
         value = await self._require_pool().fetchval(

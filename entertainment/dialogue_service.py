@@ -27,6 +27,7 @@ from .meme_memory import (
 from .models import EntertainmentActionRecord, EntertainmentActionType
 from .moderation_safety import is_safe_entertainment_reply, is_safe_entertainment_source
 from .moderation_safety_service import EntertainmentService as SafetyEntertainmentService
+from .search_service import SearchAnswerService
 
 LOGGER = logging.getLogger(__name__)
 _MAX_HISTORY = 120
@@ -42,6 +43,10 @@ class EntertainmentService(SafetyEntertainmentService):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._dialogue_locks: dict[tuple[int, int], asyncio.Lock] = {}
+        self.search_answers = SearchAnswerService(
+            self.storage, is_allowed_scope=self.is_allowed_scope,
+            quiet_hours_active=self._quiet_hours_active, now_fn=self._now_fn,
+        )
 
     @staticmethod
     def _human_direct_reply(message: Message) -> bool:
