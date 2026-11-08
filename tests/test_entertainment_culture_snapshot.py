@@ -114,7 +114,8 @@ class CultureSnapshotTests(unittest.IsolatedAsyncioTestCase):
 
         context = await service._culture_generation_context(-1001, 10, now=5000)
 
-        self.assertIn("автобус сейчас", context.source_messages)
+        self.assertNotIn("автобус сейчас", context.source_messages)
+        self.assertIn("автобус сейчас", context.context_messages)
         store.recent_events.assert_awaited_once()
         store.sample_event_windows.assert_awaited_once()
         store.memory_counts.assert_awaited_once()
