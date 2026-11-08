@@ -7,8 +7,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from entertainment.search_answers import (
-    SearchFailure, TavilySearchClient, extract_search_question,
+    SearchFailure, TavilySearchClient, extract_search_question, checked_search_answer,
 )
+from entertainment.moderation_safety import is_safe_entertainment_reply
 
 
 ANSWER = 'Небо кажется голубым из-за рассеяния солнечного света в атмосфере.'
@@ -23,6 +24,25 @@ def payload(answer=ANSWER):
 
 
 class SearchQuestionTests(unittest.TestCase):
+    def test_factual_second_person_is_allowed_but_entertainment_remains_strict(self):
+        text = 'Благодаря фотосинтезу вы получаете кислород.'
+        self.assertEqual(checked_search_answer(text), text)
+        self.assertFalse(is_safe_entertainment_reply(text))
+
+    def test_search_uses_its_own_700_character_limit(self):
+        text = ('Растения используют солнечный свет. ' * 21)[:700]
+        self.assertEqual(len(text), 700)
+        self.assertEqual(checked_search_answer(text), text)
+        self.assertFalse(is_safe_entertainment_reply(text))
+        with self.assertRaisesRegex(SearchFailure, 'answer_too_long'):
+            checked_search_answer(text + 'а')
+
+    def test_search_still_rejects_abuse_profanity_and_targeted_mentions(self):
+        for text in ('Ты идиот.', 'Это позор нашего чата.', 'Ты никому не нужен.',
+                     'Блядь, это фотосинтез.', 'Растения выделяют кислород для @someone.'):
+            with self.subTest(text=text), self.assertRaisesRegex(SearchFailure, 'answer_safety'):
+                checked_search_answer(text)
+
     def test_only_explicit_addressed_questions_are_extracted(self):
         for incoming in ('Фосген, почему небо голубое?', 'фосген а почему небо голубое?',
                          'ФОСГЕН: почему небо голубое?'):
