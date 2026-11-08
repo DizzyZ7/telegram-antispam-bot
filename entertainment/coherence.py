@@ -34,14 +34,48 @@ def _tag(word: str):
     return _morph().parse(word)[0].tag
 
 
+@lru_cache(maxsize=4096)
+def _unambiguous_nominative(word: str) -> bool:
+    from .language import _morph
+    nouns = [p for p in _morph().parse(word) if p.is_known and p.tag.POS == 'NOUN']
+    return (any(p.tag.case == 'nomn' for p in nouns)
+            and not any(p.tag.case in {'accs', 'datv'} for p in nouns))
+
+
+def _repeated_predicate_defect(text: str) -> bool:
+    from .language import analyze_token
+    for sentence in re.split(r'[.!?;]+', text):
+        parts = re.split(r'\s+и\s+', sentence, flags=re.I)
+        for left, right in zip(parts, parts[1:]):
+            left_words = [w.casefold() for w in _WORD_RE.findall(left)]
+            right_words = [w.casefold() for w in _WORD_RE.findall(right)]
+            if len(right_words) < 2 or len(left_words) < len(right_words):
+                continue
+            if not any(_tag(w).POS in {'VERB', 'ADJS'} for w in right_words):
+                continue
+            # «Не ушел ... и ушел ...» is a contrast, not an identical action.
+            if ('не' in left_words) != ('не' in right_words):
+                continue
+            left_lemmas = [analyze_token(w).lemma.replace('ё', 'е') for w in left_words]
+            right_lemmas = [analyze_token(w).lemma.replace('ё', 'е') for w in right_words]
+            if left_lemmas[-len(right_lemmas):] == right_lemmas:
+                return True
+    return False
+
+
 def _past_agreement_defect(text: str) -> bool:
-    from .language import COPULAR_LEMMAS, analyze_token, short_predicative_parse
+    from .language import COPULAR_LEMMAS, DATIVE_INFINITIVE_LEMMAS, analyze_token, copula_complement_parse
     # Only a clear, simple pre-verbal subject. Post-verbal subjects, coordinated
     # nouns and unknown morphology are deliberately left to the constructor.
     for clause in re.split(r'[.!?;,]+|\s+(?:а|но|зато)\s+', text, flags=re.I):
         words = [w.casefold() for w in _WORD_RE.findall(clause)]
         tags = [_tag(w) for w in words]
         for index, tag in enumerate(tags):
+            if (tag.POS == 'VERB' and analyze_token(words[index]).lemma in DATIVE_INFINITIVE_LEMMAS
+                    and any(t.POS == 'INFN' for t in tags[index + 1:])
+                    and not any(t.case == 'datv' for t in tags[:index])
+                    and any(_unambiguous_nominative(w) for w in words[:index])):
+                return True
             if tag.POS != 'VERB' or tag.tense != 'past':
                 continue
             if any(w in {'и', 'или'} for w in words[:index]):
@@ -60,9 +94,9 @@ def _past_agreement_defect(text: str) -> bool:
             for position in range(index + 1, len(tags)):
                 dependent = tags[position]
                 if analyze_token(words[index]).lemma in COPULAR_LEMMAS:
-                    parsed = short_predicative_parse(words[position])
-                    if parsed is not None:
-                        dependent = parsed.tag
+                    dependent = copula_complement_parse(
+                        words[position], tuple(words[position + 1:])
+                    ).tag
                 if dependent.POS in {'ADJS', 'PRTS'}:
                     pass
                 elif (dependent.POS == 'ADJF' and dependent.case == 'ablt'
@@ -91,6 +125,8 @@ def generated_text_defect(text: str | None) -> str | None:
     words = [word.casefold().replace("ё", "е") for word in _WORD_RE.findall(text)]
     if words and words[-1] in _DANGLING:
         return 'dangling_clause'
+    if _repeated_predicate_defect(text):
+        return 'repeated_predicate'
     if _past_agreement_defect(text):
         return 'subject_agreement'
     for left, right in zip(words, words[1:]):

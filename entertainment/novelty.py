@@ -8,7 +8,7 @@ _WORD_RE = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*", re.UNICODE)
 
 
 def _normalized_words(text: str) -> tuple[str, ...]:
-    return tuple(match.group(0).casefold() for match in _WORD_RE.finditer(text or ""))
+    return tuple(match.group(0).casefold().replace("ё", "е") for match in _WORD_RE.finditer(text or ""))
 
 
 def _four_grams(words: tuple[str, ...]) -> tuple[tuple[str, str, str, str], ...]:

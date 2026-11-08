@@ -34,7 +34,7 @@ _STRUCTURED_CANDIDATE_LIMIT = 64
 
 
 def _word_tokens(text: str) -> list[str]:
-    return [token.lstrip("/").casefold() for token in _WORD_RE.findall(str(text))]
+    return [token.lstrip("/").casefold().replace("ё", "е") for token in _WORD_RE.findall(str(text))]
 
 
 def normalize_source_text(text: str) -> str:
@@ -108,7 +108,7 @@ class TransitionModel:
     indexes: Mapping[int, Mapping[tuple[str, ...], tuple[str, ...]]]
 
     def next_options(self, history: Iterable[str]) -> tuple[int, tuple[str, ...]]:
-        normalized = [str(token).lstrip("/").casefold() for token in history]
+        normalized = [str(token).lstrip("/").casefold().replace("ё", "е") for token in history]
         for order in range(min(5, len(normalized)), 0, -1):
             key = tuple(normalized[-order:])
             options = self.indexes.get(order, {}).get(key, ())

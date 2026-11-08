@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import random
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 
 from .coherence import generated_text_defect
 from .generation_v3 import (GenerationMode, GenerationRequest, GenerationResult,
                             longest_contiguous_word_overlap, normalize_source_text)
-from .language import COPULAR_LEMMAS, _morph, analyze_token, build_topic_anchor, short_predicative_parse
+from .language import (COPULAR_LEMMAS, DATIVE_INFINITIVE_LEMMAS, _morph, analyze_token, build_topic_anchor,
+                       copula_complement_parse, short_predicative_parse)
 from .moderation_safety import is_safe_entertainment_reply, is_safe_entertainment_source
 from .novelty import is_novel_generated_text
 
@@ -18,8 +20,12 @@ _CLAUSE = re.compile(r"[.!?;,\n]+|\s+(?:и|а|но|зато)\s+", re.I)
 _ANIMALS = frozenset({'кот', 'кошка', 'котенок', 'енот', 'собака', 'пес', 'сова',
                       'хомяк', 'лиса', 'пингвин', 'дракон', 'робот', 'персонаж',
                       'капибара', 'крокодил'})
+_CHAPTER_OBJECT_VERBS = frozenset({'писать', 'написать', 'дописать', 'дописывать',
+                                 'читать', 'прочитать', 'дочитать', 'перечитать',
+                                 'редактировать', 'опубликовать', 'публиковать'})
 _MAX_SOURCES = 128
 _MAX_ATTEMPTS = 160
+_MAX_SUBJECTS_PER_SOURCE = 12
 
 
 @lru_cache(maxsize=4096)
@@ -62,31 +68,132 @@ class _Predicate:
     source: str
 
 
-def _fragments(source: str) -> list[tuple[_Subject | None, _Predicate]]:
+def _safe_clauses(source: str, *, min_words: int) -> Iterator[tuple[tuple[str, ...], tuple]]:
     if (not is_safe_entertainment_source(source) or '@' in source
+            or source.lstrip().startswith('/')
             or re.search(r'https?://|www\.|t\.me/', source, re.I)):
-        return []
-    identity = normalize_source_text(source)
-    output = []
+        return
     for clause in _CLAUSE.split(source)[:8]:
         if re.search(r'[A-Za-z0-9]', clause) or _contains_name(clause):
             continue
         words = tuple(w.casefold().replace('ё', 'е') for w in _WORDS.findall(clause))
-        if not 3 <= len(words) <= 20:
+        if min_words <= len(words) <= 20:
+            yield words, tuple(_parse(w) for w in words)
+
+
+def _matching_adjective(word: str, noun):
+    return next((p for p in _parses(word)
+                 if p.tag.POS == 'ADJF' and p.tag.case == noun.tag.case
+                 and p.tag.number == noun.tag.number
+                 and (noun.tag.number == 'plur' or p.tag.gender == noun.tag.gender)), None)
+
+
+def _human_role_reading(words: tuple[str, ...], parses: tuple, index: int) -> bool:
+    alternatives = _parses(words[index])
+    if not any(p.is_known and p.tag.POS == 'NOUN' and p.tag.animacy == 'anim'
+               and p.normal_form not in _ANIMALS
+               and not {'Name', 'Surn', 'Patr'} & p.tag.grammemes for p in alternatives):
+        return False
+    # «Дописываю главу» identifies a direct book object. A recipient or a
+    # prepositional phrase («писал главе», «писал про главу») stays ambiguous.
+    if any(p.is_known and p.normal_form == 'глава' and p.tag.animacy == 'inan'
+           and p.tag.case == 'accs' for p in alternatives):
+        for previous in range(index - 1, -1, -1):
+            if parses[previous].tag.POS in {'VERB', 'INFN'}:
+                return not (parses[previous].normal_form in _CHAPTER_OBJECT_VERBS
+                            and all(p.tag.POS in {'ADJF', 'ADVB', 'PRCL'}
+                                    for p in parses[previous + 1:index]))
+    return True
+
+
+def _impersonal_infinitive(words: tuple[str, ...]) -> bool:
+    for index, word in enumerate(words):
+        parsed = _parse(word)
+        if 'Prdx' not in parsed.tag.grammemes and parsed.tag.POS != 'PRED':
             continue
-        parses = [_parse(w) for w in words]
+        for following in words[index + 1:]:
+            pos = _parse(following).tag.POS
+            if pos == 'INFN':
+                return True
+            if pos not in {'ADVB', 'PRCL'}:
+                break
+    return False
+
+
+def _vocabulary_subjects(source: str) -> list[_Subject]:
+    """Learn safe object phrases even when a human was the implied subject."""
+    identity = normalize_source_text(source)
+    subjects: dict[_Subject, None] = {}
+    for words, parses in _safe_clauses(source, min_words=1):
+        for index, best in enumerate(parses):
+            modified = index > 0 and any(p.tag.POS == 'ADJF' for p in _parses(words[index - 1]))
+            if best.tag.POS != 'NOUN' and not modified:
+                continue
+            # In «с синей клавиатурой», «синей» is an agreed adjective,
+            # although the dictionary's first parse is the noun «синь».
+            if index + 1 < len(words) and any(
+                p.is_known and p.tag.POS == 'NOUN' and _matching_adjective(words[index], p)
+                for p in _parses(words[index + 1])
+            ):
+                continue
+            # «Очень рады» is still a short predicate without an explicit
+            # pronoun/copula. Only a compatible nominal modifier can resolve it.
+            if (short_predicative_parse(words[index]) is not None
+                    and (not modified or any(
+                        p.tag.POS == 'NPRO' or p.normal_form in COPULAR_LEMMAS
+                        for p in parses[:index]))):
+                continue
+            # An ambiguous «пила» in «я пила кофе» is not a learned saw.
+            if (any(p.tag.POS == 'VERB' for p in _parses(words[index]))
+                    and (any(p.tag.POS == 'NPRO' for p in parses[:index])
+                         or (index == 0 and any(p.tag.POS == 'NOUN' for p in parses[1:])))):
+                continue
+            noun = next((p for p in _parses(words[index])
+                         if p.is_known and p.tag.POS == 'NOUN'
+                         and (p.tag.animacy == 'inan' or p.normal_form in _ANIMALS)
+                         and p.tag.number in {'sing', 'plur'}
+                         and (not modified or _matching_adjective(words[index - 1], p))), None)
+            if noun is None or _human_role_reading(words, parses, index):
+                continue
+            number, gender = noun.tag.number, noun.tag.gender
+            if number == 'sing' and gender not in {'masc', 'femn', 'neut'}:
+                continue
+            nominal = noun.inflect({'nomn', str(number)})
+            if nominal is None:
+                continue
+            phrase = [nominal.word]
+            if modified:
+                adjective = _matching_adjective(words[index - 1], noun)
+                forms = {'nomn', str(number)}
+                if number == 'sing':
+                    forms.add(str(gender))
+                agreed = adjective.inflect(forms)
+                if agreed is None:
+                    continue
+                phrase.insert(0, agreed.word)
+            subject = _Subject(tuple(phrase), str(number), str(gender) if gender else None, identity)
+            subjects[subject] = None
+            if len(subjects) >= _MAX_SUBJECTS_PER_SOURCE:
+                return list(subjects)
+    return list(subjects)
+
+
+def _fragments(source: str) -> list[tuple[_Subject | None, _Predicate]]:
+    identity = normalize_source_text(source)
+    output = []
+    for words, parses in _safe_clauses(source, min_words=2):
         verb_index = next((i for i, p in enumerate(parses)
-                           if p.tag.POS in {'VERB', 'ADJS'}
-                           or (i and parses[i - 1].tag.POS == 'NPRO'
-                               and short_predicative_parse(words[i]))), None)
+                           if p.tag.POS == 'VERB'
+                           or ((p.tag.POS == 'ADJS'
+                                or (i and parses[i - 1].tag.POS == 'NPRO' and p.tag.POS == 'NOUN'))
+                               and copula_complement_parse(
+                                   words[i], words[i + 1:]
+                               ).tag.POS in {'ADJS', 'PRTS'})), None)
         if verb_index is None:
             continue
         # Personal names/roles and unresolved pronoun references must not turn
         # into the target or object of a new, accidentally hostile assertion.
-        if any((p.tag.POS == 'NOUN' and p.tag.animacy == 'anim'
-                   and p.normal_form not in _ANIMALS
-                   and not any(q.tag.POS == 'NOUN' and q.tag.animacy == 'inan'
-                               for q in _parses(words[i])))
+        if any((p.tag.POS == 'NOUN' and _human_role_reading(words, parses, i))
                or (p.tag.POS == 'NPRO' and p.normal_form != 'себя'
                    and not (i < verb_index and p.normal_form in {'я', 'мы'}))
                for i, p in enumerate(parses)):
@@ -124,6 +231,11 @@ def _fragments(source: str) -> list[tuple[_Subject | None, _Predicate]]:
             continue
         if sum(_parse(w).tag.POS == 'VERB' for w in body) > 1:
             continue
+        main = _parse(body[verb_index - body_start])
+        if (any(_parse(w).tag.POS == 'INFN' for w in body)
+                and (main.normal_form in DATIVE_INFINITIVE_LEMMAS
+                     or (main.normal_form in COPULAR_LEMMAS and _impersonal_infinitive(body)))):
+            continue
         # Do not truncate a long predicate just to fit a word budget.
         if generated_text_defect(' '.join(words)):
             continue
@@ -157,7 +269,7 @@ def _agree(predicate: _Predicate, subject: _Subject) -> str | None:
     for index in range(predicate.verb_index + 1, len(words)):
         parsed = _parse(words[index])
         if verb.normal_form in COPULAR_LEMMAS:
-            parsed = short_predicative_parse(words[index]) or parsed
+            parsed = copula_complement_parse(words[index], tuple(words[index + 1:]))
         if parsed.tag.POS in {'ADJS', 'PRTS'}:
             agreed = parsed.inflect(agreement)
         elif parsed.tag.POS == 'ADJF' and parsed.tag.case == 'ablt':
@@ -214,10 +326,15 @@ def compose_memory_text(request: GenerationRequest, *, rng: random.Random) -> Ge
     pool = sorted(pool, key=lambda s: anchor.relevance(normalize_source_text(s).split()),
                   reverse=True)[:_MAX_SOURCES]
     fragments = [fragment for source in pool for fragment in _fragments(source)]
-    subjects = list(dict.fromkeys(s for s, _ in fragments if s is not None))
+    subjects = list(dict.fromkeys([
+        *(s for s, _ in fragments if s is not None),
+        *(s for source in pool for s in _vocabulary_subjects(source)),
+    ]))
     predicates = list(dict.fromkeys(p for _, p in fragments))
     if not subjects or not predicates:
         return None
+    predicate_keys = {p: tuple(analyze_token(w).lemma.replace('ё', 'е') for w in p.words)
+                      for p in predicates}
     accepted: dict[str, float] = {}
     for _ in range(_MAX_ATTEMPTS):
         subject = rng.choice(subjects)
@@ -228,7 +345,8 @@ def compose_memory_text(request: GenerationRequest, *, rng: random.Random) -> Ge
         body = _agree(first, subject)
         if body is None:
             continue
-        others = [p for p in options if p.source != first.source]
+        others = [p for p in options if p.source != first.source
+                  and predicate_keys[p] != predicate_keys[first]]
         if others and rng.random() < .70:
             second = _agree(rng.choice(others), subject)
             if second is not None:
