@@ -85,6 +85,7 @@ class MemoryCounts:
 
 
 class EntertainmentActionType(str, Enum):
+    SEARCH_REPLY = "search_reply"
     CONTEXTUAL_REPLY = "contextual_reply"
     REMIXED_PHRASE = "remixed_phrase"
     MEMORY_CALLBACK = "memory_callback"

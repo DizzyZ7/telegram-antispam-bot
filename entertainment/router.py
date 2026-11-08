@@ -84,6 +84,11 @@ class EntertainmentLearningMiddleware(BaseMiddleware):
         chat_id = int(getattr(getattr(event, "chat", None), "id", 0) or 0)
         if chat_id not in self.service.chat_ids:
             return await handler(event, data)
+        search_answers = getattr(self.service, 'search_answers', None)
+        if search_answers is not None and search_answers.matches(event):
+            # The real handler runs after moderation. Never enqueue a second
+            # entertainment response or remember this external-search question.
+            return await handler(event, data)
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(
                 self._drain(), name="entertainment-learning",
@@ -112,6 +117,12 @@ def register_entertainment_handlers(app: Any, service: EntertainmentService) -> 
     dispatcher = app.dp
     dispatcher.message.outer_middleware(EntertainmentLearningMiddleware(service))
     chat_filter = EntertainmentChatFilter(service.chat_ids)
+
+    @dispatcher.message(chat_filter, service.search_answers.matches)
+    async def entertainment_search_answer(message: Message) -> None:
+        await service.search_answers.handle(message)
+
+    _promote_last_message_handler(app)
 
     @dispatcher.message(chat_filter, Command(commands=["fun", "entertainment"]))
     async def entertainment_panel(message: Message) -> None:
@@ -207,6 +218,7 @@ def register_entertainment_handlers(app: Any, service: EntertainmentService) -> 
     print(
         "ENTERTAINMENT_SCOPE_READY "
         f"chat_ids={ids_label} learning=per_topic autonomy=state_driven "
-        "behavior_modes=calm,alive,active culture_memory=on external_ai=off",
+        "behavior_modes=calm,alive,active culture_memory=on external_ai=off "
+        f"explicit_search={'tavily' if service.search_answers.enabled else 'off'}",
         flush=True,
     )

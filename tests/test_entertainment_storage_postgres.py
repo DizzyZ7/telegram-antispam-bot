@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 import tempfile
@@ -21,6 +22,19 @@ TEST_CHAT_IDS = (-990001, -990002, -990003, -990004)
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "TEST_DATABASE_URL is not configured")
 class PostgresEntertainmentStorageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_search_claim_is_atomic_and_survives_a_new_connection(self):
+        claimed = await asyncio.gather(*(
+            self.storage.claim_search_request(-990001, 10, 909, 200000) for _ in range(8)))
+        self.assertEqual(sum(claimed), 1)
+        self.assertTrue(await self.storage.claim_search_request(-990002, 10, 909, 200000))
+        self.assertFalse(await self.storage.claim_search_request(-990001, 20, 909, 200000))
+        other = PostgresEntertainmentStorage(os.environ['TEST_DATABASE_URL'])
+        await other.initialize()
+        try:
+            self.assertFalse(await other.claim_search_request(-990001, 10, 909, 200000))
+        finally:
+            await other.close()
+
     async def asyncSetUp(self) -> None:
         assert os.environ.get("TEST_DATABASE_URL")
         self.storage = PostgresEntertainmentStorage(os.environ["TEST_DATABASE_URL"])

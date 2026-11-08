@@ -97,6 +97,10 @@ class EntertainmentStorage(Protocol):
 
     async def record_action(self, record: EntertainmentActionRecord) -> int: ...
 
+    async def claim_search_request(
+        self, chat_id: int, topic_id: int, message_id: int, created_at: int,
+    ) -> bool: ...
+
     async def recent_actions(
         self,
         chat_id: int,
