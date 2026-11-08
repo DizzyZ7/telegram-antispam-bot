@@ -174,6 +174,12 @@ def is_safe_entertainment_source(text: str | None) -> bool:
             and not _HUMILIATION_RE.search(text))
 
 
+def is_safe_search_reply(text: str | None) -> bool:
+    """Factual output permits benign second person within the search budget."""
+    return (isinstance(text, str) and bool(text.strip()) and len(text) <= 700
+            and not _MENTION_RE.search(text) and is_safe_entertainment_source(text))
+
+
 def is_safe_entertainment_reply(text: str | None) -> bool:
     """Conservative outgoing-only social safety gate for entertainment.
 
@@ -190,4 +196,4 @@ def is_safe_entertainment_reply(text: str | None) -> bool:
     return is_safe_entertainment_text(text)
 
 
-__all__ = ["detect_unsafe_entertainment_language", "is_safe_entertainment_text", "is_safe_entertainment_reply", "is_safe_entertainment_source"]
+__all__ = ["detect_unsafe_entertainment_language", "is_safe_entertainment_text", "is_safe_entertainment_reply", "is_safe_entertainment_source", "is_safe_search_reply"]

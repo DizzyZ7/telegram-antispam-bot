@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
-from .moderation_safety import is_safe_entertainment_reply
+from .moderation_safety import is_safe_search_reply
 from .language import analyze_token
 
 SEARCH_ENDPOINT = 'https://api.tavily.com/search'
@@ -58,7 +58,7 @@ def checked_search_answer(value: object) -> str:
     letters = sum(c.isalpha() for c in text)
     if cyrillic < 4 or cyrillic < letters / 2:
         raise SearchFailure('answer_language')
-    if not is_safe_entertainment_reply(text):
+    if not is_safe_search_reply(text):
         raise SearchFailure('answer_safety')
     return text
 
