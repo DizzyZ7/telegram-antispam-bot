@@ -1,12 +1,16 @@
 """Search runtime: real storage, fake external provider and Telegram boundary."""
 import asyncio
+import logging
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from aiogram import Dispatcher
+from aiogram.types import Message
 
 from entertainment import EntertainmentService
 from entertainment.models import EntertainmentSettings
@@ -207,6 +211,114 @@ class FreeSearchRuntimeTests(unittest.IsolatedAsyncioTestCase):
                           new=AsyncMock(side_effect=RuntimeError('offline'))):
             await self.service.search_answers.handle(message)
         self.assertEqual(message.replies, [])
+        self.provider.answer.assert_not_awaited()
+
+    async def test_rejection_is_visible_on_stdout_even_when_logging_is_disabled(self):
+        self.provider.answer.side_effect = SearchFailure('answer_language')
+        stdout = StringIO()
+        previous = logging.root.manager.disable
+        try:
+            logging.disable(logging.CRITICAL)
+            with redirect_stdout(stdout):
+                await self.service.search_answers.handle(self.message())
+        finally:
+            logging.disable(previous)
+        output = stdout.getvalue()
+        self.assertIn('FOSGEN_SEARCH_RESULT', output)
+        self.assertIn('reason=answer_language', output)
+        self.assertNotIn('synthetic-key', output)
+        self.assertNotIn('голубое', output)
+        self.assertNotIn(str(CHAT), output)
+
+    async def test_status_isolated_by_topic_and_does_not_spend_credits(self):
+        await self.service.search_answers.handle(self.message())
+        self.assertIn('success', self.service.search_answers.status_text(CHAT, 10))
+        self.assertIn('нет данных', self.service.search_answers.status_text(CHAT, 11))
+        self.assertIn('нет данных', self.service.search_answers.status_text(CHAT-1, 10))
+        self.provider.answer.assert_awaited_once()
+
+    async def test_absent_topic_alias_and_diagnostic_eviction(self):
+        await self.service.search_answers.handle(self.message(topic_id=0))
+        self.assertIn('success', self.service.search_answers.status_text(CHAT, None))
+        self.assertIn('нет данных', self.service.search_answers.status_text(CHAT, 1))
+        with redirect_stdout(StringIO()):
+            for i in range(256):
+                await self.service.search_answers.handle(self.message(topic_id=i+100, message_id=i+100))
+        self.assertIn('нет данных', self.service.search_answers.status_text(CHAT, 0))
+        self.assertIn('throttled', self.service.search_answers.status_text(CHAT, 355))
+
+    async def test_unknown_error_text_and_status_metadata_are_never_disclosed(self):
+        failure = SearchFailure('synthetic-key private question')
+        failure.http_status = 'synthetic-key'
+        self.provider.answer.side_effect = failure
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            await self.service.search_answers.handle(self.message())
+        status = self.service.search_answers.status_text(CHAT, 10)
+        for output in (stdout.getvalue(), status):
+            self.assertNotIn('synthetic-key', output)
+            self.assertNotIn('private question', output)
+            self.assertIn('provider_failure', output)
+
+    async def test_delivery_failure_and_replay_preserve_original_search_reason(self):
+        self.provider.answer.side_effect = SearchFailure('answer_language')
+        message = self.message()
+        message.reply = AsyncMock(side_effect=TimeoutError('delivery uncertain'))
+        await self.service.search_answers.handle(message)
+        await self.service.search_answers.handle(message)
+        status = self.service.search_answers.status_text(CHAT, 10)
+        self.assertIn('answer_language', status)
+        self.assertIn('uncertain', status)
+        self.assertEqual(message.reply.await_count, 1)
+
+    async def test_admin_can_read_diagnostics_without_search_or_settings_reads(self):
+        self.app.bot.get_chat_member = AsyncMock(return_value=SimpleNamespace(status='administrator'))
+        self.provider.answer.side_effect = SearchFailure('answer_language', http_status=200)
+        await self.service.search_answers.handle(self.message())
+        message = self.message(message_id=5, text='/fun_search_status')
+        with patch.object(self.storage, 'get_settings',
+                          new=AsyncMock(side_effect=AssertionError('status must not use database'))):
+            await self.service.show_search_status(message)
+        self.assertEqual(len(message.replies), 1)
+        self.assertIn('answer_language', message.replies[0])
+        self.assertIn('HTTP: 200', message.replies[0])
+        self.provider.answer.assert_awaited_once()
+
+    async def test_unauthorized_status_cannot_disclose_or_query_search(self):
+        self.app.bot.get_chat_member = AsyncMock(return_value=SimpleNamespace(status='member'))
+        message = self.message(text='/fun_search_status')
+        await self.service.show_search_status(message)
+        self.assertEqual(len(message.replies), 1)
+        self.assertIn('только администрации', message.replies[0])
+        self.assertNotIn('HTTP', message.replies[0])
+        self.provider.answer.assert_not_awaited()
+
+    async def test_blocked_status_stops_before_admin_lookup(self):
+        self.app.bot.get_chat_member = AsyncMock(side_effect=AssertionError('blocked scope'))
+        message = self.message(topic_id=292358, text='/fun_search_status')
+        await self.service.show_search_status(message)
+        self.assertEqual(message.replies, [])
+        self.app.bot.get_chat_member.assert_not_awaited()
+
+    async def test_real_registered_status_route_has_no_search_side_effect(self):
+        self.app.bot.get_chat_member = AsyncMock(return_value=SimpleNamespace(status='creator'))
+        register_entertainment_handlers(self.app, self.service)
+        message = Message.model_validate({
+            'message_id': 123, 'date': NOW, 'message_thread_id': 10,
+            'chat': {'id': CHAT, 'type': 'supergroup'},
+            'from': {'id': 7, 'is_bot': False, 'first_name': 'Synthetic'},
+            'text': '/fun_search_status',
+        })
+        matched = []
+        for handler in self.app.dp.message.handlers:
+            ok, _ = await handler.check(message, bot=self.app.bot)
+            if ok:
+                matched.append(handler)
+        self.assertEqual(len(matched), 1)
+        with patch.object(Message, 'reply', new=AsyncMock()) as telegram_reply:
+            await matched[0].callback(message)
+        self.assertIn('нет данных', telegram_reply.await_args.args[0])
+        self.assertIsNone(telegram_reply.await_args.kwargs['parse_mode'])
         self.provider.answer.assert_not_awaited()
 
 

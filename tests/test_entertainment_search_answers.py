@@ -152,6 +152,36 @@ class TavilyClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.client.answer('Какая столица Франции?'),
                          'Париж является столицей Франции.')
 
+    async def test_failure_categories_preserve_safe_http_status(self):
+        for status, reason in ((401, 'http_auth'), (403, 'http_access'),
+                               (400, 'http_request'), (422, 'http_request'),
+                               (429, 'http_rate_limit'), (432, 'http_quota'),
+                               (433, 'http_quota'), (434, 'http_capacity'),
+                               (503, 'http_provider')):
+            self.status = status
+            self.response = {'detail': 'synthetic-secret private question'}
+            with self.subTest(status=status), self.assertRaises(SearchFailure) as caught:
+                await self.client.answer('Почему небо голубое?')
+            self.assertEqual(str(caught.exception), reason)
+            self.assertEqual(caught.exception.http_status, status)
+
+    async def test_http200_filter_rejection_retains_status_and_specific_reason(self):
+        for answer, reason in (('', 'missing_answer'), ('Слово ' * 150, 'answer_too_long'),
+                               ('Ответ: https://example.test', 'answer_links'),
+                               ('The sky is blue.', 'answer_language')):
+            self.response = payload(answer)
+            with self.subTest(reason=reason), self.assertRaises(SearchFailure) as caught:
+                await self.client.answer('Почему небо голубое?')
+            self.assertEqual(str(caught.exception), reason)
+            self.assertEqual(caught.exception.http_status, 200)
+
+    async def test_timeout_has_a_separate_diagnostic_reason(self):
+        self.delay = .05
+        with self.assertRaises(SearchFailure) as caught:
+            await TavilySearchClient('synthetic-secret', timeout=.01).answer('Почему небо голубое?')
+        self.assertEqual(str(caught.exception), 'timeout')
+        self.assertIsNone(caught.exception.http_status)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -32,6 +32,10 @@ _FILLER = frozenset({
 class SearchFailure(Exception):
     """A safe operational category, never provider bodies or user text."""
 
+    def __init__(self, reason: str, *, http_status: int | None = None) -> None:
+        super().__init__(reason)
+        self.http_status = http_status
+
 
 def extract_search_question(text: str | None) -> str | None:
     if not isinstance(text, str):
@@ -44,8 +48,12 @@ def checked_search_answer(value: object) -> str:
     if not isinstance(value, str):
         raise SearchFailure('missing_answer')
     text = ' '.join(value.replace('**', '').replace('__', '').replace('`', '').split())
-    if not text or len(text) > 700 or _LINK.search(text):
-        raise SearchFailure('answer_format')
+    if not text:
+        raise SearchFailure('missing_answer')
+    if len(text) > 700:
+        raise SearchFailure('answer_too_long')
+    if _LINK.search(text):
+        raise SearchFailure('answer_links')
     cyrillic = len(re.findall('[А-Яа-яЁё]', text))
     letters = sum(c.isalpha() for c in text)
     if cyrillic < 4 or cyrillic < letters / 2:
@@ -105,6 +113,7 @@ class TavilySearchClient:
             'include_answer': 'basic', 'max_results': 3, 'language': 'ru',
             'safe_search': True, 'include_raw_content': False,
         }
+        status = None
         try:
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self._timeout), trust_env=False,
@@ -114,8 +123,14 @@ class TavilySearchClient:
                     headers={'Authorization': f'Bearer {self._api_key}'},
                     allow_redirects=False,
                 ) as response:
-                    if response.status != 200:
-                        raise SearchFailure('http_error')
+                    status = response.status
+                    if status != 200:
+                        reason = {
+                            400: 'http_request', 401: 'http_auth', 403: 'http_access',
+                            422: 'http_request', 429: 'http_rate_limit',
+                            432: 'http_quota', 433: 'http_quota', 434: 'http_capacity',
+                        }.get(status, 'http_provider' if status >= 500 else 'http_error')
+                        raise SearchFailure(reason, http_status=status)
                     chunks, size = [], 0
                     async for chunk in response.content.iter_chunked(8192):
                         size += len(chunk)
@@ -124,9 +139,12 @@ class TavilySearchClient:
                         chunks.append(chunk)
                     data = json.loads(b''.join(chunks))
             return _grounded_answer(data, question)
-        except SearchFailure:
+        except SearchFailure as exc:
+            exc.http_status = status
             raise
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            raise SearchFailure('transport') from None
+        except asyncio.TimeoutError:
+            raise SearchFailure('timeout', http_status=status) from None
+        except aiohttp.ClientError:
+            raise SearchFailure('transport', http_status=status) from None
         except (ValueError, TypeError):
-            raise SearchFailure('response_format') from None
+            raise SearchFailure('response_format', http_status=status) from None

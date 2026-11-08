@@ -48,6 +48,15 @@ class EntertainmentService(SafetyEntertainmentService):
             quiet_hours_active=self._quiet_hours_active, now_fn=self._now_fn,
         )
 
+    async def show_search_status(self, message: Message) -> None:
+        if not self._message_scope_allowed(message):
+            return
+        if not await self._is_admin(message):
+            await message.reply('Статус поиска доступен только администрации чата.')
+            return
+        text = self.search_answers.status_text(int(message.chat.id), self._topic_id(message))
+        await message.reply(text, parse_mode=None, disable_web_page_preview=True)
+
     @staticmethod
     def _human_direct_reply(message: Message) -> bool:
         # Parent validates the exact identity of the bot replied to.
