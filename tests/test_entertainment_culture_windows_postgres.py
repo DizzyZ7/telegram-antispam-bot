@@ -67,6 +67,15 @@ class CultureWindowPostgresTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([[item.message_id for item in window] for window in windows], [[1, 2, 3]])
 
+    async def test_age_cutoff_precedes_sampling_and_excludes_fresh_events(self):
+        for mid, at in ((1, 99), (2, 100), (3, 101)):
+            await self.storage.add_event(event(mid, created_at=at))
+        await self.storage.add_event(event(4, topic_id=99, created_at=90))
+        windows = await self.storage.sample_event_windows(
+            -1888000111, 44, window_count=4, window_size=16, seed=42, created_before=100
+        )
+        self.assertEqual([[item.message_id for item in w] for w in windows], [[1, 2]])
+
 
 if __name__ == "__main__":
     unittest.main()

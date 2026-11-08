@@ -20,6 +20,9 @@ _TOKEN_RE = re.compile(
     re.UNICODE,
 )
 _CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]", re.UNICODE)
+COPULAR_LEMMAS = frozenset({'быть', 'стать', 'становиться', 'остаться', 'оставаться',
+                            'оказаться', 'оказываться', 'казаться', 'выглядеть',
+                            'считаться', 'притвориться', 'прикинуться'})
 
 # This is intentionally compact: TopicAnchor needs to remove grammatical/noise
 # words, not behave as a literary-language dictionary.
@@ -90,6 +93,13 @@ def _morph() -> pymorphy3.MorphAnalyzer:
     if _MORPH is None:
         _MORPH = pymorphy3.MorphAnalyzer()
     return _MORPH
+
+
+@lru_cache(maxsize=4096)
+def short_predicative_parse(word: str):
+    """A copula disambiguates short predicates such as «рады» (also a noun)."""
+    return next((p for p in _morph().parse(word)
+                 if p.tag.POS in {'ADJS', 'PRTS'}), None)
 
 
 def _normalize_surface(value: str) -> str:

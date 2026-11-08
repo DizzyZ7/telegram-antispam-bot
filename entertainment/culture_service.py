@@ -21,6 +21,7 @@ from .context_interjection import choose_context_interjection
 from .config import (
     BOOTSTRAP_TEXT_EVENT_THRESHOLD,
     GENERATION_SAMPLE_LIMIT,
+    GENERATION_INCUBATION_SECONDS,
     MEDIA_REPEAT_COOLDOWN_SECONDS,
     MIN_MESSAGES_TO_GENERATE,
 )
@@ -33,6 +34,7 @@ from .culture import (
 )
 from .generation import generate_text
 from .generation_v3 import GenerationMode, GenerationRequest, GenerationResult
+from .fragment_composer import compose_memory_text, reject_replayed_memory
 from .media_culture import MediaCandidate, select_media_candidate
 from .slang import choose_slang_callback, learn_topic_slang
 from .memory import classify_memory_event
@@ -184,6 +186,7 @@ class EntertainmentService(PhaseBEntertainmentService):
                     window_count=_CULTURE_HISTORICAL_WINDOW_COUNT,
                     window_size=_CULTURE_HISTORICAL_WINDOW_SIZE,
                     seed=culture_seed,
+                    created_before=timestamp - GENERATION_INCUBATION_SECONDS,
                 )
             )
             counts = await memory_counts(int(chat_id), int(topic_id))
@@ -209,6 +212,7 @@ class EntertainmentService(PhaseBEntertainmentService):
                 textual_event_count=int(counts.text) + int(counts.emoji),
                 bootstrap_threshold=BOOTSTRAP_TEXT_EVENT_THRESHOLD,
                 weight_seed=culture_seed,
+                generation_before=timestamp - GENERATION_INCUBATION_SECONDS,
             )
             return CultureMemorySnapshot(
                 recent_events=recent,
@@ -286,18 +290,18 @@ class EntertainmentService(PhaseBEntertainmentService):
             mode=mode,
             recent_bot_outputs=list(recent_outputs),
         )
+        protected = list(dict.fromkeys([
+            *context.source_messages, *getattr(context, 'protected_messages', []),
+        ]))
+        fresh = list(getattr(context, 'fresh_messages', []))
         for _ in range(5):
-            result = generate_text(request, rng=self.rng)
+            result = compose_memory_text(request, rng=self.rng)
+            if result is None:
+                result = generate_text(request, rng=self.rng)
             if result is None:
                 continue
             generated = result.text
-            if generated_text_defect(generated):
-                continue
-            if not is_novel_generated_text(
-                generated,
-                context.source_messages,
-                recent_outputs,
-            ):
+            if reject_replayed_memory(generated, protected, recent_outputs, fresh):
                 continue
             styled, signature = apply_emoji_style(
                 generated,
@@ -595,7 +599,8 @@ class EntertainmentService(PhaseBEntertainmentService):
         # harmless subject in this chat+topic and does not quote either one.
         context_interjection_scene: str | None = None
         if (
-            not supervisor
+            generation_result is None
+            and not supervisor
             and generation_mode is GenerationMode.AUTONOMOUS
             and phase is not ConversationPhase.PEAK
             and self.rng.random() < 0.75
@@ -706,7 +711,8 @@ class EntertainmentService(PhaseBEntertainmentService):
                             preferred_topic = await read_topic(chat_id, int(sender.id))
                         eligible_user_id = int(sender.id)
                         chance = 0.28
-            elif generation_mode is GenerationMode.AUTONOMOUS and not supervisor and generated:
+            elif (generation_mode is GenerationMode.AUTONOMOUS and not supervisor and generated
+                  and getattr(generation_result, 'origin', None) != 'memory'):
                 # Rare community-wide literary interventions are original
                 # authored jokes about current CHAT context, not a person.
                 style_for_line = self.rng.choice(("gentle", "ironic", "absurd"))
@@ -803,6 +809,8 @@ class EntertainmentService(PhaseBEntertainmentService):
                 "personality_style": personality_style,
                 "personality_personal": personality_personal,
                 "generation_mode": generation_mode.value,
+                "generation_origin": getattr(generation_result, 'origin', None),
+                "generation_memory_sources": len(set(snapshot.generation.source_messages)),
                 "generation_candidate_count": (
                     generation_result.candidate_count if generation_result is not None else 0
                 ),

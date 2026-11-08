@@ -100,6 +100,7 @@ class GenerationResult:
     score: float
     candidate_count: int
     rejection_counts: Mapping[str, int]
+    origin: str = 'recombination'
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,7 +16,7 @@ def obj(**kwargs):
     return SimpleNamespace(**kwargs)
 
 
-def generation_result(text: str = "новая мемная фраза") -> GenerationResult:
+def generation_result(text: str = "совершенно новая мемная фраза") -> GenerationResult:
     return GenerationResult(
         text=text,
         engine="v3",
@@ -147,7 +147,7 @@ class GenerationObservabilityTests(unittest.IsolatedAsyncioTestCase):
         result = generation_result()
         with (
             patch("entertainment.culture_service.generate_text", return_value=result),
-            patch("entertainment.culture_service.is_novel_generated_text", return_value=True),
+            patch("entertainment.culture_service.compose_memory_text", return_value=None),
             patch("entertainment.culture_service.apply_emoji_style", return_value=(result.text, None)),
         ):
             outcome = service._generate_culture_text(
@@ -170,7 +170,7 @@ class GenerationObservabilityTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("entertainment.culture_service.generate_text", return_value=result) as generator,
-            patch("entertainment.culture_service.is_novel_generated_text", return_value=True),
+            patch("entertainment.culture_service.compose_memory_text", return_value=None),
             patch("entertainment.culture_service.apply_emoji_style", return_value=(result.text, None)),
         ):
             outcome = service._generate_culture_text(
@@ -194,7 +194,8 @@ class GenerationObservabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_total_generation_failure_records_one_no_output_after_five_internal_attempts(self):
         service, _store = self.service()
 
-        with patch("entertainment.culture_service.generate_text", return_value=None) as generator:
+        with (patch("entertainment.culture_service.generate_text", return_value=None) as generator,
+              patch("entertainment.culture_service.compose_memory_text", return_value=None)):
             outcome = service._generate_culture_text(
                 context(),
                 recent_outputs=[],

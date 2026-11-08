@@ -8,6 +8,7 @@ rather than pretending to understand semantics without a language model.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 _WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё'-]*")
 _FAKE_INTERNAL_STATUS = re.compile(
@@ -22,6 +23,60 @@ _BROKEN_SWITCH = re.compile(
 # Unintentional duplicated content stems: лимита лимит, генерации генерация.
 # Benign rhetorical repetitions are tolerated only for a small authored list.
 _RHETORICAL = frozenset({"очень", "прямо", "скоро", "ладно", "даже"})
+_DANGLING = frozenset({'и', 'а', 'но', 'или', 'что', 'чтобы', 'если', 'когда',
+                       'на', 'в', 'во', 'к', 'ко', 'с', 'со', 'из', 'для', 'у',
+                       'от', 'за', 'под', 'перед', 'про', 'через', 'по', 'потому'})
+
+
+@lru_cache(maxsize=4096)
+def _tag(word: str):
+    from .language import _morph
+    return _morph().parse(word)[0].tag
+
+
+def _past_agreement_defect(text: str) -> bool:
+    from .language import COPULAR_LEMMAS, analyze_token, short_predicative_parse
+    # Only a clear, simple pre-verbal subject. Post-verbal subjects, coordinated
+    # nouns and unknown morphology are deliberately left to the constructor.
+    for clause in re.split(r'[.!?;,]+|\s+(?:а|но|зато)\s+', text, flags=re.I):
+        words = [w.casefold() for w in _WORD_RE.findall(clause)]
+        tags = [_tag(w) for w in words]
+        for index, tag in enumerate(tags):
+            if tag.POS != 'VERB' or tag.tense != 'past':
+                continue
+            if any(w in {'и', 'или'} for w in words[:index]):
+                continue
+            if any(t.POS == 'NOUN' and t.case == 'nomn' for t in tags[index + 1:]):
+                continue
+            subject = next((t for t in reversed(tags[:index])
+                            if t.POS == 'NOUN' and t.case == 'nomn'), None)
+            if subject is None:
+                continue
+            if subject.number and tag.number and subject.number != tag.number:
+                return True
+            if (subject.number == tag.number == 'sing' and subject.gender and tag.gender
+                    and subject.gender != tag.gender):
+                return True
+            for position in range(index + 1, len(tags)):
+                dependent = tags[position]
+                if analyze_token(words[index]).lemma in COPULAR_LEMMAS:
+                    parsed = short_predicative_parse(words[position])
+                    if parsed is not None:
+                        dependent = parsed.tag
+                if dependent.POS in {'ADJS', 'PRTS'}:
+                    pass
+                elif (dependent.POS == 'ADJF' and dependent.case == 'ablt'
+                      and analyze_token(words[index]).lemma in COPULAR_LEMMAS
+                      and not any(t.POS == 'NOUN' and t.case == 'ablt' for t in tags[position + 1:])):
+                    pass
+                else:
+                    continue
+                if subject.number and dependent.number and subject.number != dependent.number:
+                    return True
+                if (subject.number == dependent.number == 'sing'
+                        and subject.gender and dependent.gender and subject.gender != dependent.gender):
+                    return True
+    return False
 
 
 def generated_text_defect(text: str | None) -> str | None:
@@ -34,6 +89,10 @@ def generated_text_defect(text: str | None) -> str | None:
         return "broken_clause_join"
 
     words = [word.casefold().replace("ё", "е") for word in _WORD_RE.findall(text)]
+    if words and words[-1] in _DANGLING:
+        return 'dangling_clause'
+    if _past_agreement_defect(text):
+        return 'subject_agreement'
     for left, right in zip(words, words[1:]):
         if (
             len(left) >= 4

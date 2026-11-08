@@ -42,6 +42,8 @@ class CultureGenerationContext:
     recent_event_count: int = 0
     historical_event_count: int = 0
     conversation_run_count: int = 0
+    protected_messages: list[str] = field(default_factory=list)
+    fresh_messages: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +242,7 @@ def build_culture_context(
     textual_event_count: int = 0,
     bootstrap_threshold: int = 10_000,
     weight_seed: int = 0,
+    generation_before: int | None = None,
 ) -> CultureGenerationContext:
     """Build weighted local-generation input while preserving turn semantics."""
 
@@ -283,6 +286,27 @@ def build_culture_context(
                 weight_seed=seed,
             )
 
+    # Preserve original event identities. Joining adjacent messages would turn
+    # one person's complete old sentence into a supposedly different source.
+    # Fresh context never supplies words to autonomous creative synthesis.
+    all_events = [*recent, *(event for window in historical for event in window)]
+    protected_messages = list(dict.fromkeys(
+        text for event in all_events if (text := _event_text(event))
+    ))
+    fresh_messages: list[str] = []
+    if generation_before is not None:
+        source_messages = []
+        for event in all_events:
+            if (event.sender_is_bot or event.is_forwarded or event.is_command
+                    or not (text := _event_text(event))):
+                continue
+            if int(event.created_at) > int(generation_before):
+                fresh_messages.append(text)
+            else:
+                source_messages.append(text)
+        source_messages = list(dict.fromkeys(source_messages))
+        fresh_messages = list(dict.fromkeys(fresh_messages))
+
     context_messages = [
         text
         for event in recent
@@ -323,6 +347,8 @@ def build_culture_context(
         recent_event_count=len(recent),
         historical_event_count=historical_count,
         conversation_run_count=len(recent_runs),
+        protected_messages=protected_messages,
+        fresh_messages=fresh_messages,
     )
 
 

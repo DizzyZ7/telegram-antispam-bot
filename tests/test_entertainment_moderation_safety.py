@@ -10,10 +10,19 @@ from entertainment.culture import CultureGenerationContext
 from entertainment.generation_v3 import GenerationResult
 from entertainment.models import EntertainmentSettings, MemoryCounts, MemoryEvent, MemoryEventType
 from writers_moderation import contains_prohibited_language
+from entertainment.moderation_safety import is_safe_entertainment_reply
 
 
 def obj(**kwargs):
     return SimpleNamespace(**kwargs)
+
+
+class SocialHumiliationTests(unittest.TestCase):
+    def test_humiliation_without_profanity_is_not_a_bot_reply(self):
+        for text in ('Маша опять позор нашего чата.', 'Иван никому здесь не нужен.',
+                     'Никто не хочет общаться с Машей.', 'Этот участник всем надоел.'):
+            with self.subTest(text=text):
+                self.assertFalse(is_safe_entertainment_reply(text))
 
 
 def make_message(*, text: str, message_id: int = 500):
@@ -107,7 +116,7 @@ class EntertainmentModerationSafetyTests(unittest.IsolatedAsyncioTestCase):
         )
         service = self.service(storage)
 
-        snapshot = await service._culture_memory_snapshot(-1001, 10, now=200)
+        snapshot = await service._culture_memory_snapshot(-1001, 10, now=100_000)
 
         self.assertTrue(snapshot.generation.source_messages)
         self.assertTrue(

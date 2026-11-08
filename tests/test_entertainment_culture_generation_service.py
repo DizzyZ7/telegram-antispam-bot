@@ -77,7 +77,7 @@ def storage():
             ]
         ),
         sample_event_windows=AsyncMock(
-            return_value=[[event(101, "старый мем про метро", created_at=100)]]
+            return_value=[[event(101, "старый мем про метро", created_at=-100_000)]]
         ),
         memory_counts=AsyncMock(),
         recent_texts=AsyncMock(return_value=["legacy fallback text"] * 30),
@@ -87,7 +87,7 @@ def storage():
 
 
 def generated_result(
-    text: str = "совсем новая фраза",
+    text: str = "совсем новая смешная фраза",
     *,
     score: float = 5.25,
     candidate_count: int = 9,
@@ -159,8 +159,7 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("entertainment.culture_service.select_action", return_value=selected),
-            patch("entertainment.culture_service.generate_text", return_value=generated_result("готовая фраза")) as generator,
-            patch("entertainment.culture_service.is_novel_generated_text", return_value=True),
+            patch("entertainment.culture_service.generate_text", return_value=generated_result("совершенно новая готовая фраза")) as generator,
             patch("entertainment.culture_service.apply_emoji_style", return_value=("готовая фраза", None)),
             patch("entertainment.culture_service.select_media_candidate", return_value=None),
         ):
@@ -181,8 +180,7 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("entertainment.culture_service.generate_text", return_value=result) as generator,
-            patch("entertainment.culture_service.is_novel_generated_text", return_value=True) as novelty,
-            patch("entertainment.culture_service.apply_emoji_style", return_value=("совсем новая фраза 😂", "😂")) as emoji,
+            patch("entertainment.culture_service.apply_emoji_style", return_value=("совсем новая смешная фраза 😂", "😂")) as emoji,
         ):
             outcome = service._generate_culture_text(
                 context,
@@ -193,7 +191,7 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
             )
             generated, signature = outcome
 
-        self.assertEqual(generated, "совсем новая фраза 😂")
+        self.assertEqual(generated, "совсем новая смешная фраза 😂")
         self.assertEqual(signature, "😂")
         self.assertEqual(outcome.diagnostics, result)
         request = generator.call_args.args[0]
@@ -202,11 +200,6 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.trigger_text, "автобус")
         self.assertEqual(request.mode, GenerationMode.DIRECT_REPLY)
         self.assertEqual(request.recent_bot_outputs, ["старый ответ"])
-        novelty.assert_called_once_with(
-            "совсем новая фраза",
-            context.source_messages,
-            ["старый ответ"],
-        )
         emoji.assert_called_once()
 
     async def test_action_metadata_records_safe_generation_diagnostics_without_raw_corpus(self):
@@ -219,12 +212,11 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
             novelty=1.0,
             annoyance_cost=0.0,
         )
-        diagnostics = generated_result("мемная фраза", score=5.25, candidate_count=9)
+        diagnostics = generated_result("совершенно новая мемная фраза", score=5.25, candidate_count=9)
 
         with (
             patch("entertainment.culture_service.select_action", return_value=selected),
             patch("entertainment.culture_service.generate_text", return_value=diagnostics),
-            patch("entertainment.culture_service.is_novel_generated_text", return_value=True),
             patch("entertainment.culture_service.apply_emoji_style", return_value=("мемная фраза 😂", "😂")),
             patch("entertainment.culture_service.select_media_candidate", return_value=None),
         ):
@@ -251,11 +243,10 @@ class CultureGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         store = storage()
         store.memory_counts.return_value = obj(total=3, text=3, emoji=0, sticker=0, photo=0, animation=0)
         service = self.service(store)
-        diagnostics = generated_result("готовая фраза")
+        diagnostics = generated_result("совершенно новая готовая фраза")
 
         with (
             patch("entertainment.culture_service.generate_text", return_value=diagnostics) as generator,
-            patch("entertainment.culture_service.is_novel_generated_text", return_value=True),
             patch("entertainment.culture_service.apply_emoji_style", return_value=("готовая фраза", None)),
         ):
             await service.generate_now(message())

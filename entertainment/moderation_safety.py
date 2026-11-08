@@ -157,13 +157,21 @@ _INSULT_RE = re.compile(
     r"сдох\w*|пош[её]л\w*\s+вон)\b",
     re.IGNORECASE,
 )
+_HUMILIATION_RE = re.compile(
+    r'\bпозор\s+(?:(?:этого|нашего|всего)\s+)?(?:чата|семьи|общества|команды)\b'
+    r'|\bникому\s+(?:(?:тут|здесь|вообще|больше)\s+){0,2}не\s+нуж(?:ен|на|но|ны)\b'
+    r'|\bникто\s+не\s+хочет\s+(?:общаться|говорить|дружить)\b'
+    r'|\bвсем\s+(?:уже\s+)?надоел\w*\b',
+    re.IGNORECASE,
+)
 
 
 def is_safe_entertainment_source(text: str | None) -> bool:
     """Permit ordinary chat speech, but do not train on profane or insulting text."""
     if not isinstance(text, str) or not text.strip():
         return True
-    return is_safe_entertainment_text(text) and not bool(_INSULT_RE.search(text))
+    return (is_safe_entertainment_text(text) and not _INSULT_RE.search(text)
+            and not _HUMILIATION_RE.search(text))
 
 
 def is_safe_entertainment_reply(text: str | None) -> bool:
@@ -177,7 +185,7 @@ def is_safe_entertainment_reply(text: str | None) -> bool:
         return False
     if len(text) > 600 or _MENTION_RE.search(text):
         return False
-    if _DIRECT_ADDRESS_RE.search(text) or _INSULT_RE.search(text):
+    if _DIRECT_ADDRESS_RE.search(text) or _INSULT_RE.search(text) or _HUMILIATION_RE.search(text):
         return False
     return is_safe_entertainment_text(text)
 

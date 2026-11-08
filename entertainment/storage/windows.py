@@ -58,11 +58,16 @@ class SQLiteEntertainmentStorage(RetentionSQLiteEntertainmentStorage):
         window_count: int,
         window_size: int,
         seed: int,
+        created_before: int | None = None,
     ) -> list[list[MemoryEvent]]:
         connection = self._require_connection()
+        age_clause = " AND created_at <= ? " if created_before is not None else ""
+        scope_args = (int(chat_id), int(topic_id))
+        if created_before is not None:
+            scope_args += (int(created_before),)
         async with connection.execute(
-            "SELECT COUNT(*) FROM ent_memory_events WHERE chat_id = ? AND topic_id = ?",
-            (int(chat_id), int(topic_id)),
+            "SELECT COUNT(*) FROM ent_memory_events WHERE chat_id = ? AND topic_id = ?" + age_clause,
+            scope_args,
         ) as cursor:
             row = await cursor.fetchone()
         total = int(row[0]) if row else 0
@@ -71,9 +76,9 @@ class SQLiteEntertainmentStorage(RetentionSQLiteEntertainmentStorage):
         for offset in starts:
             async with connection.execute(
                 f"SELECT {_EVENT_FIELDS} FROM ent_memory_events "
-                "WHERE chat_id = ? AND topic_id = ? "
+                "WHERE chat_id = ? AND topic_id = ? " + age_clause +
                 "ORDER BY created_at ASC, message_id ASC, id ASC LIMIT ? OFFSET ?",
-                (int(chat_id), int(topic_id), size, int(offset)),
+                (*scope_args, size, int(offset)),
             ) as cursor:
                 rows = await cursor.fetchall()
             window = [
@@ -114,13 +119,18 @@ class PostgresEntertainmentStorage(RetentionPostgresEntertainmentStorage):
         window_count: int,
         window_size: int,
         seed: int,
+        created_before: int | None = None,
     ) -> list[list[MemoryEvent]]:
         pool = self._require_pool()
+        age_clause = " AND created_at <= $3 " if created_before is not None else " "
+        scope_args = (int(chat_id), int(topic_id))
+        if created_before is not None:
+            scope_args += (int(created_before),)
+        limit_index = len(scope_args) + 1
         total = int(
             await pool.fetchval(
-                "SELECT COUNT(*) FROM ent_memory_events WHERE chat_id=$1 AND topic_id=$2",
-                int(chat_id),
-                int(topic_id),
+                "SELECT COUNT(*) FROM ent_memory_events WHERE chat_id=$1 AND topic_id=$2" + age_clause,
+                *scope_args,
             )
             or 0
         )
@@ -129,10 +139,9 @@ class PostgresEntertainmentStorage(RetentionPostgresEntertainmentStorage):
         for offset in starts:
             rows = await pool.fetch(
                 f"SELECT {_EVENT_FIELDS} FROM ent_memory_events "
-                "WHERE chat_id=$1 AND topic_id=$2 "
-                "ORDER BY created_at ASC, message_id ASC, id ASC LIMIT $3 OFFSET $4",
-                int(chat_id),
-                int(topic_id),
+                "WHERE chat_id=$1 AND topic_id=$2 " + age_clause +
+                f"ORDER BY created_at ASC, message_id ASC, id ASC LIMIT ${limit_index} OFFSET ${limit_index + 1}",
+                *scope_args,
                 size,
                 int(offset),
             )

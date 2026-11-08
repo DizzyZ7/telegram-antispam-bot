@@ -6,7 +6,7 @@ from dataclasses import replace
 
 from aiogram.types import Message
 
-from .config import BOOTSTRAP_TEXT_EVENT_THRESHOLD, resolve_generation_engine
+from .config import BOOTSTRAP_TEXT_EVENT_THRESHOLD, GENERATION_INCUBATION_SECONDS, resolve_generation_engine
 from .culture import CultureGenerationContext, CultureMemorySnapshot, build_culture_context
 from .culture_service import CultureGenerationOutcome
 from .generation_v3 import GenerationMode
@@ -77,6 +77,7 @@ class EntertainmentService(ObservabilityEntertainmentService):
                 textual_event_count=int(snapshot.counts.text) + int(snapshot.counts.emoji),
                 bootstrap_threshold=BOOTSTRAP_TEXT_EVENT_THRESHOLD,
                 weight_seed=self._culture_seed(chat_id, topic_id, timestamp),
+                generation_before=timestamp - GENERATION_INCUBATION_SECONDS,
             )
         else:
             safe_sources = [

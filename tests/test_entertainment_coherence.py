@@ -14,6 +14,16 @@ from entertainment.generation_v3 import (
 
 
 class GeneratedChatQualityTests(unittest.TestCase):
+    def test_dangling_clause_ends_and_clear_subject_agreement_fail(self):
+        for text in ('Кот охраняет рукопись и теперь финал пишется на.',
+                     'Читатели ждут продолжение а сегодня потерял рассказ но.',
+                     'Завтра чайник пришла дописывать главу.',
+                     'Сегодня кастрюля ушел на кухню.',
+                     'Тихая кастрюля была совершенно готов работать.',
+                     'Старая кастрюля стала счастливым.'):
+            with self.subTest(text=text):
+                self.assertIsNotNone(generated_text_defect(text))
+
     def test_real_fosgen_gibberish_and_fake_system_limits_are_rejected(self):
         bad = (
             "Учебу делаю а нет утро чат достиг лимита лимит генераций.",

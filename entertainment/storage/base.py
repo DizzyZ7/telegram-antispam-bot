@@ -64,6 +64,7 @@ class EntertainmentStorage(Protocol):
         window_count: int,
         window_size: int,
         seed: int,
+        created_before: int | None = None,
     ) -> list[list[MemoryEvent]]: ...
 
     async def memory_counts(self, chat_id: int, topic_id: int) -> MemoryCounts: ...
