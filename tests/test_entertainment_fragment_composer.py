@@ -3,7 +3,9 @@ import re
 import unittest
 
 from entertainment.fragment_composer import compose_memory_text, reject_replayed_memory
-from entertainment.generation_v3 import GenerationMode, GenerationRequest
+from entertainment.generation_v3 import (GenerationMode, GenerationRequest, build_transition_model, distinct_source_identities,
+                                        longest_contiguous_word_overlap)
+from entertainment.novelty import is_novel_generated_text
 from entertainment.moderation_safety import is_safe_entertainment_reply
 
 
@@ -22,6 +24,16 @@ def request(sources=SOURCES, recent=()):
 
 
 class LearnedFragmentTests(unittest.TestCase):
+    def test_russian_yo_does_not_disguise_source_or_bot_replay(self):
+        before = 'Ленивый будильник ушел отдыхать'
+        after = 'Ленивый будильник ушёл отдыхать.'
+        self.assertTrue(reject_replayed_memory(after, [before], [], []))
+        self.assertFalse(is_novel_generated_text(after, [], [before]))
+        self.assertEqual(longest_contiguous_word_overlap(after, before), 4)
+        self.assertEqual(len(distinct_source_identities([before, after])), 1)
+        model = build_transition_model(['Ёж уходит отдыхать'])
+        self.assertEqual(model.next_options(['Еж']), model.next_options(['Ёж']))
+
     def test_learned_actions_produce_new_safe_phrases_without_news_catalogue(self):
         results = [compose_memory_text(request(), rng=random.Random(seed)) for seed in range(8)]
         self.assertTrue(all(results))
@@ -51,12 +63,12 @@ class LearnedFragmentTests(unittest.TestCase):
             self.assertIsNone(compose_memory_text(request(sources), rng=random.Random(1)))
 
     def test_ambiguous_neuter_nominative_still_supplies_a_subject(self):
-        sources = ['Сонное вдохновение ушло на дачу',
-                   'Светлое вдохновение устроило тихий праздник',
-                   'Тихое вдохновение запустило новый эксперимент']
+        sources = ['Сонное вдохновение давно ушло отдыхать',
+                   'Светлое вдохновение готовилось работать',
+                   'Тихое вдохновение успело поесть']
         result = compose_memory_text(request(sources), rng=random.Random(5))
         self.assertIsNotNone(result)
-        self.assertRegex(result.text, r'(?:ушло|устроило|запустило)')
+        self.assertRegex(result.text, r'(?:ушло|готовилось|успело)')
 
     def test_first_person_human_messages_supply_actions_without_becoming_targets(self):
         result = compose_memory_text(request([
@@ -91,12 +103,24 @@ class LearnedFragmentTests(unittest.TestCase):
         self.assertNotEqual(first.text, second.text)
 
     def test_subject_dependent_short_complements_follow_new_gender_and_number(self):
-        sources = ['Тихая кастрюля требует официальный выходной',
-                   'Я был совершенно готов работать', 'Мы были очень рады отдыху']
+        sources = ['Тихая кастрюля тихо работает',
+                   'Я был совершенно готов работать', 'Мы были очень рады']
         result = compose_memory_text(request(sources), rng=random.Random(0))
         self.assertIsNotNone(result)
         self.assertNotRegex(result.text, r'\b(?:готов|рады)\b')
         self.assertRegex(result.text, r'готова|рада')
+
+    def test_degree_adverb_before_short_adjective_does_not_get_gender_inflected(self):
+        for speech in ('Я был совершенно готов работать', 'Я совершенно готов работать'):
+            with self.subTest(speech=speech):
+                sources = ['Тихая кастрюля тихо работает', speech, 'Мы были очень рады']
+                texts = [r.text for seed in range(8)
+                         if (r := compose_memory_text(request(sources), rng=random.Random(seed)))]
+                self.assertTrue(any('готова' in s for s in texts))
+                for text in texts:
+                    if 'готова' in text:
+                        self.assertIn('совершенно готова', text)
+                    self.assertNotRegex(text, r'совершенна\b|совершенен\b|совершенны\b')
 
     def test_instrumental_predicative_adjectives_agree_with_feminine_subject(self):
         sources = ['Старая кастрюля осталась голодной',

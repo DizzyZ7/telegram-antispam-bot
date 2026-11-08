@@ -23,6 +23,8 @@ _CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]", re.UNICODE)
 COPULAR_LEMMAS = frozenset({'быть', 'стать', 'становиться', 'остаться', 'оставаться',
                             'оказаться', 'оказываться', 'казаться', 'выглядеть',
                             'считаться', 'притвориться', 'прикинуться'})
+DATIVE_INFINITIVE_LEMMAS = frozenset({'прийтись', 'удаться', 'довестись', 'случиться',
+                                     'хотеться', 'захотеться', 'спаться', 'посчастливиться'})
 
 # This is intentionally compact: TopicAnchor needs to remove grammatical/noise
 # words, not behave as a literary-language dictionary.
@@ -100,6 +102,24 @@ def short_predicative_parse(word: str):
     """A copula disambiguates short predicates such as «рады» (also a noun)."""
     return next((p for p in _morph().parse(word)
                  if p.tag.POS in {'ADJS', 'PRTS'}), None)
+
+
+@lru_cache(maxsize=4096)
+def copula_complement_parse(word: str, following: tuple[str, ...] = ()):
+    """Keep a degree adverb before a short predicate, including ambiguous forms."""
+    parses = _morph().parse(word)
+    adverb = next((p for p in parses if p.tag.POS == 'ADVB'), None)
+    if adverb is not None:
+        for index, token in enumerate(following):
+            next_parses = _morph().parse(token)
+            if any(p.tag.POS in {'ADJF', 'ADJS', 'PRTF', 'PRTS'} for p in next_parses):
+                return adverb
+            if next_parses[0].tag.POS in {'ADVB', 'PRCL'}:
+                continue
+            if next_parses[0].tag.POS == 'PREP' and 'не' in following[:index]:
+                return adverb
+            break
+    return short_predicative_parse(word) or parses[0]
 
 
 def _normalize_surface(value: str) -> str:

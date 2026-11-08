@@ -160,3 +160,40 @@ class AccumulationStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(record)
         self.assertEqual(record.metadata['generation_origin'], 'memory')
         self.assertNotIn('Готовая сценка', record.metadata['output'])
+
+    async def test_month_old_ordinary_messages_supply_vocabulary_after_reopening(self):
+        sources = ['Поставил чайник на плиту', 'Дописываю последнюю главу',
+                   'Купил свежие пельмени', 'Ищу старый будильник',
+                   'Забыл выключить телевизор', 'Открыл маленький холодильник']
+        for mid, text in enumerate(sources, 1):
+            await self.storage.add_event(event(mid, text, at=NOW - 30 * 86_400))
+        await self.storage.add_event(event(10, 'Собрал красивый дирижабль', at=NOW))
+        await self.storage.close()
+        self.storage = SQLiteEntertainmentStorage(self.path)
+        await self.storage.initialize()
+        service = self.service()
+        snapshot = await service._culture_memory_snapshot(CHAT, TOPIC, now=NOW)
+        outcome = service._generate_culture_text(snapshot.generation, recent_outputs=[],
+                                                 recent_signatures=set())
+        self.assertIsNotNone(outcome.text)
+        self.assertEqual(outcome.diagnostics.origin, 'memory')
+        self.assertNotIn('дирижабл', outcome.text.casefold())
+        await self.storage.delete_user_memory(CHAT, 7)
+        forgotten = await service._culture_memory_snapshot(CHAT, TOPIC, now=NOW)
+        self.assertIsNone(service._generate_culture_text(
+            forgotten.generation, recent_outputs=[], recent_signatures=set()).text)
+
+    async def test_vocabulary_review_cases_pass_through_the_exported_generation_gate(self):
+        service = self.service()
+        for actor in ('Позвал нового гения', 'Поговорил с новым главой', 'Очень рады'):
+            with self.subTest(actor=actor):
+                context = CultureGenerationContext(
+                    source_messages=[actor, 'Я опять хочу спать', 'Я давно ушел отдыхать'],
+                    context_messages=[])
+                outcome = service._generate_culture_text(context, recent_outputs=[], recent_signatures=set())
+                if outcome.text is not None:
+                    self.assertNotEqual(outcome.diagnostics.origin, 'memory')
+        context = CultureGenerationContext(
+            source_messages=['Старая клавиатура', 'Было страшно снова звонить'], context_messages=[])
+        self.assertIsNone(service._generate_culture_text(
+            context, recent_outputs=[], recent_signatures=set()).text)
