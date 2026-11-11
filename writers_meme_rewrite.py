@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import OrderedDict
 from typing import Any
 
@@ -38,6 +39,8 @@ class WritersMemeMiddleware(BaseMiddleware):
         self.app, self.scope, self.store = app, scope, store
         self.on_message_deleted = on_message_deleted
         self._seen: OrderedDict[tuple[int, int], None] = OrderedDict()
+        self._last_sticker_at: dict[int, float] = {}
+        self._sticker_cooldown_seconds = 10.0
 
     def in_scope(self, message: Message) -> bool:
         return message.chat.type in {'group', 'supergroup'}
@@ -110,19 +113,19 @@ class WritersMemeMiddleware(BaseMiddleware):
                 await self.on_message_deleted(int(event.chat.id), int(event.message_id))
             except Exception as exc:
                 LOGGER.warning('WRITERS_MEME_PURGE_FAILED reason=%s', type(exc).__name__)
-        try:
-            sticker = await self.store.get(event.chat.id)
-            if sticker:
-                await self.app.bot.send_sticker(**self._destination(event), sticker=sticker)
-        except Exception as exc:
-            LOGGER.warning('WRITERS_MEME_STICKER_FAILED reason=%s', type(exc).__name__)
-        rewritten = rewrite_meme_words(text)
-        if is_safe_entertainment_source(rewritten):
+        # Deletion is unconditional; sticker delivery is throttled per chat.
+        # Reserve before awaiting to avoid concurrent sticker floods.
+        chat_id = int(event.chat.id)
+        now = time.monotonic()
+        last = self._last_sticker_at.get(chat_id)
+        if last is None or now - last >= self._sticker_cooldown_seconds:
             try:
-                await self._send_copy(event, rewritten)
+                sticker = await self.store.get(chat_id)
+                if sticker:
+                    self._last_sticker_at[chat_id] = now
+                    await self.app.bot.send_sticker(**self._destination(event), sticker=sticker)
             except Exception as exc:
-                # A timeout may have delivered the copy. Never retry it.
-                LOGGER.warning('WRITERS_MEME_COPY_UNCERTAIN reason=%s', type(exc).__name__)
+                LOGGER.warning('WRITERS_MEME_STICKER_FAILED reason=%s', type(exc).__name__)
         LOGGER.info('WRITERS_MEME_DELETED chat_id=%s message_id=%s', *identity)
         return None
 
@@ -172,7 +175,7 @@ def register_writers_meme_handlers(app: Any, scope: Any, store: MemeStickerStore
             LOGGER.warning('WRITERS_MEME_CONFIG_SAVE_FAILED reason=%s', type(exc).__name__)
             await notice(message, 'Не удалось подтвердить сохранение стикера. Попробуй еще раз.')
             return
-        await notice(message, 'Стикер сохранен. Нежелательный мем теперь превращается в «муркнул».')
+        await notice(message, 'Стикер сохранен. Сообщения с запрещенным мемом будут удаляться; вместо текста отправляется только стикер.')
 
     @app.dp.message(service.in_scope, Command('mog_sticker_status'))
     async def mog_sticker_status(message: Message) -> None:
@@ -192,6 +195,6 @@ def register_writers_meme_handlers(app: Any, scope: Any, store: MemeStickerStore
         records = app.dp.message.handlers
         index = next(i for i, record in enumerate(records) if record.callback.__name__ == name)
         records.insert(0, records.pop(index))
-    print('WRITERS_MEME_REWRITE_READY replacement=муркнуть sticker_command=/set_mog_sticker '
+    print('WRITERS_MEME_MODERATION_READY mode=delete_sticker_only sticker_command=/set_mog_sticker '
           'scope=all_groups configured_storage=' + ('postgres' if store.postgres else 'files'), flush=True)
     return service
