@@ -77,7 +77,7 @@ class MemeRewriteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(accepted)
         await record.callback(target)
 
-    async def test_delete_then_purge_sticker_and_plain_replacement_in_same_topic(self):
+    async def test_delete_then_purge_and_sticker_in_same_topic(self):
         order = []
         for name in ('delete_message', 'send_sticker', 'send_message'):
             getattr(self.bot, name).side_effect = lambda _name=name, **kw: order.append((_name, kw))
@@ -106,7 +106,7 @@ class MemeRewriteTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_sticker.assert_not_awaited()
         self.next.assert_not_awaited()
 
-    async def test_sticker_failure_and_memory_failure_still_return_text_without_retry(self):
+    async def test_sticker_and_memory_failures_never_repost(self):
         self.bot.send_sticker.side_effect = TimeoutError('delivery uncertain')
         self.purge.side_effect = RuntimeError('database down')
         await self.middleware(self.next, message(), {})
@@ -120,21 +120,19 @@ class MemeRewriteTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_message.assert_not_awaited()
         self.bot.send_sticker.assert_awaited_once()
 
-    async def test_photo_is_restored_with_corrected_plain_caption(self):
+    async def test_photo_is_deleted_without_reposting(self):
         target = message(None, caption='Кот могнул!', photo=[dict(file_id='photo-id',
                          file_unique_id='photo-unique', width=10, height=10)])
         await self.middleware(self.next, target, {})
-        params = self.bot.send_photo.await_args.kwargs
         self.bot.send_photo.assert_not_awaited()
         self.bot.send_message.assert_not_awaited()
 
-    async def test_no_sticker_config_and_no_thread_still_return_corrected_text(self):
+    async def test_no_sticker_config_deletes_without_reposting(self):
         middleware = register_writers_meme_handlers(
             Obj(bot=self.bot, dp=Dispatcher()), self.scope,
             MemeStickerStore(Path(self.temp.name) / 'empty'))
         await middleware(self.next, message(thread=None), {})
         self.bot.send_sticker.assert_not_awaited()
-        self.assertNotIn('message_thread_id', self.bot.send_message.await_args.kwargs)
         self.bot.send_message.assert_not_awaited()
 
     async def test_unsafe_rest_of_message_is_not_republished(self):
@@ -143,7 +141,7 @@ class MemeRewriteTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_sticker.assert_awaited_once()
         self.bot.send_message.assert_not_awaited()
 
-    async def test_long_replacement_preserves_all_text_across_bounded_parts(self):
+    async def test_long_message_deleted_without_text(self):
         await self.middleware(self.next, message('могнул ' * 580), {})
         parts = [c.kwargs['text'] for c in self.bot.send_message.await_args_list]
         self.assertEqual(parts, [])
@@ -175,7 +173,7 @@ class MemeRewriteTests(unittest.IsolatedAsyncioTestCase):
         await chain[chain.index(self.middleware)](self.next, message(), {})
         self.bot.delete_message.assert_awaited_once()
 
-    async def test_polling_subscribes_to_edits_and_real_update_is_rewritten(self):
+    async def test_polling_subscribes_to_edits_and_deletes(self):
         # Production passes this discovery result to start_polling. Middleware
         # alone is insufficient to subscribe aiogram to edited_message updates.
         self.assertIn('edited_message', self.app.dp.resolve_used_update_types())
@@ -194,14 +192,14 @@ class MemeRewriteTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_message.assert_not_awaited()
         self.next.assert_not_awaited()
 
-    async def test_long_caption_keeps_media_and_entire_corrected_text(self):
+    async def test_long_caption_does_not_repost_media(self):
         target = message(None, caption='могнул ' * 145, photo=[dict(file_id='photo-id',
                          file_unique_id='photo-unique', width=10, height=10)])
         await self.middleware(self.next, target, {})
         self.bot.send_photo.assert_not_awaited()
         self.bot.send_message.assert_not_awaited()
 
-    async def test_uncertain_text_delivery_is_never_retried_on_replay(self):
+    async def test_uncertain_sticker_delivery_is_never_retried_on_replay(self):
         self.bot.send_sticker.side_effect = TimeoutError('unknown Telegram result')
         await self.middleware(self.next, message(), {})
         await self.middleware(self.next, message(), {})
