@@ -71,6 +71,25 @@ def result(text: str) -> GenerationResult:
 
 
 class EntertainmentModerationSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_owner_blocked_meme_is_not_learned_or_reused_from_history(self):
+        dirty = memory_event(message_id=1, text='Кот могнул и уснул на диване.', created_at=100)
+        safe = memory_event(message_id=2, text='художник закончил новую иллюстрацию сегодня', created_at=101)
+        storage = obj(
+            get_settings=AsyncMock(return_value=EntertainmentSettings(enabled=True)),
+            get_remember_enabled=AsyncMock(return_value=True),
+            add_event=AsyncMock(), add_message=AsyncMock(),
+            recent_events=AsyncMock(return_value=[dirty, safe]),
+            sample_event_windows=AsyncMock(return_value=[[dirty, safe]]),
+            memory_counts=AsyncMock(return_value=MemoryCounts(total=100, text=100)),
+        )
+        service = self.service(storage)
+        await service.observe_message(make_message(text='Кот могнул и уснул на диване.'))
+        storage.add_event.assert_not_awaited()
+        storage.add_message.assert_not_awaited()
+        snapshot = await service._culture_memory_snapshot(-1001, 10, now=100_000)
+        self.assertNotIn(dirty, snapshot.recent_events)
+        self.assertFalse(any('могнул' in value for value in snapshot.generation.source_messages))
+
     def service(self, storage) -> EntertainmentService:
         service = EntertainmentService(
             obj(bot=obj(id=999)),

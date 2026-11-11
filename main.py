@@ -188,6 +188,7 @@ from minigames import MiniGameStorage, register_minigame_handlers
 from sticker_maker.handlers import register_sticker_handlers
 from writers_guard_history import WritersModerationLedger
 from writers_guard_reports import WritersReportQueue
+from writers_meme_rewrite import MemeStickerStore, register_writers_meme_handlers
 from writers_moderation import (
     MODERATION_LEXICON,
     promote_writers_moderation_handler,
@@ -344,6 +345,20 @@ async def main() -> None:
             )
 
         register_ikf_comments_guard(app)
+        # Security deletion middleware runs before any humorous rewrite.
+        app.dp.message.outer_middleware(ScopedSpamDeletionMiddleware())
+        # Run before Entertainment learning: removed memes never enter its
+        # pending queue or trigger a second chat response.
+        meme_stickers = MemeStickerStore(RUNTIME_DATA_DIR, postgres=lexicon_config)
+        if scope.chat_id is not None:
+            try:
+                await meme_stickers.get(scope.chat_id)
+            except Exception as exc:
+                logging.warning('WRITERS_MEME_CONFIG_LOAD_FAILED reason=%s', type(exc).__name__)
+        register_writers_meme_handlers(
+            app, scope, meme_stickers,
+            on_message_deleted=entertainment_storage.delete_message_memory,
+        )
         register_accurate_stats_handlers(app, accurate_stats)
         register_entertainment_handlers(app, entertainment)
 
@@ -369,8 +384,6 @@ async def main() -> None:
         register_sticker_handlers(app)
         print("STICKER_MAKER_READY scope=private format=webm max_concurrent=2", flush=True)
 
-        # Outer middleware intercepts even messages handled by legacy catch-all routes.
-        app.dp.message.outer_middleware(ScopedSpamDeletionMiddleware())
         await report_scoped_spam_permission(app.bot)
 
         # All game, entertainment, form and legacy handlers have now registered.

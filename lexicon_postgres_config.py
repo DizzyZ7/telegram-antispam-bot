@@ -198,3 +198,22 @@ class LexiconPostgresConfig:
             return int(count), bool(can_insert)
 
         return await self._run("inspect", read)
+
+    async def get_meme_sticker(self, chat_id: int) -> str | None:
+        """Share the existing one-connection config pool without altering Lexicon."""
+        async def read(conn: asyncpg.Connection) -> str | None:
+            value = await conn.fetchval(
+                'SELECT value FROM lexicon_config WHERE key = $1',
+                f'writers_meme_sticker:{int(chat_id)}')
+            return value if isinstance(value, str) and is_valid_sticker_file_id(value) else None
+        return await self._run('get_meme_sticker', read)
+
+    async def set_meme_sticker(self, chat_id: int, file_id: str) -> None:
+        if not is_valid_sticker_file_id(file_id):
+            raise ValueError('Invalid Telegram sticker file_id')
+        async def save(conn: asyncpg.Connection) -> None:
+            await conn.execute(
+                'INSERT INTO lexicon_config (key, value) VALUES ($1, $2) '
+                'ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()',
+                f'writers_meme_sticker:{int(chat_id)}', file_id)
+        await self._run('set_meme_sticker', save)

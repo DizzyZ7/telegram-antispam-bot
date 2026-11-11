@@ -35,6 +35,17 @@ class _FakePool:
 
 
 class LexiconHandlerRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_meme_sticker_uses_chat_scoped_key_separate_from_raccoon(self) -> None:
+        connection = SimpleNamespace(execute=AsyncMock(return_value='INSERT 0 1'),
+                                     fetchval=AsyncMock(return_value=FIRST_STICKER))
+        db = LexiconPostgresConfig('postgresql://test:test@localhost/test')
+        db._get_pool = AsyncMock(return_value=_FakePool(connection))
+        await db.set_meme_sticker(-1001, FIRST_STICKER)
+        self.assertEqual(await db.get_meme_sticker(-1001), FIRST_STICKER)
+        self.assertEqual(connection.execute.await_args.args[1:],
+                         ('writers_meme_sticker:-1001', FIRST_STICKER))
+        self.assertEqual(connection.fetchval.await_args.args[1], 'writers_meme_sticker:-1001')
+
     def test_lexadd_alias_matches_and_preserves_argument(self) -> None:
         for command in ("/lexadd слово", "/lex_add слово", "/lexicon_add слово"):
             with self.subTest(command=command):
@@ -153,6 +164,16 @@ class LexiconHandlerRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "TEST_DATABASE_URL is not set")
 class LexiconPostgresConfigTests(unittest.IsolatedAsyncioTestCase):
+    async def test_meme_sticker_survives_new_pool_without_replacing_raccoon_or_other_chat(self):
+        await self.db.bootstrap(set(), FIRST_STICKER)
+        await self.db.set_meme_sticker(-1001, SECOND_STICKER)
+        await self.db.close()
+        self.db = LexiconPostgresConfig(self.url)
+        self.assertEqual(await self.db.get_meme_sticker(-1001), SECOND_STICKER)
+        self.assertIsNone(await self.db.get_meme_sticker(-1002))
+        _, raccoon = await self.db.bootstrap(set(), None)
+        self.assertEqual(raccoon, FIRST_STICKER)
+
     async def asyncSetUp(self) -> None:
         self.url = os.environ["TEST_DATABASE_URL"]
         self.db = LexiconPostgresConfig(self.url)
