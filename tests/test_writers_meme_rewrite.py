@@ -18,7 +18,8 @@ STICKER = 'CAACAgIAAxkBAAAB1234567890'
 
 
 def message(text='Я могнул, а они могнули!', *, chat=CHAT, thread=10, mid=77, **extra):
-    data = dict(message_id=mid, date=1, chat=dict(id=chat, type='supergroup'),
+    chat_type = extra.pop('chat_type', 'supergroup')
+    data = dict(message_id=mid, date=1, chat=dict(id=chat, type=chat_type),
                 from_user=dict(id=7, is_bot=False, first_name='Tester'),
                 message_thread_id=thread, text=text)
     data.update(extra)
@@ -26,6 +27,29 @@ def message(text='Я могнул, а они могнули!', *, chat=CHAT, thr
 
 
 class MemeRewriteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_other_group_uses_its_own_sticker_and_rewrites_without_global_allowlist(self):
+        await self.store.set(-123, 'CAACAgIAAxkBAAAB9876543210')
+        await self.middleware(self.next, message(chat=-123), {})
+        self.bot.delete_message.assert_awaited_once_with(chat_id=-123, message_id=77)
+        self.assertEqual(self.bot.send_sticker.await_args.kwargs['sticker'], 'CAACAgIAAxkBAAAB9876543210')
+        self.assertEqual(self.bot.send_message.await_args.kwargs['text'], 'Я муркнул, а они муркнули!')
+        self.assertNotIn(-123, self.app.ALLOWED_CHATS)
+
+    async def test_other_group_admin_can_use_setting_commands(self):
+        await self.command('mog_sticker_status', message('/mog_sticker_status', chat=-123))
+        self.assertIn('не настроен', self.bot.send_message.await_args.kwargs['text'])
+        self.bot.get_chat_member.assert_awaited_once_with(chat_id=-123, user_id=7)
+
+    async def test_lexicon_only_chat_keeps_profanity_guard_without_writers_topic_exemptions(self):
+        target = message('могнул, блядь', chat=-1002659916114, thread=14637)
+        self.assertEqual(await self.middleware(self.next, target, {}), 'continued')
+        self.bot.delete_message.assert_not_awaited()
+
+    async def test_other_group_meme_with_profanity_is_deleted_without_unsafe_copy(self):
+        await self.middleware(self.next, message('могнул, блядь', chat=-123), {})
+        self.bot.delete_message.assert_awaited_once()
+        self.bot.send_message.assert_not_awaited()
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.store = MemeStickerStore(Path(self.temp.name))
@@ -70,7 +94,7 @@ class MemeRewriteTests(unittest.IsolatedAsyncioTestCase):
         self.next.assert_not_awaited()
 
     async def test_scope_similar_words_bots_and_existing_profanity_continue(self):
-        cases = [message(chat=-123), message('я могучий'), message('я могнул, блядь'),
+        cases = [message(chat=7, chat_type='private'), message('я могучий'), message('я могнул, блядь'),
                  message(from_user=dict(id=99, is_bot=True, first_name='Bot'))]
         for target in cases:
             self.assertEqual(await self.middleware(self.next, target, {}), 'continued')
@@ -191,11 +215,11 @@ class MemeRewriteTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_message.assert_awaited_once()
         self.bot.send_sticker.assert_awaited_once()
 
-    async def test_non_writers_commands_cannot_read_config_or_lookup_admin(self):
+    async def test_private_commands_cannot_read_config_or_lookup_admin(self):
         for name, text in (('set_mog_sticker', '/set_mog_sticker'),
                            ('mog_sticker_status', '/mog_sticker_status')):
             record = next(r for r in self.app.dp.message.handlers if r.callback.__name__ == name)
-            accepted, _ = await record.check(message(text, chat=-123), bot=self.bot)
+            accepted, _ = await record.check(message(text, chat=7, chat_type='private'), bot=self.bot)
             self.assertFalse(accepted)
         self.bot.get_chat_member.assert_not_awaited()
         self.bot.send_message.assert_not_awaited()

@@ -10,6 +10,7 @@ from aiogram.filters import Command
 from aiogram.types import LinkPreviewOptions, Message
 
 from entertainment.moderation_safety import is_safe_entertainment_source
+from lexicon_game_scope import LEXICON_ONLY_CHAT_IDS
 from writers_meme_policy import contains_meme_words, rewrite_meme_words
 from writers_meme_storage import MemeStickerStore
 from writers_moderation import WRITERS_PROFANITY_EXEMPT_TOPIC_IDS, contains_prohibited_language
@@ -39,7 +40,7 @@ class WritersMemeMiddleware(BaseMiddleware):
         self._seen: OrderedDict[tuple[int, int], None] = OrderedDict()
 
     def in_scope(self, message: Message) -> bool:
-        return message.chat.type in {'group', 'supergroup'} and self.scope.matches(message.chat)
+        return message.chat.type in {'group', 'supergroup'}
 
     @staticmethod
     def _destination(message: Message) -> dict[str, Any]:
@@ -87,7 +88,9 @@ class WritersMemeMiddleware(BaseMiddleware):
             return await handler(event, data)
         # Existing profanity moderation keeps its warning/escalation priority.
         if (event.edit_date is None
-                and event.message_thread_id not in WRITERS_PROFANITY_EXEMPT_TOPIC_IDS
+                and (event.chat.id in LEXICON_ONLY_CHAT_IDS
+                     or (self.scope.matches(event.chat)
+                         and event.message_thread_id not in WRITERS_PROFANITY_EXEMPT_TOPIC_IDS))
                 and contains_prohibited_language(text)):
             return await handler(event, data)
         identity = (int(event.chat.id), int(event.message_id))
@@ -190,5 +193,5 @@ def register_writers_meme_handlers(app: Any, scope: Any, store: MemeStickerStore
         index = next(i for i, record in enumerate(records) if record.callback.__name__ == name)
         records.insert(0, records.pop(index))
     print('WRITERS_MEME_REWRITE_READY replacement=муркнуть sticker_command=/set_mog_sticker '
-          'scope=writers only configured_storage=' + ('postgres' if store.postgres else 'files'), flush=True)
+          'scope=all_groups configured_storage=' + ('postgres' if store.postgres else 'files'), flush=True)
     return service
