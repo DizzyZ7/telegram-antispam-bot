@@ -13,6 +13,7 @@ import re
 from typing import Iterable
 
 import writers_moderation as moderation
+from writers_meme_policy import contains_meme_words
 
 _UNSAFE_AMBIGUOUS_MIXED_PREFIXES = frozenset({"ну", "обос", "падл"})
 _ASCII_LATIN_RE = re.compile(r"[A-Za-z]")
@@ -138,7 +139,7 @@ def detect_unsafe_entertainment_language(text: str) -> str | None:
 def is_safe_entertainment_text(text: str | None) -> bool:
     if not isinstance(text, str) or not text.strip():
         return True
-    return detect_unsafe_entertainment_language(text) is None
+    return not contains_meme_words(text) and detect_unsafe_entertainment_language(text) is None
 
 
 # Entertainment output is held to a stricter standard than human messages:

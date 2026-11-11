@@ -865,6 +865,8 @@ def promote_writers_moderation_handler(dispatcher: Any) -> None:
     for position, handler_name in enumerate(
         ("remove_prohibited_language", "guard_status", "guard_reset",
          "report_message", "list_reports", "confirm_report", "dismiss_report")
+        + tuple(name for name in ('set_mog_sticker', 'mog_sticker_status')
+                if any(getattr(record.callback, '__name__', '') == name for record in handlers))
     ):
         found = next(
             (i for i, record in enumerate(handlers)
