@@ -41,7 +41,7 @@ class PettestTests(unittest.TestCase):
         async def scenario(path):
             pet = await TestPetStore(path).create(123)
             png = render_png(pet.appearance)
-            self.assertTrue(png.startswith(b"\\x89PNG\\r\\n\\x1a\\n"))
+            self.assertTrue(png.startswith(bytes.fromhex("89504e470d0a1a0a")))
         with tempfile.TemporaryDirectory() as folder:
             asyncio.run(scenario(Path(folder) / "pettest.sqlite3"))
 
