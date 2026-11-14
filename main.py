@@ -164,7 +164,7 @@ print(
 
 import legacy_main as app
 from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
-from fosgen_pets.pettest import parse_admin_ids, register_pettest_handlers
+from fosgen_pets.runtime import register_pettest_runtime, start_pet_runtime
 from entertainment import (
     ENTERTAINMENT_CHAT_IDS,
     EntertainmentService,
@@ -248,6 +248,7 @@ async def main() -> None:
     lexicon_config: LexiconPostgresConfig | None = None
     zero_trust_service: ZeroTrustService | None = None
     writers_submission_runtime = None
+    pet_runtime = None
     accurate_initialized = False
     minigame_initialized = False
 
@@ -361,10 +362,7 @@ async def main() -> None:
             on_message_deleted=entertainment_storage.delete_message_memory,
         )
         # Restricted test lab: register before entertainment catch-all, never collect chat messages.
-        if os.getenv('FOSGEN_PETTEST_ENABLED', '0') == '1':
-            pettest_admins = parse_admin_ids(os.getenv('FOSGEN_PETTEST_ADMIN_IDS', ''))
-            register_pettest_handlers(app, admin_ids=pettest_admins, data_dir=RUNTIME_DATA_DIR)
-            print(f'FOSGEN_PETTEST_READY admins={len(pettest_admins)} scope=private')
+        register_pettest_runtime(app, data_dir=RUNTIME_DATA_DIR)
         register_accurate_stats_handlers(app, accurate_stats)
         register_entertainment_handlers(app, entertainment)
 
@@ -390,6 +388,12 @@ async def main() -> None:
         register_sticker_handlers(app)
         print("STICKER_MAKER_READY scope=private format=webm max_concurrent=2", flush=True)
 
+        pet_runtime = await start_pet_runtime(
+            app,
+            database_url=os.getenv("DATABASE_URL"),
+            excluded_chat_ids=LEXICON_ONLY_CHAT_IDS,
+        )
+
         await report_scoped_spam_permission(app.bot)
 
         # All game, entertainment, form and legacy handlers have now registered.
@@ -414,6 +418,8 @@ async def main() -> None:
         print("ENTERTAINMENT_SUPERVISOR_READY interval_seconds=60", flush=True)
         await app.main()
     finally:
+        if pet_runtime is not None:
+            await pet_runtime.stop()
         if writers_submission_runtime is not None:
             await writers_submission_runtime.stop()
         if entertainment_supervisor is not None:
