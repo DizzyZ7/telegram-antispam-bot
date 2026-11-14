@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .core import Appearance, PALETTES, PATTERNS
 from .render_svg import SUPPORTED, render_svg
+from .portrait import render_png
 
 
 def build_gallery(output: Path, *, png: bool = False) -> int:
@@ -21,26 +22,25 @@ def build_gallery(output: Path, *, png: bool = False) -> int:
     count = 0
     for species in sorted(SUPPORTED):
         for pattern in PATTERNS[species]:
-            for sample in range(3):
-                palette = PALETTES[species][sample % len(PALETTES[species])]
+            for sample, seed in enumerate((0, 500000, 999999)):
+                # Hold every field except Pattern Seed fixed for honest comparison.
+                palette = PALETTES[species][0]
                 appearance = Appearance(
                     species=species,
                     palette=palette,
                     pattern=pattern,
-                    eyes=("brown", "green", "blue")[sample],
-                    marking=("star", "heart", "freckle")[sample],
-                    marking_variant=37 + sample * 293,
+                    eyes="amber", marking="none", marking_variant=0,
+                    asset_version=2, pattern_seed=seed,
                 )
                 name = f"{species}_{pattern}_{sample}.svg"
                 svg = render_svg(appearance)
                 (output / name).write_text(svg, encoding="utf-8")
                 if png:
-                    import cairosvg
-                    cairosvg.svg2png(bytestring=svg.encode(), write_to=str(output / name.replace(".svg", ".png")))
+                    (output / name.replace(".svg", ".png")).write_bytes(render_png(appearance))
                 cards.append(
                     f'<article><img src="{escape(name)}" alt="{escape(species)}" />'
                     f'<h3>{escape(species)} · {escape(pattern)}</h3>'
-                    f'<p>{escape(palette)} · {escape(appearance.marking)}</p></article>'
+                    f'<p>{escape(palette)} · Pattern Seed {seed:06d}</p></article>'
                 )
                 count += 1
     html = (

@@ -1,85 +1,182 @@
-# Fosgen Pets — design and safe rollout (draft)
+# Fosgen Pets
 
-Status: foundation only, disabled. No handlers are registered; no chat activity is currently collected for Pets.
+Постоянные питомцы внутри Telegram. Пользователь дает согласие в личном чате,
+набирает 100 подходящих сообщений в подключенных группах и открывает `/pet`.
+Питомец создается один раз на весь Telegram user ID и остается навсегда.
 
-## Product rules
+Статус: реализованы PostgreSQL-хранилище, 12 видов с процедурной внешностью v2,
+приватные команды и уход. Публичное включение по умолчанию отключено.
+PR #127 остается draft до проверки и подтверждения владельца.
 
-- One permanent animal per Telegram user ID, shared across opted-in groups.
-- A gift is unlocked after **100 eligible, deduplicated messages** sent **after consent** in participating groups.
-- Species selected from a playful, transparent interpretation of opt-in activity; no psychological claims.
-- No evolution, death, replacement, mandatory daily chores or punitive decay.
-- Cute storybook art, species-correct anatomy, immutable markings and colors.
-- Everything in Telegram: private chat, inline keyboards and occasional opt-in group announcements; **no Mini App**.
-- Individual origin story and event log. Future writers' collaborations require explicit permission and author attribution.
-- Never expose private messages or source text to writers or public story generation.
+![Примеры процедурных питомцев](assets/fosgen-pets-v2-preview.png)
 
-## Assets and uniqueness
+## Правила
 
-Build **per-species** master silhouettes and pose templates (idle, sleeping, happy).
-Each template contains named anatomical masks (face, body, legs, tail) and anchored features.
-Apply compatible palette/pattern/marking layers under masks; draw eyes and outlines last.
-Keep one immutable asset_version per adopted pet and cache the resulting PNG and Telegram file_id.
-Appearance DNA is canonical JSON; fingerprint is SHA-256 and UNIQUE in PostgreSQL.
-Creation must occur in a transaction: lock owner, verify 100 eligible messages, INSERT pet and fingerprint, retry collision with next attempt. No check-then-insert races.
-A distinct DNA fingerprint alone **does not guarantee visually distinct portraits**: art masks and marking variants must be rendered perceptibly different. Do not claim full visual uniqueness until a renderer and visual-difference tests exist.
-Do not generate images on every /pet request.
+- Один постоянный питомец на пользователя во всех участвующих чатах.
+- Питомец не умирает, не эволюционирует в другой вид, не заменяется и не сбрасывается.
+- Нет наказания за отсутствие: показатели не уменьшаются со временем.
+- DNA, версия внешности и исходные SVG/PNG сохраняются при создании.
+- `/pet` читает сохраненный PNG и не запускает графический движок повторно.
+- Нет Mini App, внешних генераторов, анализа личности или передачи переписки.
+- Вид выбирается случайно из 12 доступных. `choose_species` сохранен как прежний
+  автономный API, но психологическая интерпретация сообщений не подключена.
 
-## Counting and privacy
+## Включение
 
-- Opt-in per user plus enablement per group; only new eligible events count.
-- Count after moderation, not before; do not count deleted/spam/command/bot messages.
-- Deduplicate by (chat_id, message_id), enforce per-user rate limits and anti-farm heuristics.
-- Group message text should not be stored for this feature. Store minimal metadata and derived traits; support /pet_privacy and deletion.
-- Telegram message access depends on bot permissions and privacy mode; do not silently assume full visibility.
-- Before rollout, define clear consent and data retention policies and make them visible to participants.
+Используется существующий PostgreSQL `DATABASE_URL`, отдельная БД не нужна.
+Все таблицы питомцев имеют префикс `fosgen_pet` и не меняют таблицы остальных функций.
 
-## Next milestones
+```env
+FOSGEN_PETS_ENABLED=1
+FOSGEN_PETS_CHAT_IDS=-1000000000001
+```
 
-1. SVG prototype for kitten/foal/calf implemented with fixed viewBox, body/head clip mask, stable marking variants and XML tests. Next: replace proof-of-concept art with polished illustrated layered assets, export PNG and add golden image/visual-difference tests.
-2. Build PostgreSQL repository, transactional message accounting and uniqueness retries; add concurrency tests.
-3. Register handlers behind FOSGEN_PETS_ENABLED=0; consent, /pet_progress, /pet, naming and callbacks.
-4. Add care actions, idempotent events, origin story templates and privacy controls.
-5. Pilot in one opted-in chat, monitor latency and spam; only then enable other chats.
+Указанная группа должна уже входить в `ALLOWED_CHATS`. Pets не расширяет allowlist;
+Lexicon-only чаты исключены. Неверная конфигурация, отсутствие БД или ошибка
+миграции отключает только Pets с диагностикой без паролей. Миграция выполняется
+только при явном включении, под транзакционной advisory-блокировкой. Для создания
+таблиц и триггеров у существующей роли БД должны быть соответствующие права.
 
-## Operational boundaries
+На Docker/Bothost устанавливается `libcairo2`. Сборка контейнера проверяет реальное
+PNG-преобразование каждого из 12 видов. Параллельно растеризуются максимум два
+портрета; работа вынесена из event loop.
 
-No changes to Zero Trust, entertainment, writers submissions or moderation routing in this foundation PR.
+Для отката достаточно `FOSGEN_PETS_ENABLED=0`: питомцы, изображения, прогресс и
+история остаются в PostgreSQL. Не удалять таблицы и не менять сохраненную DNA.
+Резервные копии основной БД должны включать `BYTEA`-портреты и все pet-таблицы.
+Пересоздание БД без восстановления копии не является поддерживаемым сбросом.
 
+## Команды пользователя
 
-## Temporary visual laboratory: /pettest
+Только личный чат с ботом, доступ по собственному Telegram ID.
 
-The laboratory is disabled by default and has no access to production pet records.
-On Bothost, set:
+| Команда | Поведение |
+| --- | --- |
+| `/pet_start` | Согласие на учет новых подходящих сообщений |
+| `/pet_progress` | Прогресс до 100 и состояние согласия |
+| `/pet` | После 100 получает единственного питомца; далее показывает сохраненный портрет |
+| `/pet_pause` | Останавливает учет, сохраняя прогресс и питомца |
+| `/pet_privacy` | Правила учета и хранения метаданных |
+| `/pet_passport` | DNA, Pattern Seed, версия, DNA hash и hash пикселей |
+| `/pet_story` | Неизменная история появления, созданная только по DNA |
+| `/pet_history` | Последние события ухода; время в МСК |
 
-- `FOSGEN_PETTEST_ENABLED=1`
-- `FOSGEN_PETTEST_ADMIN_IDS=<your numeric Telegram user ID>`
-- `DATA_DIR=/app/data` (existing durable data directory)
+Кнопки кормления, игры и сна меняют настроение, энергию и сытость в пределах
+1–100. Повтор одного callback не применяет действие дважды; для каждого вида
+действия действует пауза 60 секунд. Кнопка с ID чужого питомца не дает доступа.
+История появления хранится отдельно от событий и не пересочиняется при обновлении.
 
-Restart the bot after deploying this PR. Only the listed users can run these commands, and only in the bot's private chat:
+## Какие сообщения учитываются
 
-- `/pettest`: create a random kitten, foal or calf with immutable DNA, unique test ID, inline PNG and complete DNA JSON.
-- `/pettest 42`: show test animal #42 again with the same appearance.
-- `/pettest 42 delete`: delete test record #42. No undo. Telegram messages already sent remain visible.
+Учет идет после успешного существующего обработчика `collect_text_messages`,
+когда внешние middleware и модерация уже пропустили сообщение. Учитывается
+исходное время Telegram: сообщение до согласия или до повторного включения учета
+не засчитывается даже при отложенной обработке.
 
-The temporary SQLite file is `DATA_DIR/fosgen_pettest.sqlite3`, separate from the permanent PostgreSQL schema. Do not manually delete the file unless you intentionally want to reset all temporary records and ID sequence. Deletion removes the record and DNA reservation from this test store; no real pet, owner progress or story is touched. IDs are never reused during the life of the database. Disabling the flag removes the command but retains test records until deleted.
+- Только обычный текст живого пользователя в подключенной разрешенной группе.
+- От 8 до 4096 символов и минимум два буквенных слова.
+- Команды, боты, пересылки, отправка через бота, правки, анонимные отправители,
+  удаленный спам и сообщения ожидающих капчу исключены.
+- Не чаще одного сообщения за 30 секунд на пользователя, включая разные чаты.
+- Повторы нормализованного текста не увеличивают прогресс.
+- Telegram `(chat_id, message_id)` дедуплицируется в PostgreSQL.
+- Учет прекращается после 100. Выдача происходит по `/pet`, поэтому сбой Telegram
+  не теряет питомца и не запускает повторную выдачу.
 
-**Current limitation:** only three prototype SVG species are renderable; final art is not ready. A DNA fingerprint does not yet prove that two PNGs are perceptually different. No pet is granted automatically and no messages are counted.
+Блокировка строки владельца сериализует согласие, прогресс и выдачу между
+процессами. UNIQUE индексы защищают владельца, fingerprint DNA и hash реальных
+пикселей. Резервирование DNA/PNG повторяется максимум 16 раз при коллизии;
+исчерпание попыток откатывает транзакцию, не создавая частичного питомца.
 
-**Deployment note:** `CairoSVG` rasterizes SVG to PNG. Confirm its system Cairo dependency is present on the Bothost image and CI before enabling. If it is missing, /pettest returns an error and logs `FOSGEN_PETTEST_FAILED`.
+Pets не сохраняет текст сообщений: только ID, время, счетчик и HMAC отпечаток с
+отдельным случайным ключом владельца. При паузе метаданные и прогресс сохраняются;
+на владельца хранится до 100 засчитанных и 256 последних отклоненных событий.
+Старые отклоненные события удаляются без сброса прогресса.
+Публикация профиля и литературное использование по умолчанию не разрешены.
+Это описание относится к Pets; другие существующие функции бота имеют собственные
+правила хранения. Прогресс после временной ошибки БД не восстанавливается из
+переписки автоматически; бот продолжает модерацию и учитывает следующие сообщения.
 
+## Внешность и совместимость
 
-## Visual QA gallery
+Виды: kitten, puppy, foal, calf, bunny, fox, badger, fawn, raccoon, capybara,
+alpaca, otter. Для каждого есть отдельные силуэты и маски головы, туловища, лап
+и хвоста, положения глаз и ушей, подходящие окрасы и рисунки.
 
-Run locally with `python -m fosgen_pets.gallery --output ./pet-gallery`.
-Open `pet-gallery/index.html` to inspect all currently supported species/patterns
-at three fixed palette/marking variants each. Optional `--png` exports raster
-images using CairoSVG. This gallery is deterministic and does not create pets or
-modify any database.
+Новая DNA v2 содержит Pattern Seed 0–999999. Локальные hash streams меняют
+положение и форму узоров и распределение оттенков, включая однотонный окрас.
+Редкость дополнительных отметин при генерации: none 65%, freckle 10%, каждый
+носок 8%, blaze 6%, star 2.5%, heart 0.5%. Это вероятности, не обещание квот.
 
-Current art is still a functional placeholder; this gallery is a human review
-aid, not proof of visual uniqueness. Production acceptance requires commissioned
-layered art, mask boundary pixel tests, perceptual similarity thresholds and
-cross-pose alignment checks. Do not merge or enable public distribution yet.
+Для v2 сохраняются только геометрически различные варианты отметин: none 1,
+freckle 4, каждый носок 9, star/heart/blaze 35. Псевдоварианты с одинаковой
+картинкой больше не получают отдельную DNA.
 
-The test laboratory also supports `/pettest list` and caps each admin at 30
-active test animals to avoid accidental buildup.
+`render_v1.py` и `patterns_v1.py` сохраняют прежние рецепты. Каноническая v1 DNA
+не получает даже дополнительного null-поля. Golden SHA256 SVG и DNA фиксируют
+v1 и v2; будущий новый движок должен получать отдельный номер версии.
+
+Постоянный питомец хранит исходные SVG/PNG, SHA256 PNG, hash RGBA и версию движка.
+Триггеры PostgreSQL запрещают менять личность и портрет, удалять питомца или
+выполнять TRUNCATE. Это защита приложения и обычных SQL-операций, не защита от
+администратора БД, который может удалить схему или отключить триггеры.
+
+Старые foundation-строки без сохраненных изображений остаются без нового
+изображения: бот явно сообщает о недоступном оригинале. Не выполняется скрытая
+перегенерация. Перед пилотом проверить наличие таких строк в рабочей БД.
+
+Пиксельные тесты проверяют заметное различие выборок seed, границы масок, глаза,
+отметины и параллельный детерминизм. UNIQUE hash запрещает выдавать побайтно
+одинаковые пиксели разным постоянным питомцам. Полный перебор миллиона seed и
+глобальная гарантия различимости всех возможных пар не выполнялись.
+
+## Администраторская лаборатория
+
+```env
+FOSGEN_PETTEST_ENABLED=1
+FOSGEN_PETTEST_ADMIN_IDS=123456789
+DATA_DIR=/app/data
+```
+
+Лаборатория доступна только этим администраторам в личном чате. Ее SQLite-файл
+`DATA_DIR/fosgen_pettest.sqlite3` не обращается к постоянным PostgreSQL-питомцам,
+их прогрессу или историям. Для лаборатории PostgreSQL не требуется.
+
+| Команда | Действие |
+| --- | --- |
+| `/pettest` | Случайный тестовый питомец с ID, PNG и DNA |
+| `/pettest fox` | Выбор одного из 12 видов |
+| `/pettest list` | До 30 своих активных тестовых ID |
+| `/pettest 42` | Прежний сохраненный портрет #42 |
+| `/pettest 42 dna` | Полная DNA и Pattern Seed |
+| `/pettest 42 delete` | Удаление только своего тестового питомца |
+| `/pettest series kitten 6` | 6 независимых случайных котят |
+| `/pettest series kitten 6 123456` | Одинаковые остальные гены, seed 123456–123461 |
+
+Seed после 999999 продолжается с 0. Серия 2–8 животных создается целиком или не
+создается вовсе. Лимит 30 защищен транзакцией SQLite даже между экземплярами
+хранилища. Портреты кэшируются; оригинальная v1 DNA сохраняется при миграции.
+Новые ID не переиспользуются, пока существует файл лаборатории. Удаление записи
+освобождает ее DNA/портрет, но уже отправленные сообщения Telegram остаются.
+
+## Проверки и визуальная галерея
+
+```bash
+python -m unittest discover -s tests -p 'test_*.py'
+TEST_DATABASE_URL=postgresql://TEST_USER:TEST_PASSWORD@localhost:5432/TEST_DB \
+  python -m unittest tests.test_fosgen_pets_postgres -v
+node --test tests/*.cjs
+python -m fosgen_pets.gallery --output /tmp/pet-gallery --png
+```
+
+PostgreSQL-тесты запускаются только на тестовой БД. Pet-тесты изолируют свои схемы,
+но другие integration-тесты проекта могут очищать свои таблицы. Не подставлять
+рабочий `DATABASE_URL` в `TEST_DATABASE_URL`.
+
+Галерея содержит 102 SVG, по три seed на каждую комбинацию вида и типа рисунка;
+остальные гены фиксированы. PNG опциональны. Она не создает питомцев и не меняет
+БД. В CI Pet integration-тесты включены в существующую задачу с PostgreSQL 17.
+
+До публичного пилота: успешный CI, ручной smoke в Telegram на тестовом аккаунте,
+проверка прав/видимости сообщений группы и подтверждение владельца PR. Реальные
+Telegram credentials, рабочая БД и production-развертывание в этой сессии не использовались.
