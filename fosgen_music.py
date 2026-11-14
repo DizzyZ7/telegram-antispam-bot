@@ -53,6 +53,7 @@ class MusicService:
         self.client_id = client_id.strip()
         self._sessions: dict[str, tuple[float, int, int, Track]] = {}
         self._last_search: dict[int, float] = {}
+        self._active_downloads: set[str] = set()
         self._semaphore = asyncio.Semaphore(2)
 
     async def search(self, query: str) -> list[Track]:
@@ -85,6 +86,8 @@ class MusicService:
     def offer(self, user_id: int, chat_id: int, tracks: list[Track]) -> InlineKeyboardMarkup:
         now = time.monotonic()
         self._sessions = {k: v for k, v in self._sessions.items() if v[0] > now}
+        if len(self._sessions) > 4000:
+            self._sessions.clear()
         buttons = []
         for track in tracks:
             token = secrets.token_urlsafe(12)
@@ -170,6 +173,11 @@ def register_music_handlers(app, client_id: str) -> MusicService:
         if track is None:
             await callback.answer("Кнопка устарела или принадлежит другому пользователю.", show_alert=True)
             return
+        token = (callback.data or '')[3:]
+        if token in service._active_downloads:
+            await callback.answer('Этот трек уже загружается.')
+            return
+        service._active_downloads.add(token)
         await callback.answer("Готовлю аудиофайл...")
         try:
             payload = await service.download(track)
@@ -181,6 +189,8 @@ def register_music_handlers(app, client_id: str) -> MusicService:
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
             LOG.warning("FOSGEN_MUSIC_DELIVERY_FAILED type=%s", type(exc).__name__)
             await callback.message.answer("Не удалось получить аудиофайл. Попробуй другую композицию.")
+        finally:
+            service._active_downloads.discard(token)
 
     # Ensure music handlers precede legacy catch-all handlers.
     for callback_name in ("music_search",):
