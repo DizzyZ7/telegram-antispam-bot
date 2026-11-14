@@ -19,6 +19,18 @@ class PettestTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 parse_command(bad)
 
+    def test_bulk_delete_command_variants(self):
+        from fosgen_pets.pettest import parse_request
+        for command in ("/pettest id 1-27 delete", "/pettest 1-27 delete"):
+            request = parse_request(command)
+            self.assertEqual(request.operation, "delete_many")
+            self.assertEqual(request.identifiers, tuple(range(1, 28)))
+        request = parse_request("/pettest 1,3,5-8 DELETE")
+        self.assertEqual(request.identifiers, (1, 3, 5, 6, 7, 8))
+        self.assertEqual(parse_request("/pettest all delete").operation, "delete_all")
+        self.assertEqual(parse_command("/pettest id 1-27 delete"), ("delete_many", None))
+        self.assertEqual(parse_command("/pettest 12 delete"), ("delete", 12))
+
     def test_admin_ids(self):
         self.assertEqual(parse_admin_ids("123, 456"), frozenset({123, 456}))
         with self.assertRaises(ValueError):

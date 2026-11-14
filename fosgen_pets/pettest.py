@@ -1,6 +1,7 @@
 """Admin-only private laboratory with a separate temporary-pet database.
 
 /pettest [SPECIES] creates a pet; ID, ID dna, list and ID delete inspect it.
+Bulk delete supports ranges, comma-separated IDs and explicitly requested all.
 /pettest series SPECIES COUNT [PATTERN_SEED] creates one atomic gallery.
 With a seed, only consecutive Pattern Seeds vary; other DNA fields match.
 Stored PNG/SVG bytes freeze the animal seen by the administrator.
@@ -29,10 +30,12 @@ from .portrait import render_png, render_portrait
 MAX_SQL_ID = 2**63 - 1
 MAX_COMMAND_LENGTH = 256
 MAX_PETS_PER_OWNER = 30
-_COMMAND = re.compile(r"/pettest(?:@[A-Za-z0-9_]{1,32})?(?:[ \t]+[A-Za-z0-9_]+)*[ \t]*", re.ASCII)
+_COMMAND = re.compile(r"/pettest(?:@[A-Za-z0-9_]{1,32})?(?:[ \t]+[A-Za-z0-9_,-]+)*[ \t]*", re.ASCII)
 _USAGE = (
     "Команды: /pettest, /pettest kitten, /pettest ID, /pettest ID dna, "
-    "/pettest list, /pettest ID delete, /pettest series kitten 6 [PATTERN_SEED]. "
+    "/pettest list, /pettest ID delete, /pettest id 1-27 delete, "
+    "/pettest 1,3,5-8 delete, /pettest all delete, "
+    "/pettest series kitten 6 [PATTERN_SEED]. "
     "Серия: 2–8 питомцев; Pattern Seed: 0–999999. "
     "С заданным зерном все признаки одинаковы, меняется только Pattern Seed: SEED, SEED+1… "
     "(после 999999 идет 0). Без зерна — случайные внешности. "
@@ -60,6 +63,23 @@ def _pattern_seed(value: int | None) -> None:
         raise ValueError("Pattern seed must be an integer in 0..999999")
 
 
+def _parse_delete_ids(spec: str) -> tuple[int, ...]:
+    """Accept a bounded comma list of IDs and inclusive ascending ranges."""
+    selected: set[int] = set()
+    for part in spec.split(","):
+        bounds = part.split("-")
+        if len(bounds) not in (1, 2):
+            raise ValueError("Invalid test ID range; use 1-27 or 1,3,5-8")
+        first = _number(bounds[0])
+        last = _number(bounds[1]) if len(bounds) == 2 else first
+        if last < first or last - first + 1 > MAX_PETS_PER_OWNER:
+            raise ValueError("An ID range must be ascending and contain at most 30 IDs")
+        selected.update(range(first, last + 1))
+        if len(selected) > MAX_PETS_PER_OWNER:
+            raise ValueError("Choose at most 30 test IDs per command, or use /pettest all delete")
+    return tuple(sorted(selected))
+
+
 def parse_admin_ids(raw: str) -> frozenset[int]:
     if not isinstance(raw, str) or len(raw) > 8192:
         raise ValueError("FOSGEN_PETTEST_ADMIN_IDS must contain positive numeric Telegram IDs")
@@ -76,6 +96,7 @@ class PettestRequest:
     species: str | None = None
     count: int = 1
     pattern_seed: int | None = None
+    identifiers: tuple[int, ...] = ()
 
 
 def parse_request(text: str) -> PettestRequest:
@@ -98,6 +119,12 @@ def parse_request(text: str) -> PettestRequest:
         )
     if len(args) == 2 and args[0] == "dna":
         return PettestRequest("dna", ident=_number(args[1]))
+    if len(args) == 2 and args[0].lower() == "all" and args[1].lower() == "delete":
+        return PettestRequest("delete_all")
+    if len(args) == 3 and args[0].lower() == "id" and args[2].lower() == "delete":
+        return PettestRequest("delete_many", identifiers=_parse_delete_ids(args[1]))
+    if len(args) == 2 and args[1].lower() == "delete" and ("," in args[0] or "-" in args[0]):
+        return PettestRequest("delete_many", identifiers=_parse_delete_ids(args[0]))
     if len(args) in (1, 2):
         ident = _number(args[0])
         if len(args) == 1:
@@ -301,6 +328,39 @@ class TestPetStore:
         async with self._lock:
             return await asyncio.to_thread(self._delete_sync, ident, owner_id)
 
+    def _delete_many_sync(self, owner_id: int, identifiers: tuple[int, ...] | None) -> list[int]:
+        # One SQLite write transaction: no partial delete if a statement fails.
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                if identifiers is None:
+                    rows = conn.execute(
+                        "SELECT id FROM fosgen_pettest WHERE owner_id=? ORDER BY id", (owner_id,),
+                    ).fetchall()
+                    conn.execute("DELETE FROM fosgen_pettest WHERE owner_id=?", (owner_id,))
+                else:
+                    placeholders = ",".join("?" for _ in identifiers)
+                    params = (owner_id, *identifiers)
+                    rows = conn.execute(
+                        f"SELECT id FROM fosgen_pettest WHERE owner_id=? AND id IN ({placeholders}) ORDER BY id",
+                        params,
+                    ).fetchall()
+                    conn.execute(
+                        f"DELETE FROM fosgen_pettest WHERE owner_id=? AND id IN ({placeholders})",
+                        params,
+                    )
+                return [int(row[0]) for row in rows]
+
+    async def delete_many(self, owner_id: int, identifiers: tuple[int, ...] | None) -> list[int]:
+        """Delete only this admin's laboratory records. None means explicitly all."""
+        _positive_id(owner_id)
+        if identifiers is not None:
+            if not isinstance(identifiers, tuple) or not 1 <= len(identifiers) <= MAX_PETS_PER_OWNER:
+                raise ValueError("Choose 1..30 test IDs")
+            identifiers = tuple(sorted(set(_positive_id(ident) for ident in identifiers)))
+        async with self._lock:
+            return await asyncio.to_thread(self._delete_many_sync, owner_id, identifiers)
+
     def _list_sync(self, owner_id: int) -> list[tuple[int, str]]:
         with closing(self._connect()) as conn:
             rows = conn.execute(
@@ -366,9 +426,13 @@ def register_pettest_handlers(app: Any, *, admin_ids: frozenset[int], data_dir: 
         try:
             if request.operation == "list":
                 items = await store.list(owner_id)
+                active = len(items)
                 await message.answer(
-                    "🐾 Тестовые питомцы:\n" + "\n".join(f"#{i} · {escape(s)}" for i, s in items)
-                    if items else "Тестовых питомцев пока нет.", parse_mode="HTML",
+                    f"🐾 Тестовые питомцы (занято {active}/{MAX_PETS_PER_OWNER}, "
+                    f"свободно {MAX_PETS_PER_OWNER - active}):\n"
+                    + ("\n".join(f"#{i} · {escape(s)}" for i, s in items)
+                       if items else "Тестовых питомцев пока нет."),
+                    parse_mode="HTML",
                 )
                 return
             if request.operation == "delete":
@@ -377,6 +441,20 @@ def register_pettest_handlers(app: Any, *, admin_ids: frozenset[int], data_dir: 
                     f"🗑 Тестовый питомец #{request.ident} удален из базы." if deleted
                     else "Такого тестового питомца нет."
                 )
+                return
+            if request.operation in ("delete_many", "delete_all"):
+                selected = request.identifiers if request.operation == "delete_many" else None
+                removed = await store.delete_many(owner_id, selected)
+                if not removed:
+                    await message.answer("Нет подходящих тестовых питомцев для удаления.")
+                else:
+                    absent = len(selected) - len(removed) if selected is not None else 0
+                    details = f" Не найдено среди твоих записей: {absent}." if absent else ""
+                    await message.answer(
+                        f"🗑 Удалено тестовых питомцев: {len(removed)}. "
+                        + "ID: " + ", ".join(map(str, removed)) + ". "
+                        + f"Освобождено мест: {len(removed)}." + details
+                    )
                 return
             # Bound pending CPU-heavy requests too, without a growing owner map.
             if render_slots.locked():
