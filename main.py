@@ -164,6 +164,7 @@ print(
 
 import legacy_main as app
 from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
+from fosgen_music import register_music_handlers
 from entertainment import (
     ENTERTAINMENT_CHAT_IDS,
     EntertainmentService,
@@ -361,6 +362,7 @@ async def main() -> None:
         )
         register_accurate_stats_handlers(app, accurate_stats)
         register_entertainment_handlers(app, entertainment)
+        register_music_handlers(app, os.getenv('JAMENDO_CLIENT_ID', ''))
 
         # The silent deletion middleware MUST be outermost to Lexicon's
         # guessing middleware; profanity is discarded before guesses/commands.
