@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 import re
+import unicodedata
 from typing import Mapping
 
 UNLOCK_MESSAGES = 100
@@ -47,7 +48,14 @@ PATTERNS: dict[str, tuple[str, ...]] = {
 }
 EYE_COLORS = ("brown", "amber", "hazel", "green", "blue")
 MARKINGS = ("none", "star", "heart", "blaze", "freckle", "sock_left", "sock_right")
-TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+TOKEN_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
+CURRENT_ASSET_VERSION = 2
+MAX_PATTERN_SEED = 999999
+# Only geometrically distinct variants are valid in v2. V1 keeps its old range.
+MARKING_VARIANT_COUNTS = {
+    "none": 1, "star": 35, "heart": 35, "blaze": 35, "freckle": 4,
+    "sock_left": 9, "sock_right": 9,
+}
 
 
 @dataclass(frozen=True)
@@ -63,11 +71,14 @@ class MessageEligibility:
 
 def eligible_message(message: MessageEligibility) -> bool:
     """Conservative local filter; rate limits and duplicates require DB checks."""
-    words = TOKEN_RE.findall(message.text.strip())
+    if not isinstance(message.text, str) or not 8 <= len(message.text) <= 4096:
+        return False
+    text = unicodedata.normalize("NFKC", message.text).strip()
+    words = TOKEN_RE.findall(text)
     return (
         message.opted_in and not message.is_bot and not message.moderated
         and message.user_id > 0 and message.chat_id != 0 and message.message_id > 0
-        and len(words) >= 2 and len(message.text.strip()) >= 8
+        and not text.startswith("/") and len(words) >= 2 and len(text) >= 8
     )
 
 
@@ -99,9 +110,14 @@ class Appearance:
     marking: str
     marking_variant: int
     asset_version: int = 1
+    pattern_seed: int | None = None
 
     def canonical_dna(self) -> str:
-        return json.dumps(self.__dict__, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        fields = dict(self.__dict__)
+        # Historical DNA is a public persistence format: do not add even null keys.
+        if self.asset_version == 1 and self.pattern_seed is None:
+            fields.pop("pattern_seed")
+        return json.dumps(fields, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
     def fingerprint(self) -> str:
         return sha256(self.canonical_dna().encode("utf-8")).hexdigest()
@@ -116,20 +132,63 @@ class PetProfile:
     origin_story: str | None = None
 
 
-def build_appearance(species: str, seed: str, attempt: int = 0) -> Appearance:
+def validate_appearance(appearance: Appearance) -> None:
+    """Validate finite catalogs before any renderer, persistence or HTML boundary."""
+    if not isinstance(appearance.species, str) or appearance.species not in SPECIES:
+        raise ValueError("Unknown pet species")
+    if appearance.palette not in PALETTES[appearance.species]:
+        raise ValueError("Invalid palette")
+    if appearance.pattern not in PATTERNS[appearance.species]:
+        raise ValueError("Invalid pattern")
+    if appearance.eyes not in EYE_COLORS or appearance.marking not in MARKINGS:
+        raise ValueError("Invalid feature")
+    if type(appearance.marking_variant) is not int or not 0 <= appearance.marking_variant < 4096:
+        raise ValueError("Invalid marking variant")
+    if type(appearance.asset_version) is not int or appearance.asset_version not in (1, 2):
+        raise ValueError("Unsupported asset version")
+    if appearance.asset_version == 1:
+        if appearance.pattern_seed is not None:
+            raise ValueError("Legacy appearances have no pattern seed")
+    elif type(appearance.pattern_seed) is not int or not 0 <= appearance.pattern_seed <= MAX_PATTERN_SEED:
+        raise ValueError("Pattern seed must be an integer in 0..999999")
+    elif appearance.marking_variant >= MARKING_VARIANT_COUNTS[appearance.marking]:
+        raise ValueError("Noncanonical marking variant")
+
+
+def build_appearance(
+    species: str, seed: str, attempt: int = 0, *,
+    pattern_seed: int | None = None, asset_version: int = CURRENT_ASSET_VERSION,
+) -> Appearance:
     """Deterministic candidate. Caller MUST reserve DNA under a DB UNIQUE index."""
     if species not in SPECIES:
         raise ValueError("Unknown pet species")
-    if not seed or attempt < 0:
+    if not isinstance(seed, str) or not 1 <= len(seed) <= 1024 or type(attempt) is not int or attempt < 0:
         raise ValueError("Seed must be nonempty and attempt nonnegative")
-    digest = sha256(f"fosgen-pets-v1:{species}:{seed}:{attempt}".encode()).digest()
+    if type(asset_version) is not int or asset_version not in (1, 2):
+        raise ValueError("Unsupported asset version")
+    if pattern_seed is not None and (type(pattern_seed) is not int or not 0 <= pattern_seed <= MAX_PATTERN_SEED):
+        raise ValueError("Pattern seed must be an integer in 0..999999")
+    if asset_version == 1 and pattern_seed is not None:
+        raise ValueError("Legacy appearances have no pattern seed")
+    digest = sha256(f"fosgen-pets-v{asset_version}:{species}:{seed}:{attempt}".encode()).digest()
     def pick(options: tuple[str, ...], offset: int) -> str:
         return options[int.from_bytes(digest[offset:offset + 4], "big") % len(options)]
-    return Appearance(
+    marking = pick(MARKINGS, 12)
+    if asset_version == 2:
+        roll = int.from_bytes(digest[12:16], "big") % 10000
+        marking = next(name for ceiling, name in (
+            (6500, "none"), (7500, "freckle"), (8300, "sock_left"),
+            (9100, "sock_right"), (9700, "blaze"), (9950, "star"), (10000, "heart"),
+        ) if roll < ceiling)
+    result = Appearance(
         species=species,
         palette=pick(PALETTES[species], 0),
         pattern=pick(PATTERNS[species], 4),
         eyes=pick(EYE_COLORS, 8),
-        marking=pick(MARKINGS, 12),
-        marking_variant=int.from_bytes(digest[16:20], "big") % 4096,
+        marking=marking,
+        marking_variant=int.from_bytes(digest[16:20], "big") % (MARKING_VARIANT_COUNTS[marking] if asset_version == 2 else 4096),
+        asset_version=asset_version,
+        pattern_seed=(pattern_seed if pattern_seed is not None else int.from_bytes(digest[20:24], "big") % 1000000) if asset_version == 2 else None,
     )
+    validate_appearance(result)
+    return result
