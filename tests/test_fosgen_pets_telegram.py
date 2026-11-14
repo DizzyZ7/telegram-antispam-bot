@@ -198,7 +198,7 @@ class TelegramPetsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("90", photos[0].caption)
         buttons = [b.callback_data for row in photos[0].reply_markup.inline_keyboard for b in row]
         self.assertEqual(set(buttons), {"petcare:9:feed", "petcare:9:play", "petcare:9:sleep",
-                                        "petview:9:passport", "petview:9:history", "petview:9:story"})
+                                        "petview:9:passport", "petview:9:history", "petview:9:story", "petdraughts:9:open"})
         self.assertNotIn("adopt", [call[0] for call in self.store.calls])
 
     async def test_100th_progress_adopts_lazily_and_persists_single_identity(self):

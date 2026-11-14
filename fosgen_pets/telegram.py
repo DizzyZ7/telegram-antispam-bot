@@ -85,6 +85,7 @@ def _keyboard(pet_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=label, callback_data=f"petview:{pet_id}:{action}")
          for label, action in (("🧬 Паспорт", "passport"), ("📖 История", "history"))],
         [InlineKeyboardButton(text="📜 История появления", callback_data=f"petview:{pet_id}:story")],
+        [InlineKeyboardButton(text="⚪ Шашки", callback_data=f"petdraughts:{pet_id}:open")],
     ])
 
 
@@ -243,6 +244,9 @@ def register_pet_handlers(app: Any, store: Any, *, chat_ids: frozenset[int]) -> 
     app.dp.message.register(command, Command(*COMMANDS))
     app.dp.callback_query.register(callback, F.data.startswith("petcare:") | F.data.startswith("petview:"))
     service._registered = [(app.dp.message, command), (app.dp.callback_query, callback)]
+    from .draughts_telegram import register_draughts_handlers
+    service.draughts = register_draughts_handlers(app, store)
+    service._registered.extend(service.draughts._registered)
     app.dp.message.middleware(service.counting)
     service.promote_handlers()
     return service

@@ -140,3 +140,44 @@ CREATE TRIGGER fosgen_pet_permanence BEFORE INSERT OR UPDATE OR DELETE ON fosgen
 DROP TRIGGER IF EXISTS fosgen_pet_no_truncate ON fosgen_pets;
 CREATE TRIGGER fosgen_pet_no_truncate BEFORE TRUNCATE ON fosgen_pets
     FOR EACH STATEMENT EXECUTE FUNCTION fosgen_pet_guard_permanence();
+
+-- Independent private games never alter the permanent animal or portrait.
+CREATE TABLE IF NOT EXISTS fosgen_pet_draughts_games (
+    owner_user_id BIGINT PRIMARY KEY REFERENCES fosgen_pet_opt_ins(user_id),
+    pet_id BIGINT NOT NULL REFERENCES fosgen_pets(pet_id),
+    game_id VARCHAR(12) NOT NULL UNIQUE CHECK (game_id ~ '^[0-9a-f]{12}$'),
+    board SMALLINT[] NOT NULL CHECK (cardinality(board)=64 AND board <@ ARRAY[-2,-1,0,1,2]::smallint[]),
+    side SMALLINT NOT NULL DEFAULT 1 CHECK (side IN (-1,1)),
+    revision BIGINT NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    selected SMALLINT[] NOT NULL DEFAULT '{}' CHECK (cardinality(selected)<=32 AND 0 <= ALL(selected) AND 63 >= ALL(selected)),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','white_won','black_won','draw')),
+    no_progress INTEGER NOT NULL DEFAULT 0 CHECK (no_progress BETWEEN 0 AND 10000),
+    repetitions JSONB NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(repetitions)='object' AND octet_length(repetitions::text)<=131072),
+    chat_id BIGINT,
+    message_id BIGINT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK ((chat_id IS NULL AND message_id IS NULL) OR (chat_id=owner_user_id AND message_id>0))
+);
+
+CREATE OR REPLACE FUNCTION fosgen_pet_guard_draughts() RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM fosgen_pets
+                   WHERE pet_id=NEW.pet_id AND owner_user_id=NEW.owner_user_id) THEN
+        RAISE EXCEPTION 'Game requires the owner permanent pet' USING ERRCODE = '23514';
+    END IF;
+    IF TG_OP='UPDATE' THEN
+        IF ROW(NEW.owner_user_id, NEW.pet_id) IS DISTINCT FROM ROW(OLD.owner_user_id, OLD.pet_id) THEN
+            RAISE EXCEPTION 'Game owner and pet binding are immutable' USING ERRCODE = '23514';
+        END IF;
+        IF (NEW.game_id=OLD.game_id AND NEW.revision<>OLD.revision+1)
+           OR (NEW.game_id<>OLD.game_id AND NEW.revision<>0) THEN
+            RAISE EXCEPTION 'Game revision must advance, or reset with a new game' USING ERRCODE = '23514';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS fosgen_pet_draughts_guard ON fosgen_pet_draughts_games;
+CREATE TRIGGER fosgen_pet_draughts_guard BEFORE INSERT OR UPDATE ON fosgen_pet_draughts_games
+    FOR EACH ROW EXECUTE FUNCTION fosgen_pet_guard_draughts();
