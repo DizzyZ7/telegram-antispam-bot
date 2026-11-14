@@ -394,7 +394,7 @@ class TelegramPetsTests(unittest.IsolatedAsyncioTestCase):
             message(edit_date=int(NOW.timestamp())), message(via_bot=User(id=777, is_bot=True, first_name="bot")),
             message(forward_origin={"type": "hidden_user", "date": int(NOW.timestamp()),
                                     "sender_user_name": "Hidden"}),
-            message().model_copy(update={"date": NOW + timedelta(minutes=2)}),
+            message().model_copy(update={"date": datetime.now(timezone.utc) + timedelta(minutes=5)}),
             message().model_copy(update={"from_user": User(id=OWNER, is_bot=True, first_name="bot")}),
         ]
         for event in cases:
