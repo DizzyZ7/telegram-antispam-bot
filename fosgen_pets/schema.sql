@@ -28,6 +28,15 @@ CREATE INDEX IF NOT EXISTS fosgen_pet_message_events_owner_idx
     ON fosgen_pet_message_events (user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS fosgen_pet_message_digest_idx
     ON fosgen_pet_message_events (user_id, message_digest) WHERE counted AND message_digest IS NOT NULL;
+CREATE INDEX IF NOT EXISTS fosgen_pet_rejected_retention_idx
+    ON fosgen_pet_message_events (user_id, counted_at DESC, chat_id DESC, message_id DESC) WHERE NOT counted;
+DELETE FROM fosgen_pet_message_events AS events USING (
+    SELECT chat_id, message_id, ROW_NUMBER() OVER (
+        PARTITION BY user_id ORDER BY counted_at DESC, chat_id DESC, message_id DESC
+    ) AS position FROM fosgen_pet_message_events WHERE NOT counted
+) AS old_rejections
+WHERE events.chat_id=old_rejections.chat_id AND events.message_id=old_rejections.message_id
+    AND old_rejections.position > 256;
 UPDATE fosgen_pet_opt_ins AS owners SET
     qualifying_count = GREATEST(owners.qualifying_count, old_events.total),
     last_counted_at = GREATEST(owners.last_counted_at, old_events.last_counted_at)

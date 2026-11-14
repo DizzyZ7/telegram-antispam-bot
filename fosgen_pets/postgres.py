@@ -184,6 +184,16 @@ class PostgresPetStore:
                     ON CONFLICT DO NOTHING RETURNING message_id""", message.chat_id, message.message_id,
                     message.user_id, now, counted, digest)
                 if inserted is None or not counted:
+                    if inserted is not None:
+                        # Retain a bounded replay window for rejected attempts.
+                        # Pruned updates keep their old Telegram timestamp; the
+                        # monotonic last_counted_at and counted HMACs still reject them.
+                        await conn.execute("""DELETE FROM fosgen_pet_message_events
+                            WHERE user_id=$1 AND NOT counted AND (chat_id,message_id) IN (
+                                SELECT chat_id,message_id FROM fosgen_pet_message_events
+                                WHERE user_id=$1 AND NOT counted
+                                ORDER BY counted_at DESC,chat_id DESC,message_id DESC OFFSET 256
+                            )""", message.user_id)
                     return Progress(count, True)
                 await conn.execute("""UPDATE fosgen_pet_opt_ins SET qualifying_count=qualifying_count+1,
                     last_counted_at=$2 WHERE user_id=$1""", message.user_id, now)

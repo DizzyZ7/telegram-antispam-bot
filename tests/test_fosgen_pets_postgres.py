@@ -122,6 +122,20 @@ class PostgresPetStoreTests(unittest.IsolatedAsyncioTestCase):
         async with self.store._pool.acquire() as conn:
             self.assertEqual(await conn.fetchval("SELECT count(*) FROM fosgen_pet_message_events"), 0)
 
+    async def test_rejected_message_metadata_is_bounded_without_losing_progress(self) -> None:
+        await self.store.opt_in(11, now=START)
+        await self.store.record_message(self.message(1), now=START)
+        for number in range(2, 302):
+            await self.store.record_message(self.message(number), now=START + timedelta(seconds=29))
+        async with self.store._pool.acquire() as conn:
+            self.assertEqual(await conn.fetchval("SELECT count(*) FROM fosgen_pet_message_events WHERE user_id=11 AND NOT counted"), 256)
+        accepted = await self.store.record_message(self.message(302), now=START + timedelta(seconds=30))
+        self.assertEqual(accepted.count, 2)
+        # A pruned Telegram update retains its source timestamp and cannot earn progress.
+        replay = await self.store.record_message(self.message(2), now=START + timedelta(seconds=29))
+        self.assertFalse(replay.counted)
+        self.assertEqual(replay.count, 2)
+
     async def test_non_text_payload_is_ignored_without_crashing(self) -> None:
         await self.store.opt_in(11, now=START)
         message = MessageEligibility(11, -100, 1, None, opted_in=True)
