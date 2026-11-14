@@ -9,6 +9,7 @@ from __future__ import annotations
 from hashlib import sha256
 from html import escape
 from .core import Appearance, PALETTES, PATTERNS
+from .patterns import coat_pattern
 
 SUPPORTED = frozenset(("kitten", "foal", "calf"))
 COLORS = {
@@ -69,16 +70,7 @@ def render_svg(appearance: Appearance) -> str:
     x = 179 + (variant % 103)
     y = 237 + ((variant // 103) % 33)
     radius = 11 + (variant % 13)
-    pattern_shapes = ""
-    if appearance.pattern != "solid":
-        digest = sha256(appearance.canonical_dna().encode()).digest()
-        blobs = []
-        for i in range(8):
-            px = 150 + digest[i] % 210
-            py = 201 + digest[i + 8] % 158
-            r = 12 + digest[i + 16] % 21
-            blobs.append(f'<ellipse cx="{px}" cy="{py}" rx="{r}" ry="{r*3//4}"/>')
-        pattern_shapes = f'<g fill="#fff8ed" opacity=".8">{"".join(blobs)}</g>'
+    pattern_shapes = coat_pattern(appearance)
     marks = {
         "none": "",
         "star": f'<path d="M{x} {y-radius} l{radius//3} {radius} h{radius} l-{radius*4//5} {radius//2} l{radius//3} {radius} l-{radius} -{radius//2} l-{radius} {radius//2} l{radius//3} -{radius} l-{radius*4//5} -{radius//2} h{radius}Z" fill="#fff9ed"/>',
