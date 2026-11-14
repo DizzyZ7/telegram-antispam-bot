@@ -1,0 +1,170 @@
+[
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "blue",
+      "marking": "none",
+      "marking_variant": 0,
+      "palette": "chocolate",
+      "pattern": "tortoiseshell",
+      "pattern_seed": 31368,
+      "species": "kitten"
+    },
+    "dna_sha256": "9daea500e1b2e94062a3590f7f40ce72a958949f7a60e84cf00c8fcb33ad5c44",
+    "svg_sha256": "c47f3432d4fcfc2d5752810ed115b4e72f0e239ae872cf466d7dbafca9a8c5a2"
+  },
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "hazel",
+      "marking": "sock_right",
+      "marking_variant": 7,
+      "palette": "chocolate",
+      "pattern": "sable",
+      "pattern_seed": 154901,
+      "species": "puppy"
+    },
+    "dna_sha256": "864b33ddb4aaac37039bd9eeaecd323309580289028e3c34e9a92ed2f1cf5ef7",
+    "svg_sha256": "b461c3d093304e60980452af60074bea43300f7ccecc12c44ee1bc9993e97546"
+  },
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "brown",
+      "marking": "none",
+      "marking_variant": 0,
+      "palette": "bay",
+      "pattern": "dapple",
+      "pattern_seed": 951126,
+      "species": "foal"
+    },
+    "dna_sha256": "f64c3210d6cf192176c1140889a491fbd5b06d60b44ff50cf722cabfddfdf1ba",
+    "svg_sha256": "84f3addb64a9eaecbfbed0e2a6e98e08229e57416ccda7e2fca1b7a253c63a63"
+  },
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "brown",
+      "marking": "sock_right",
+      "marking_variant": 5,
+      "palette": "golden",
+      "pattern": "piebald",
+      "pattern_seed": 76956,
+      "species": "calf"
+    },
+    "dna_sha256": "79ae2043a0f0fa260ee05459ce36ecfc47767d44205c31353c7c7b2b0c6c6305",
+    "svg_sha256": "5c7d6557e8e5de93ad1e54a0f95ef58accfd248c0385c0ef6a818026adb8e34b"
+  },
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "hazel",
+      "marking": "sock_left",
+      "marking_variant": 0,
+      "palette": "brown",
+      "pattern": "broken",
+      "pattern_seed": 105611,
+      "species": "bunny"
+    },
+    "dna_sha256": "ffcf7ba815885400498756a518cc9ea46d62c02b6db0885a4d9cdf74a89875a3",
+    "svg_sha256": "22b543c3772777aba44d92f3eda9550031d51f11e0fe4c0473f622ecd6a937df"
+  },
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "brown",
+      "marking": "none",
+      "marking_variant": 0,
+      "palette": "red",
+      "pattern": "socks",
+      "pattern_seed": 846558,
+      "species": "fox"
+    },
+    "dna_sha256": "29edf7c49c2218ec8b57a9bc9b006ee0027b062d435a7f628a9324453f413d04",
+    "svg_sha256": "85a920a73c349e647bde6564925826fafe96a391b1964119e3184be1819aa6da"
+  },
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "blue",
+      "marking": "none",
+      "marking_variant": 0,
+      "palette": "grey",
+      "pattern": "mask",
+      "pattern_seed": 422068,
+      "species": "badger"
+    },
+    "dna_sha256": "1d48f0fe2180cd87c0d78d7f178c550c6c9420da873e4d8c1556f64bc96b5df5",
+    "svg_sha256": "42506a89092a54dbc0b641571bad3117cd3260e22be05083d9fc403e3b02174f"
+  },
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "hazel",
+      "marking": "blaze",
+      "marking_variant": 1,
+      "palette": "tan",
+      "pattern": "solid",
+      "pattern_seed": 851715,
+      "species": "fawn"
+    },
+    "dna_sha256": "db6e726a697f6dcb9a901921dc984a0a8d383b698704f89e47b99a4550d23913",
+    "svg_sha256": "bb63ba46536f3f5c548698b25dd50b445cb6825fe7f44b0778d1554c1bcbafc8"
+  },
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "brown",
+      "marking": "none",
+      "marking_variant": 0,
+      "palette": "brown",
+      "pattern": "stripe",
+      "pattern_seed": 268133,
+      "species": "raccoon"
+    },
+    "dna_sha256": "2c97e9e41909f3d38ce2dd67bc15f0554fcd6747eaf08e3e791785503e95107b",
+    "svg_sha256": "3a41a89eeea4fb4ab3545ddfb617bc3557e34c8f382f0ee574535e39964453a1"
+  },
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "hazel",
+      "marking": "none",
+      "marking_variant": 0,
+      "palette": "brown",
+      "pattern": "solid",
+      "pattern_seed": 965661,
+      "species": "capybara"
+    },
+    "dna_sha256": "df4c1a171f28f21e87c931c838267e4a2a541c745251ca8b2cb338e1bcfc643c",
+    "svg_sha256": "cbb71532dd9938946f3382325bcad3c7bd8d8ea439e133902b1325da6cba5234"
+  },
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "green",
+      "marking": "sock_left",
+      "marking_variant": 1,
+      "palette": "black",
+      "pattern": "piebald",
+      "pattern_seed": 817043,
+      "species": "alpaca"
+    },
+    "dna_sha256": "387de490bef1f7ad41bf0f3ca0379c644da69c7eaa35903db936a72eec47394c",
+    "svg_sha256": "0f52fff9a533d86f75d69a352196237180be8927e874aaab7b636617c4a89ea3"
+  },
+  {
+    "dna": {
+      "asset_version": 2,
+      "eyes": "hazel",
+      "marking": "blaze",
+      "marking_variant": 9,
+      "palette": "silver",
+      "pattern": "solid",
+      "pattern_seed": 895880,
+      "species": "otter"
+    },
+    "dna_sha256": "7ddc1a86a31c95ebfd64c8b1c25e754eebbe2275ab6cd56514afead5427effe9",
+    "svg_sha256": "2782bbbe422bc1e2d4e8bf66f5f87911b27d60e990fa6c74122fe9696317f605"
+  }
+]
