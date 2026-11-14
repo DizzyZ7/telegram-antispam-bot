@@ -66,3 +66,20 @@ The temporary SQLite file is `DATA_DIR/fosgen_pettest.sqlite3`, separate from th
 **Current limitation:** only three prototype SVG species are renderable; final art is not ready. A DNA fingerprint does not yet prove that two PNGs are perceptually different. No pet is granted automatically and no messages are counted.
 
 **Deployment note:** `CairoSVG` rasterizes SVG to PNG. Confirm its system Cairo dependency is present on the Bothost image and CI before enabling. If it is missing, /pettest returns an error and logs `FOSGEN_PETTEST_FAILED`.
+
+
+## Visual QA gallery
+
+Run locally with `python -m fosgen_pets.gallery --output ./pet-gallery`.
+Open `pet-gallery/index.html` to inspect all currently supported species/patterns
+at three fixed palette/marking variants each. Optional `--png` exports raster
+images using CairoSVG. This gallery is deterministic and does not create pets or
+modify any database.
+
+Current art is still a functional placeholder; this gallery is a human review
+aid, not proof of visual uniqueness. Production acceptance requires commissioned
+layered art, mask boundary pixel tests, perceptual similarity thresholds and
+cross-pose alignment checks. Do not merge or enable public distribution yet.
+
+The test laboratory also supports `/pettest list` and caps each admin at 30
+active test animals to avoid accidental buildup.
