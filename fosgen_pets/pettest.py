@@ -207,9 +207,9 @@ def register_pettest_handlers(app: Any, *, admin_ids: frozenset[int], data_dir: 
             await message.answer("Не удалось создать или показать тестового питомца. Проверь логи.")
 
     # Register ahead of generic catch-all handlers (see main.py).
-    handler = app.dp.message.register(pettest, Command("pettest"))
+    app.dp.message.register(pettest, Command("pettest"))
     # Legacy app may have registered catch-all handlers during import.
     # Ensure the explicit command is evaluated before those handlers.
     handlers = app.dp.message.handlers
-    handlers.remove(handler)
+    handler = handlers.pop()
     handlers.insert(0, handler)
