@@ -11,8 +11,10 @@ class PettestTests(unittest.TestCase):
     def test_commands(self):
         self.assertEqual(parse_command("/pettest"), ("create", None))
         self.assertEqual(parse_command("/pettest list"), ("list", None))
+        self.assertEqual(parse_command("/pettest LIST"), ("list", None))
         self.assertEqual(parse_command("/pettest 12"), ("show", 12))
         self.assertEqual(parse_command("/pettest 12 delete"), ("delete", 12))
+        self.assertEqual(parse_command("/pettest 12 DELETE"), ("delete", 12))
         for bad in ("/pettest -1 delete", "/pettest 0 delete", "/pettest 1 wipe", "/pettest a"):
             with self.assertRaises(ValueError):
                 parse_command(bad)
