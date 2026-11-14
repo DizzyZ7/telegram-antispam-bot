@@ -10,6 +10,7 @@ from fosgen_pets.pettest import TestPetStore, parse_admin_ids, parse_command, re
 class PettestTests(unittest.TestCase):
     def test_commands(self):
         self.assertEqual(parse_command("/pettest"), ("create", None))
+        self.assertEqual(parse_command("/pettest list"), ("list", None))
         self.assertEqual(parse_command("/pettest 12"), ("show", 12))
         self.assertEqual(parse_command("/pettest 12 delete"), ("delete", 12))
         for bad in ("/pettest -1 delete", "/pettest 0 delete", "/pettest 1 wipe", "/pettest a"):
@@ -27,10 +28,12 @@ class PettestTests(unittest.TestCase):
             pet = await store.create(123)
             self.assertEqual(pet.owner_id, 123)
             self.assertIsNotNone(await TestPetStore(path).get(pet.id, 123))
+            self.assertEqual(await store.list(123), [(pet.id, pet.appearance.species)])
             self.assertIsNone(await store.get(pet.id, 456))
             self.assertFalse(await store.delete(pet.id, 456))
             self.assertTrue(await store.delete(pet.id, 123))
             self.assertIsNone(await store.get(pet.id, 123))
+            self.assertEqual(await store.list(123), [])
             self.assertFalse(await store.delete(pet.id, 123))
             second = await store.create(123)
             self.assertNotEqual(pet.id, second.id)
