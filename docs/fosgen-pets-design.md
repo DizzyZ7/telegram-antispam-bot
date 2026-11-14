@@ -35,7 +35,7 @@ Do not generate images on every /pet request.
 
 ## Next milestones
 
-1. Draw and version actual species assets and layer masks; implement deterministic Pillow/SVG compositor with golden image tests.
+1. SVG prototype for kitten/foal/calf implemented with fixed viewBox, body/head clip mask, stable marking variants and XML tests. Next: replace proof-of-concept art with polished illustrated layered assets, export PNG and add golden image/visual-difference tests.
 2. Build PostgreSQL repository, transactional message accounting and uniqueness retries; add concurrency tests.
 3. Register handlers behind FOSGEN_PETS_ENABLED=0; consent, /pet_progress, /pet, naming and callbacks.
 4. Add care actions, idempotent events, origin story templates and privacy controls.
