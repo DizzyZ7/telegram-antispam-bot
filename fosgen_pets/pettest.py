@@ -37,6 +37,8 @@ def parse_command(text: str) -> tuple[str, int | None]:
     parts = text.strip().split()
     if len(parts) == 1:
         return "create", None
+    if len(parts) == 2 and parts[1].lower() == "list":
+        return "list", None
     if len(parts) in (2, 3) and parts[1].isdecimal():
         ident = int(parts[1])
         if ident <= 0:
@@ -80,6 +82,9 @@ class TestPetStore:
 
     def _create_sync(self, owner_id: int) -> TestPet:
         with self._connect() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM fosgen_pettest WHERE owner_id=?", (owner_id,)).fetchone()[0]
+            if count >= 30:
+                raise ValueError("Limit of 30 temporary pets reached; delete old test IDs first")
             for _ in range(100):
                 species = secrets.choice(tuple(sorted(SUPPORTED)))
                 appearance = build_appearance(species, secrets.token_hex(24))
@@ -117,6 +122,18 @@ class TestPetStore:
             )
             return cur.rowcount == 1
 
+    def _list_sync(self, owner_id: int) -> list[tuple[int, str]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id,dna FROM fosgen_pettest WHERE owner_id=? ORDER BY id DESC LIMIT 30",
+                (owner_id,),
+            ).fetchall()
+        return [(int(ident), json.loads(dna)["species"]) for ident, dna in rows]
+
+    async def list(self, owner_id: int) -> list[tuple[int, str]]:
+        async with self._lock:
+            return await asyncio.to_thread(self._list_sync, owner_id)
+
     async def delete(self, ident: int, owner_id: int) -> bool:
         async with self._lock:
             return await asyncio.to_thread(self._delete_sync, ident, owner_id)
@@ -148,6 +165,10 @@ def register_pettest_handlers(app: Any, *, admin_ids: frozenset[int], data_dir: 
 
         owner_id = message.from_user.id
         try:
+            if operation == "list":
+                items = await store.list(owner_id)
+                await message.answer("🐾 Тестовые питомцы:\n" + "\n".join(f"#{i} · {s}" for i, s in items) if items else "Тестовых питомцев пока нет.")
+                return
             if operation == "delete":
                 deleted = await store.delete(ident, owner_id)
                 await message.answer(
@@ -155,6 +176,9 @@ def register_pettest_handlers(app: Any, *, admin_ids: frozenset[int], data_dir: 
                     else "Такого тестового питомца нет."
                 )
                 return
+            if operation == "create":
+                # Avoid leaving an unrenderable record when Cairo is unavailable.
+                await asyncio.to_thread(render_png, build_appearance("kitten", "pettest-preflight"))
             pet = await store.create(owner_id) if operation == "create" else await store.get(ident, owner_id)
             if pet is None:
                 await message.answer("Такого тестового питомца нет.")
@@ -175,6 +199,8 @@ def register_pettest_handlers(app: Any, *, admin_ids: frozenset[int], data_dir: 
             )
             # Full DNA is separate to keep the image caption readable.
             await message.answer(f"🧬 DNA #{pet.id}:\n<code>{dna}</code>", parse_mode="HTML")
+        except ValueError as exc:
+            await message.answer(str(exc))
         except Exception:
             import logging
             logging.exception("FOSGEN_PETTEST_FAILED")
