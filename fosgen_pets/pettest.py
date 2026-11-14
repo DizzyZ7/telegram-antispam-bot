@@ -426,9 +426,13 @@ def register_pettest_handlers(app: Any, *, admin_ids: frozenset[int], data_dir: 
         try:
             if request.operation == "list":
                 items = await store.list(owner_id)
+                active = len(items)
                 await message.answer(
-                    "🐾 Тестовые питомцы:\n" + "\n".join(f"#{i} · {escape(s)}" for i, s in items)
-                    if items else "Тестовых питомцев пока нет.", parse_mode="HTML",
+                    f"🐾 Тестовые питомцы (занято {active}/{MAX_PETS_PER_OWNER}, "
+                    f"свободно {MAX_PETS_PER_OWNER - active}):\n"
+                    + ("\n".join(f"#{i} · {escape(s)}" for i, s in items)
+                       if items else "Тестовых питомцев пока нет."),
+                    parse_mode="HTML",
                 )
                 return
             if request.operation == "delete":
@@ -448,7 +452,8 @@ def register_pettest_handlers(app: Any, *, admin_ids: frozenset[int], data_dir: 
                     details = f" Не найдено среди твоих записей: {absent}." if absent else ""
                     await message.answer(
                         f"🗑 Удалено тестовых питомцев: {len(removed)}. "
-                        + "ID: " + ", ".join(map(str, removed)) + "." + details
+                        + "ID: " + ", ".join(map(str, removed)) + ". "
+                        + f"Освобождено мест: {len(removed)}." + details
                     )
                 return
             # Bound pending CPU-heavy requests too, without a growing owner map.

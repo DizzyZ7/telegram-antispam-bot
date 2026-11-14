@@ -116,6 +116,28 @@ class PettestStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await store.delete_many(123, None), [])
         self.assertEqual([id for id, _ in await store.list(456)], [6])
 
+    async def test_deleted_ids_release_capacity_without_resurrecting_stale_telegram_ids(self):
+        seed_legacy_database(self.path, count=30)
+        store = pettest.TestPetStore(self.path)
+        self.assertEqual(len(await store.list(123)), 30)
+        with self.assertRaises(ValueError):
+            await store.create(123, "kitten")
+        self.assertEqual(await store.delete_many(123, (1, 2, 3, 99)), [1, 2, 3])
+        self.assertIsNone(await store.get(1, 123))
+        self.assertEqual(len(await store.list(123)), 27)
+        new_pets = await store.create_series(123, "kitten", 3, pattern_seed=123456)
+        self.assertEqual(len(new_pets), 3)
+        # Reused numbers would allow old /pettest ID delete messages to affect new pets.
+        self.assertTrue(all(pet.id > 30 for pet in new_pets))
+        self.assertEqual(len(await store.list(123)), 30)
+        with self.assertRaises(ValueError):
+            await store.create(123, "kitten")
+        self.assertEqual(len(await store.delete_many(123, None)), 30)
+        self.assertEqual(await store.list(123), [])
+        self.assertIsNone(await store.get(3, 123))
+        self.assertEqual(len(await store.create_series(123, "kitten", 2, pattern_seed=123456)), 2)
+        self.assertEqual(len(await store.list(123)), 2)
+
     async def test_bulk_delete_rolls_back_if_sqlite_rejects_any_row(self):
         seed_legacy_database(self.path, count=3)
         with sqlite3.connect(self.path) as conn:
@@ -348,6 +370,18 @@ class PettestHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await pettest.TestPetStore(path).list(123), [])
         await self.handler(FakeMessage("/pettest list"))
         self.assertEqual(len(message.photos), 0)
+
+    async def test_list_shows_only_active_capacity_after_bulk_delete(self):
+        path = Path(self.folder.name) / "fosgen_pettest.sqlite3"
+        seed_legacy_database(path, count=27)
+        before = FakeMessage("/pettest list")
+        await self.handler(before)
+        self.assertIn("занято 27/30", before.answers[0][0])
+        await self.handler(FakeMessage("/pettest id 1-27 delete"))
+        after = FakeMessage("/pettest list")
+        await self.handler(after)
+        self.assertIn("занято 0/30", after.answers[0][0])
+        self.assertIn("свободно 30", after.answers[0][0])
 
     async def test_bulk_delete_handler_keeps_other_owners_data(self):
         path = Path(self.folder.name) / "fosgen_pettest.sqlite3"
