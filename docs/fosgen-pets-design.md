@@ -44,3 +44,25 @@ Do not generate images on every /pet request.
 ## Operational boundaries
 
 No changes to Zero Trust, entertainment, writers submissions or moderation routing in this foundation PR.
+
+
+## Temporary visual laboratory: /pettest
+
+The laboratory is disabled by default and has no access to production pet records.
+On Bothost, set:
+
+- `FOSGEN_PETTEST_ENABLED=1`
+- `FOSGEN_PETTEST_ADMIN_IDS=<your numeric Telegram user ID>`
+- `DATA_DIR=/app/data` (existing durable data directory)
+
+Restart the bot after deploying this PR. Only the listed users can run these commands, and only in the bot's private chat:
+
+- `/pettest`: create a random kitten, foal or calf with immutable DNA, unique test ID, inline PNG and complete DNA JSON.
+- `/pettest 42`: show test animal #42 again with the same appearance.
+- `/pettest 42 delete`: delete test record #42. No undo. Telegram messages already sent remain visible.
+
+The temporary SQLite file is `DATA_DIR/fosgen_pettest.sqlite3`, separate from the permanent PostgreSQL schema. Do not manually delete the file unless you intentionally want to reset all temporary records and ID sequence. Deletion removes the record and DNA reservation from this test store; no real pet, owner progress or story is touched. IDs are never reused during the life of the database. Disabling the flag removes the command but retains test records until deleted.
+
+**Current limitation:** only three prototype SVG species are renderable; final art is not ready. A DNA fingerprint does not yet prove that two PNGs are perceptually different. No pet is granted automatically and no messages are counted.
+
+**Deployment note:** `CairoSVG` rasterizes SVG to PNG. Confirm its system Cairo dependency is present on the Bothost image and CI before enabling. If it is missing, /pettest returns an error and logs `FOSGEN_PETTEST_FAILED`.
