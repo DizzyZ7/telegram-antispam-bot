@@ -1,0 +1,1083 @@
+{
+  "schema_version": 1,
+  "coordinate_space": "512x512 pixels",
+  "box_format": "[left,top,right,bottom], right/bottom exclusive",
+  "semantic_regions": "Approximate manual guides; intersect with alpha, no rectangular painting. head includes ears; face excludes the long/side ear silhouettes. Preserve eye pupil/specular highlights. Capybara, calf, foal and alpaca nose boxes are paired nostrils, not a central button nose.",
+  "species": {
+    "kitten": {
+      "imagefile": "kitten-master.webp",
+      "head": [
+        147,
+        49,
+        385,
+        267
+      ],
+      "body": [
+        140,
+        243,
+        375,
+        462
+      ],
+      "tail": [
+        85,
+        285,
+        171,
+        438
+      ],
+      "eye_boxes": [
+        [
+          227,
+          172,
+          257,
+          199
+        ],
+        [
+          307,
+          162,
+          336,
+          190
+        ]
+      ],
+      "nose_boxes": [
+        [
+          276,
+          200,
+          299,
+          218
+        ]
+      ],
+      "feetpoints": [
+        [
+          203,
+          432
+        ],
+        [
+          267,
+          440
+        ],
+        [
+          316,
+          435
+        ],
+        [
+          356,
+          425
+        ]
+      ],
+      "sha256": "06ace2c9de6d33f261381c9ceb547c6a2d9bce7f8cb9725b5741a4f3b020f7f5",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        56,
+        49,
+        457,
+        464
+      ],
+      "bbox": [
+        89,
+        51,
+        384,
+        461
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 119256,
+      "face": [
+        152,
+        82,
+        383,
+        264
+      ]
+    },
+    "puppy": {
+      "imagefile": "puppy-master.webp",
+      "head": [
+        94,
+        48,
+        395,
+        263
+      ],
+      "body": [
+        108,
+        237,
+        383,
+        463
+      ],
+      "tail": [
+        354,
+        325,
+        417,
+        404
+      ],
+      "eye_boxes": [
+        [
+          198,
+          139,
+          222,
+          163
+        ],
+        [
+          281,
+          128,
+          304,
+          151
+        ]
+      ],
+      "nose_boxes": [
+        [
+          245,
+          169,
+          282,
+          198
+        ]
+      ],
+      "feetpoints": [
+        [
+          153,
+          423
+        ],
+        [
+          229,
+          439
+        ],
+        [
+          297,
+          436
+        ],
+        [
+          354,
+          419
+        ]
+      ],
+      "sha256": "33f37ebbd498eee9bea3b44d65e390d6d964d3653347d9b0fe23e994e3b039c6",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        40,
+        46,
+        443,
+        465
+      ],
+      "bbox": [
+        96,
+        51,
+        417,
+        462
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 124852,
+      "face": [
+        164,
+        61,
+        347,
+        245
+      ]
+    },
+    "fox": {
+      "imagefile": "fox-master.webp",
+      "head": [
+        104,
+        47,
+        339,
+        256
+      ],
+      "body": [
+        105,
+        245,
+        310,
+        461
+      ],
+      "tail": [
+        269,
+        270,
+        411,
+        463
+      ],
+      "eye_boxes": [
+        [
+          184,
+          176,
+          209,
+          198
+        ],
+        [
+          252,
+          167,
+          277,
+          191
+        ]
+      ],
+      "nose_boxes": [
+        [
+          229,
+          216,
+          249,
+          234
+        ]
+      ],
+      "feetpoints": [
+        [
+          164,
+          436
+        ],
+        [
+          198,
+          443
+        ],
+        [
+          245,
+          444
+        ]
+      ],
+      "sha256": "311ca3846b5843092c278947c799beb5997b14b0c1ce04778acf1f95575b5a0f",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        40,
+        43,
+        467,
+        466
+      ],
+      "bbox": [
+        106,
+        49,
+        408,
+        461
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 118650,
+      "face": [
+        129,
+        101,
+        335,
+        252
+      ]
+    },
+    "badger": {
+      "imagefile": "badger-master.webp",
+      "head": [
+        76,
+        85,
+        314,
+        299
+      ],
+      "body": [
+        62,
+        174,
+        459,
+        439
+      ],
+      "tail": [
+        423,
+        313,
+        461,
+        399
+      ],
+      "eye_boxes": [
+        [
+          147,
+          187,
+          169,
+          210
+        ],
+        [
+          235,
+          186,
+          254,
+          207
+        ]
+      ],
+      "nose_boxes": [
+        [
+          190,
+          265,
+          226,
+          291
+        ]
+      ],
+      "feetpoints": [
+        [
+          126,
+          410
+        ],
+        [
+          243,
+          418
+        ],
+        [
+          364,
+          394
+        ]
+      ],
+      "sha256": "ec8e213d0ad5ea422022a5d796912c8ba620a0e7a7b25877ce5fa0f7815b136b",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        59,
+        63,
+        465,
+        463
+      ],
+      "bbox": [
+        67,
+        89,
+        457,
+        439
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 135978,
+      "face": [
+        79,
+        115,
+        310,
+        300
+      ]
+    },
+    "capybara": {
+      "imagefile": "capybara-master.webp",
+      "head": [
+        74,
+        64,
+        312,
+        286
+      ],
+      "body": [
+        101,
+        179,
+        446,
+        458
+      ],
+      "tail": null,
+      "eye_boxes": [
+        [
+          104,
+          126,
+          117,
+          150
+        ],
+        [
+          253,
+          126,
+          274,
+          153
+        ]
+      ],
+      "nose_boxes": [
+        [
+          109,
+          205,
+          125,
+          221
+        ],
+        [
+          185,
+          204,
+          202,
+          220
+        ]
+      ],
+      "feetpoints": [
+        [
+          125,
+          403
+        ],
+        [
+          153,
+          436
+        ],
+        [
+          237,
+          444
+        ],
+        [
+          355,
+          422
+        ]
+      ],
+      "sha256": "92daff901d3e4b3f6cb5b59fe24fd4eed137614dd0162eee37335e563d9d767e",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        57,
+        62,
+        446,
+        461
+      ],
+      "bbox": [
+        60,
+        65,
+        442,
+        457
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 142870,
+      "face": [
+        75,
+        83,
+        312,
+        286
+      ]
+    },
+    "otter": {
+      "imagefile": "otter-master.webp",
+      "head": [
+        96,
+        51,
+        273,
+        192
+      ],
+      "body": [
+        98,
+        181,
+        376,
+        434
+      ],
+      "tail": [
+        212,
+        302,
+        433,
+        461
+      ],
+      "eye_boxes": [
+        [
+          138,
+          106,
+          156,
+          126
+        ],
+        [
+          219,
+          106,
+          237,
+          126
+        ]
+      ],
+      "nose_boxes": [
+        [
+          175,
+          127,
+          207,
+          148
+        ]
+      ],
+      "feetpoints": [
+        [
+          135,
+          412
+        ],
+        [
+          180,
+          418
+        ],
+        [
+          266,
+          405
+        ]
+      ],
+      "sha256": "d22bf746754e20408f6e8f49e3efa7a0accf684b0113c204b3221c036abbd95a",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        70,
+        40,
+        468,
+        463
+      ],
+      "bbox": [
+        97,
+        55,
+        433,
+        459
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 119562,
+      "face": [
+        103,
+        53,
+        267,
+        192
+      ]
+    },
+    "foal": {
+      "head": [
+        235,
+        45,
+        395,
+        240
+      ],
+      "body": [
+        138,
+        192,
+        354,
+        466
+      ],
+      "tail": [
+        115,
+        211,
+        172,
+        347
+      ],
+      "eye_boxes": [
+        [
+          292,
+          149,
+          313,
+          172
+        ],
+        [
+          368,
+          143,
+          383,
+          164
+        ]
+      ],
+      "nose_boxes": [
+        [
+          332,
+          200,
+          346,
+          218
+        ],
+        [
+          369,
+          197,
+          381,
+          214
+        ]
+      ],
+      "feetpoints": [
+        [
+          170,
+          439
+        ],
+        [
+          224,
+          419
+        ],
+        [
+          266,
+          453
+        ],
+        [
+          328,
+          436
+        ]
+      ],
+      "imagefile": "foal-master.webp",
+      "sha256": "5fa382daea2aea2ac78f49bc34816af8d70a0dd7754179b87b115fb4f5c6f5d7",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        40,
+        44,
+        466,
+        467
+      ],
+      "bbox": [
+        118,
+        46,
+        394,
+        465
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 100500,
+      "face": [
+        271,
+        92,
+        390,
+        239
+      ]
+    },
+    "calf": {
+      "head": [
+        114,
+        53,
+        463,
+        252
+      ],
+      "body": [
+        98,
+        201,
+        361,
+        459
+      ],
+      "tail": [
+        67,
+        205,
+        160,
+        331
+      ],
+      "eye_boxes": [
+        [
+          235,
+          151,
+          259,
+          177
+        ],
+        [
+          337,
+          140,
+          357,
+          165
+        ]
+      ],
+      "nose_boxes": [
+        [
+          282,
+          191,
+          298,
+          207
+        ],
+        [
+          329,
+          185,
+          343,
+          202
+        ]
+      ],
+      "feetpoints": [
+        [
+          133,
+          432
+        ],
+        [
+          183,
+          418
+        ],
+        [
+          241,
+          446
+        ],
+        [
+          324,
+          437
+        ]
+      ],
+      "imagefile": "calf-master.webp",
+      "sha256": "aa8e60d6593180ae7af40d3d834cf0919be569815a815f9d20c4fa25335157cd",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        51,
+        47,
+        463,
+        472
+      ],
+      "bbox": [
+        69,
+        56,
+        461,
+        458
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 129892,
+      "face": [
+        205,
+        56,
+        374,
+        252
+      ]
+    },
+    "bunny": {
+      "head": [
+        124,
+        43,
+        355,
+        323
+      ],
+      "body": [
+        122,
+        313,
+        356,
+        466
+      ],
+      "tail": [
+        326,
+        328,
+        383,
+        404
+      ],
+      "eye_boxes": [
+        [
+          185,
+          231,
+          206,
+          257
+        ],
+        [
+          273,
+          225,
+          294,
+          251
+        ]
+      ],
+      "nose_boxes": [
+        [
+          231,
+          262,
+          258,
+          284
+        ]
+      ],
+      "feetpoints": [
+        [
+          157,
+          442
+        ],
+        [
+          209,
+          449
+        ],
+        [
+          253,
+          451
+        ],
+        [
+          318,
+          445
+        ]
+      ],
+      "imagefile": "bunny-master.webp",
+      "sha256": "5b815d7770048baf54a561df7184f6e33664a5a757e0b31e62c3947d21382480",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        75,
+        40,
+        384,
+        467
+      ],
+      "bbox": [
+        126,
+        46,
+        381,
+        465
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 101896,
+      "face": [
+        141,
+        163,
+        331,
+        324
+      ]
+    },
+    "fawn": {
+      "head": [
+        129,
+        45,
+        406,
+        218
+      ],
+      "body": [
+        122,
+        209,
+        332,
+        464
+      ],
+      "tail": [
+        130,
+        199,
+        173,
+        262
+      ],
+      "eye_boxes": [
+        [
+          238,
+          153,
+          261,
+          177
+        ],
+        [
+          315,
+          146,
+          333,
+          170
+        ]
+      ],
+      "nose_boxes": [
+        [
+          284,
+          179,
+          308,
+          201
+        ]
+      ],
+      "feetpoints": [
+        [
+          147,
+          442
+        ],
+        [
+          208,
+          430
+        ],
+        [
+          254,
+          449
+        ],
+        [
+          310,
+          443
+        ]
+      ],
+      "imagefile": "fawn-master.webp",
+      "sha256": "decd5892d2a8af5830f2492f1f7e92b8873e65705f1c70f067e1e29b7b7ae786",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        40,
+        45,
+        440,
+        464
+      ],
+      "bbox": [
+        124,
+        48,
+        404,
+        461
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 94596,
+      "face": [
+        218,
+        88,
+        340,
+        217
+      ]
+    },
+    "raccoon": {
+      "head": [
+        80,
+        61,
+        358,
+        270
+      ],
+      "body": [
+        92,
+        253,
+        365,
+        453
+      ],
+      "tail": [
+        307,
+        286,
+        455,
+        457
+      ],
+      "eye_boxes": [
+        [
+          177,
+          169,
+          204,
+          195
+        ],
+        [
+          253,
+          162,
+          277,
+          186
+        ]
+      ],
+      "nose_boxes": [
+        [
+          221,
+          212,
+          255,
+          241
+        ]
+      ],
+      "feetpoints": [
+        [
+          125,
+          421
+        ],
+        [
+          164,
+          439
+        ],
+        [
+          220,
+          442
+        ],
+        [
+          274,
+          428
+        ]
+      ],
+      "imagefile": "raccoon-master.webp",
+      "sha256": "b107434fd0ae50c73d5327146d893c95916023478bda5eeed51484721b0dcec8",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        77,
+        43,
+        468,
+        472
+      ],
+      "bbox": [
+        82,
+        61,
+        452,
+        456
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 141642,
+      "face": [
+        81,
+        87,
+        357,
+        270
+      ]
+    },
+    "alpaca": {
+      "head": [
+        233,
+        40,
+        362,
+        185
+      ],
+      "body": [
+        146,
+        172,
+        349,
+        467
+      ],
+      "tail": [
+        137,
+        229,
+        180,
+        285
+      ],
+      "eye_boxes": [
+        [
+          268,
+          128,
+          287,
+          146
+        ],
+        [
+          330,
+          124,
+          344,
+          142
+        ]
+      ],
+      "nose_boxes": [
+        [
+          304,
+          143,
+          317,
+          154
+        ],
+        [
+          320,
+          142,
+          332,
+          153
+        ]
+      ],
+      "feetpoints": [
+        [
+          178,
+          438
+        ],
+        [
+          214,
+          429
+        ],
+        [
+          259,
+          452
+        ],
+        [
+          301,
+          444
+        ]
+      ],
+      "imagefile": "alpaca-master.webp",
+      "sha256": "567ff0d52bd605fb3c60c898655232808ac901e1a1b1d56e99468c70c57bc06f",
+      "width": 512,
+      "height": 512,
+      "alpha_bbox": [
+        46,
+        40,
+        465,
+        469
+      ],
+      "bbox": [
+        137,
+        42,
+        358,
+        467
+      ],
+      "bbox_alpha_threshold": 16,
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "bytes": 82018,
+      "face": [
+        244,
+        73,
+        360,
+        184
+      ]
+    }
+  },
+  "generation": {
+    "date": "2026-11-15",
+    "tool": "image_gen.imagegen / tools.image_gen__imagegen",
+    "underlying_model_version": "not exposed by the built-in tool",
+    "reference_images": false,
+    "transparent_background": true,
+    "source_size": [
+      1254,
+      1254
+    ],
+    "packaging": "Lanczos 432x432 centered at 40,40 in a transparent 512x512 square; lossless WebP"
+  }
+}

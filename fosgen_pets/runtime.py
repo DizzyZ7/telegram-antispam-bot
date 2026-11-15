@@ -17,6 +17,8 @@ LOGGER = logging.getLogger(__name__)
 class PetsConfig:
     enabled: bool = False
     chat_ids: frozenset[int] = frozenset()
+    new_asset_version: int = 2
+    v3_art_approved: bool = False
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> PetsConfig:
@@ -33,7 +35,13 @@ class PetsConfig:
         ids = frozenset(map(int, values))
         if any(not -(2**63) < chat_id < 0 for chat_id in ids):
             raise ValueError("Participating chat ID out of range")
-        return cls(True, ids)
+        version = env.get("FOSGEN_PETS_NEW_ASSET_VERSION", "2")
+        approval = env.get("FOSGEN_PETS_V3_ART_APPROVED", "0")
+        if version not in ("2", "3") or approval not in ("0", "1"):
+            raise ValueError("Invalid pet art issuance configuration")
+        if version == "3" and approval != "1":
+            raise ValueError("Version 3 production art requires explicit approval")
+        return cls(True, ids, int(version), approval == "1")
 
 
 @dataclass
@@ -69,7 +77,8 @@ async def start_pet_runtime(
         return None
     store = None
     try:
-        store = PostgresPetStore(database_url)
+        store = (PostgresPetStore(database_url) if config.new_asset_version == 2 else
+                 PostgresPetStore(database_url, asset_version=config.new_asset_version))
         await store.initialize()
         service = register_pet_handlers(app, store, chat_ids=frozenset(effective_ids))
     except Exception as exc:
