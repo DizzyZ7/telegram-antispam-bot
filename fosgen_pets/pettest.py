@@ -4,7 +4,7 @@
 Bulk delete supports ranges, comma-separated IDs and explicitly requested all.
 /pettest series SPECIES COUNT [PATTERN_SEED] creates one atomic gallery.
 With a seed, only consecutive Pattern Seeds vary; other DNA fields match.
-Generation defaults to v2; /pettest v3 [SPECIES] opts into the new art.
+Generation defaults to the owner-approved v3; /pettest v2 keeps legacy creation.
 /pettest v3 series SPECIES COUNT [SEED] and v2 use the same gallery rules.
 /pettest v3 rare SPECIES MARKING [SEED] selects a canonical rare marking.
 /pettest compare SPECIES [SEED] freezes matching v2/v3 genes as one pair.
@@ -37,6 +37,7 @@ from .portrait import render_png, render_portrait
 MAX_SQL_ID = 2**63 - 1
 MAX_COMMAND_LENGTH = 256
 MAX_PETS_PER_OWNER = 30
+DEFAULT_TEST_ASSET_VERSION = 3
 RARE_MARKINGS = ("star", "heart", "blaze", "freckle", "sock_left", "sock_right")
 _COMMAND = re.compile(r"/pettest(?:@[A-Za-z0-9_]{1,32})?(?:[ \t]+[A-Za-z0-9_,-]+)*[ \t]*", re.ASCII)
 _USAGE = (
@@ -44,7 +45,7 @@ _USAGE = (
     "/pettest list, /pettest ID delete, /pettest id 1-27 delete, "
     "/pettest 1,3,5-8 delete, /pettest all delete, "
     "/pettest series kitten 6 [PATTERN_SEED]. "
-    "По умолчанию графика v2. Выбор версии: /pettest v2 [ВИД], /pettest v3 [ВИД], "
+    "По умолчанию графика v3. Выбор версии: /pettest v2 [ВИД], /pettest v3 [ВИД], "
     "/pettest v3 series kitten 6 [PATTERN_SEED]. "
     "Редкая отметина: /pettest v3 rare kitten star [PATTERN_SEED] "
     "(star, heart, blaze, freckle, sock_left, sock_right; также доступна v2). "
@@ -119,7 +120,7 @@ class PettestRequest:
     count: int = 1
     pattern_seed: int | None = None
     identifiers: tuple[int, ...] = ()
-    asset_version: int = 2
+    asset_version: int = DEFAULT_TEST_ASSET_VERSION
     marking: str | None = None
 
 
@@ -131,7 +132,7 @@ def parse_request(text: str) -> PettestRequest:
         raise ValueError(_USAGE)
     args = text.split()[1:]
     versioned = bool(args and args[0] in ("v2", "v3"))
-    asset_version = int(args.pop(0)[1:]) if versioned else 2
+    asset_version = int(args.pop(0)[1:]) if versioned else DEFAULT_TEST_ASSET_VERSION
     if not args:
         return PettestRequest("create", asset_version=asset_version)
     if len(args) == 1 and args[0] in SPECIES:
@@ -281,7 +282,7 @@ class TestPetStore:
 
     def _create_many_sync(
         self, owner_id: int, species: str | None, count: int, pattern_seed: int | None,
-        asset_version: int = 2, marking: str | None = None, compare_versions: bool = False,
+        asset_version: int = DEFAULT_TEST_ASSET_VERSION, marking: str | None = None, compare_versions: bool = False,
     ) -> list[TestPet]:
         with closing(self._connect()) as conn:
             self._check_capacity(conn, owner_id, count)
@@ -338,7 +339,7 @@ class TestPetStore:
 
     async def create(
         self, owner_id: int, species: str | None = None, pattern_seed: int | None = None,
-        *, asset_version: int = 2, marking: str | None = None,
+        *, asset_version: int = DEFAULT_TEST_ASSET_VERSION, marking: str | None = None,
     ) -> TestPet:
         _positive_id(owner_id)
         _generation_options(species, asset_version, marking)
@@ -350,7 +351,7 @@ class TestPetStore:
 
     async def create_series(
         self, owner_id: int, species: str, count: int, pattern_seed: int | None = None,
-        *, asset_version: int = 2, marking: str | None = None,
+        *, asset_version: int = DEFAULT_TEST_ASSET_VERSION, marking: str | None = None,
     ) -> list[TestPet]:
         """Seeded galleries vary only Pattern Seed; unseeded pets vary freely."""
         _positive_id(owner_id)

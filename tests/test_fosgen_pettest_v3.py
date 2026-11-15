@@ -40,11 +40,11 @@ def seed_capacity(path: Path, count: int) -> None:
 
 
 class VersionedGrammarTests(unittest.TestCase):
-    def test_legacy_generation_stays_v2(self):
+    def test_unversioned_generation_uses_approved_plush_art(self):
         for command in ("/pettest", "/pettest kitten", "/pettest series otter 2 42"):
             with self.subTest(command=command):
                 request = pettest.parse_request(command)
-                self.assertEqual(getattr(request, "asset_version", None), 2)
+                self.assertEqual(getattr(request, "asset_version", None), 3)
                 self.assertIsNone(getattr(request, "marking", "missing"))
 
     def test_version_prefix_selects_random_species_single_pet_or_series(self):
@@ -99,6 +99,18 @@ class VersionedStoreTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.folder.cleanup)
         self.path = Path(self.folder.name) / "fosgen_pettest.sqlite3"
         self.store = pettest.TestPetStore(self.path)
+
+    async def test_default_new_pets_use_v3_and_explicit_v2_records_keep_their_art(self):
+        old = await self.store.create(OWNER, "badger", 42, asset_version=2)
+        new = await self.store.create(OWNER, "badger", 42)
+        series = await self.store.create_series(OWNER, "otter", 2, 42)
+        self.assertEqual(new.appearance.asset_version, 3)
+        self.assertEqual([pet.appearance.asset_version for pet in series], [3, 3])
+        self.assertIn('data-asset-version="3"', new.svg)
+        with patch.object(pettest, "render_portrait", side_effect=AssertionError("saved v2 art must not change")):
+            restored = await pettest.TestPetStore(self.path).get(old.id, OWNER)
+        self.assertEqual(restored, old)
+        self.assertEqual(restored.appearance.asset_version, 2)
 
     async def test_v3_png_and_dna_are_frozen_across_restart(self):
         pet = await self.store.create(OWNER, "kitten", 42, asset_version=3)
@@ -327,7 +339,7 @@ class VersionedDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({pet.appearance.asset_version for pet in records}, {2, 3})
         self.assertEqual(self.forwarded, [])
 
-    async def test_v3_rare_routes_and_default_command_still_creates_v2(self):
+    async def test_v3_rare_routes_and_default_command_create_approved_v3(self):
         with patch.object(pettest.secrets, "token_hex", return_value="handler-rare"):
             await self.dispatch("/pettest v3 rare otter heart 42")
             await self.dispatch("/pettest kitten")
@@ -335,7 +347,7 @@ class VersionedDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(photos), 2)
         self.assertIn("v3", photos[0].photo.filename)
         self.assertIn("heart", photos[0].caption)
-        self.assertIn("v2", photos[1].photo.filename)
+        self.assertIn("v3", photos[1].photo.filename)
         self.assertEqual(len(await pettest.TestPetStore(self.path).list(OWNER)), 2)
 
     async def test_versioned_series_dispatch_keeps_one_v3_gallery_with_wrapping_seeds(self):
