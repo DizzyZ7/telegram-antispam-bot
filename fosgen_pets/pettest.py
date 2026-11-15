@@ -4,6 +4,10 @@
 Bulk delete supports ranges, comma-separated IDs and explicitly requested all.
 /pettest series SPECIES COUNT [PATTERN_SEED] creates one atomic gallery.
 With a seed, only consecutive Pattern Seeds vary; other DNA fields match.
+Generation defaults to v2; /pettest v3 [SPECIES] opts into the new art.
+/pettest v3 series SPECIES COUNT [SEED] and v2 use the same gallery rules.
+/pettest v3 rare SPECIES MARKING [SEED] selects a canonical rare marking.
+/pettest compare SPECIES [SEED] freezes matching v2/v3 genes as one pair.
 Stored PNG/SVG bytes freeze the animal seen by the administrator.
 """
 from __future__ import annotations
@@ -24,18 +28,27 @@ from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, InputMediaPhoto, Message
 
-from .core import Appearance, MAX_PATTERN_SEED, SPECIES, build_appearance
+from .core import (
+    Appearance, MARKING_VARIANT_COUNTS, MAX_PATTERN_SEED, SPECIES,
+    V3_MARKING_VARIANT_COUNTS, build_appearance,
+)
 from .portrait import render_png, render_portrait
 
 MAX_SQL_ID = 2**63 - 1
 MAX_COMMAND_LENGTH = 256
 MAX_PETS_PER_OWNER = 30
+RARE_MARKINGS = ("star", "heart", "blaze", "freckle", "sock_left", "sock_right")
 _COMMAND = re.compile(r"/pettest(?:@[A-Za-z0-9_]{1,32})?(?:[ \t]+[A-Za-z0-9_,-]+)*[ \t]*", re.ASCII)
 _USAGE = (
     "Команды: /pettest, /pettest kitten, /pettest ID, /pettest ID dna, "
     "/pettest list, /pettest ID delete, /pettest id 1-27 delete, "
     "/pettest 1,3,5-8 delete, /pettest all delete, "
     "/pettest series kitten 6 [PATTERN_SEED]. "
+    "По умолчанию графика v2. Выбор версии: /pettest v2 [ВИД], /pettest v3 [ВИД], "
+    "/pettest v3 series kitten 6 [PATTERN_SEED]. "
+    "Редкая отметина: /pettest v3 rare kitten star [PATTERN_SEED] "
+    "(star, heart, blaze, freckle, sock_left, sock_right; также доступна v2). "
+    "Сравнение одинаковой DNA в v2/v3: /pettest compare kitten [PATTERN_SEED]. "
     "Серия: 2–8 питомцев; Pattern Seed: 0–999999. "
     "С заданным зерном все признаки одинаковы, меняется только Pattern Seed: SEED, SEED+1… "
     "(после 999999 идет 0). Без зерна — случайные внешности. "
@@ -61,6 +74,15 @@ def _number(value: str, *, minimum: int = 1, maximum: int = MAX_SQL_ID) -> int:
 def _pattern_seed(value: int | None) -> None:
     if value is not None and (type(value) is not int or not 0 <= value <= MAX_PATTERN_SEED):
         raise ValueError("Pattern seed must be an integer in 0..999999")
+
+
+def _generation_options(species: str | None, asset_version: int, marking: str | None) -> None:
+    if species is not None and (not isinstance(species, str) or species not in SPECIES):
+        raise ValueError("Unknown pet species")
+    if type(asset_version) is not int or asset_version not in (2, 3):
+        raise ValueError("New laboratory pets require asset version 2 or 3")
+    if marking is not None and (not isinstance(marking, str) or marking not in RARE_MARKINGS):
+        raise ValueError("Choose a rare marking: " + ", ".join(RARE_MARKINGS))
 
 
 def _parse_delete_ids(spec: str) -> tuple[int, ...]:
@@ -97,6 +119,8 @@ class PettestRequest:
     count: int = 1
     pattern_seed: int | None = None
     identifiers: tuple[int, ...] = ()
+    asset_version: int = 2
+    marking: str | None = None
 
 
 def parse_request(text: str) -> PettestRequest:
@@ -106,17 +130,32 @@ def parse_request(text: str) -> PettestRequest:
     if not _COMMAND.fullmatch(text):
         raise ValueError(_USAGE)
     args = text.split()[1:]
+    versioned = bool(args and args[0] in ("v2", "v3"))
+    asset_version = int(args.pop(0)[1:]) if versioned else 2
     if not args:
-        return PettestRequest("create")
-    if len(args) == 1 and args[0].lower() == "list":
-        return PettestRequest("list")
+        return PettestRequest("create", asset_version=asset_version)
     if len(args) == 1 and args[0] in SPECIES:
-        return PettestRequest("create", species=args[0])
+        return PettestRequest("create", species=args[0], asset_version=asset_version)
     if len(args) in (3, 4) and args[0] == "series" and args[1] in SPECIES:
         return PettestRequest(
             "series", species=args[1], count=_number(args[2], minimum=2, maximum=8),
             pattern_seed=_number(args[3], minimum=0, maximum=MAX_PATTERN_SEED) if len(args) == 4 else None,
+            asset_version=asset_version,
         )
+    if versioned and len(args) in (3, 4) and args[0] == "rare" and args[1] in SPECIES and args[2] in RARE_MARKINGS:
+        return PettestRequest(
+            "create", species=args[1], marking=args[2], asset_version=asset_version,
+            pattern_seed=_number(args[3], minimum=0, maximum=MAX_PATTERN_SEED) if len(args) == 4 else None,
+        )
+    if versioned:
+        raise ValueError(_USAGE)
+    if len(args) in (2, 3) and args[0] == "compare" and args[1] in SPECIES:
+        return PettestRequest(
+            "compare", species=args[1], count=2,
+            pattern_seed=_number(args[2], minimum=0, maximum=MAX_PATTERN_SEED) if len(args) == 3 else None,
+        )
+    if len(args) == 1 and args[0].lower() == "list":
+        return PettestRequest("list")
     if len(args) == 2 and args[0] == "dna":
         return PettestRequest("dna", ident=_number(args[1]))
     if len(args) == 2 and args[0].lower() == "all" and args[1].lower() == "delete":
@@ -203,25 +242,66 @@ class TestPetStore:
         if current + count > MAX_PETS_PER_OWNER:
             raise ValueError("Limit of 30 temporary pets reached; delete old test IDs first")
 
+    @staticmethod
+    def _build_candidate(
+        species: str, pattern_seed: int | None, asset_version: int, marking: str | None,
+    ) -> Appearance:
+        appearance = build_appearance(
+            species, secrets.token_hex(24), pattern_seed=pattern_seed, asset_version=asset_version,
+        )
+        if marking is not None:
+            # Derive a finite, visible variant from the generated recipe. In
+            # particular, do not reuse v1's thousands of nonvisual variants.
+            counts = V3_MARKING_VARIANT_COUNTS if asset_version == 3 else MARKING_VARIANT_COUNTS
+            variant = int(appearance.fingerprint()[:8], 16) % counts[marking]
+            appearance = replace(appearance, marking=marking, marking_variant=variant)
+        return appearance
+
+    def _reserve_candidates(
+        self, conn: sqlite3.Connection, owner_id: int, candidates: list[tuple[Appearance, Any]],
+    ) -> list[TestPet] | None:
+        """Reserve any gallery under the same capacity and uniqueness lock."""
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._check_capacity(conn, owner_id, len(candidates))
+            if any(conn.execute(
+                "SELECT 1 FROM fosgen_pettest WHERE fingerprint=? OR pixel_hash=? LIMIT 1",
+                (candidate.fingerprint(), image.pixel_hash),
+            ).fetchone() for candidate, image in candidates):
+                conn.rollback()
+                return None
+            pets = []
+            for candidate, image in candidates:
+                cur = conn.execute(
+                    "INSERT INTO fosgen_pettest(owner_id,dna,fingerprint,png,svg,pixel_hash) VALUES (?,?,?,?,?,?)",
+                    (owner_id, candidate.canonical_dna(), candidate.fingerprint(), image.png, image.svg, image.pixel_hash),
+                )
+                pets.append(TestPet(int(cur.lastrowid), owner_id, candidate, image.png, image.svg, image.pixel_hash))
+            return pets
+
     def _create_many_sync(
         self, owner_id: int, species: str | None, count: int, pattern_seed: int | None,
+        asset_version: int = 2, marking: str | None = None, compare_versions: bool = False,
     ) -> list[TestPet]:
         with closing(self._connect()) as conn:
             self._check_capacity(conn, owner_id, count)
             candidates: list[tuple[Appearance, Any]] = []
             fingerprints: set[str] = set()
             raster_hashes: set[str] = set()
-            comparison = count > 1 and pattern_seed is not None
+            comparison = compare_versions or (count > 1 and pattern_seed is not None)
             base: Appearance | None = None
             # Bounded retries cover raster-equivalent DNA (e.g. solid coats).
             for _ in range(100):
                 selected = species if species is not None else secrets.choice(SPECIES)
                 if comparison:
                     if base is None:
-                        base = build_appearance(selected, secrets.token_hex(24), pattern_seed=pattern_seed)
-                    appearance = replace(base, pattern_seed=(pattern_seed + len(candidates)) % (MAX_PATTERN_SEED + 1))
+                        base = self._build_candidate(selected, pattern_seed, asset_version, marking)
+                    appearance = (
+                        replace(base, asset_version=2 + len(candidates)) if compare_versions
+                        else replace(base, pattern_seed=(pattern_seed + len(candidates)) % (MAX_PATTERN_SEED + 1))
+                    )
                 else:
-                    appearance = build_appearance(selected, secrets.token_hex(24), pattern_seed=pattern_seed)
+                    appearance = self._build_candidate(selected, pattern_seed, asset_version, marking)
                 portrait = render_portrait(appearance)
                 fingerprint = appearance.fingerprint()
                 if fingerprint in fingerprints or portrait.pixel_hash in raster_hashes:
@@ -246,52 +326,56 @@ class TestPetStore:
                 raster_hashes.add(portrait.pixel_hash)
                 if len(candidates) != count:
                     continue
-                # Render all candidates before starting a write transaction.
-                # Recheck capacity and both uniqueness keys under the DB lock.
-                with conn:
-                    conn.execute("BEGIN IMMEDIATE")
-                    self._check_capacity(conn, owner_id, count)
-                    collision = any(conn.execute(
-                        "SELECT 1 FROM fosgen_pettest WHERE fingerprint=? OR pixel_hash=? LIMIT 1",
-                        (candidate.fingerprint(), image.pixel_hash),
-                    ).fetchone() for candidate, image in candidates)
-                    if collision:
-                        conn.rollback()
-                        base = None
-                        candidates.clear()
-                        fingerprints.clear()
-                        raster_hashes.clear()
-                        continue
-                    pets = []
-                    for candidate, image in candidates:
-                        cur = conn.execute(
-                            "INSERT INTO fosgen_pettest(owner_id,dna,fingerprint,png,svg,pixel_hash) VALUES (?,?,?,?,?,?)",
-                            (owner_id, candidate.canonical_dna(), candidate.fingerprint(), image.png, image.svg, image.pixel_hash),
-                        )
-                        pets.append(TestPet(int(cur.lastrowid), owner_id, candidate, image.png, image.svg, image.pixel_hash))
+                # All images exist before a write transaction can persist one.
+                pets = self._reserve_candidates(conn, owner_id, candidates)
+                if pets is not None:
                     return pets
+                base = None
+                candidates.clear()
+                fingerprints.clear()
+                raster_hashes.clear()
         raise RuntimeError("Could not allocate a distinct test portrait; try again")
 
     async def create(
         self, owner_id: int, species: str | None = None, pattern_seed: int | None = None,
+        *, asset_version: int = 2, marking: str | None = None,
     ) -> TestPet:
         _positive_id(owner_id)
-        if species is not None and species not in SPECIES:
-            raise ValueError("Unknown pet species")
+        _generation_options(species, asset_version, marking)
         _pattern_seed(pattern_seed)
         async with self._lock:
-            return (await asyncio.to_thread(self._create_many_sync, owner_id, species, 1, pattern_seed))[0]
+            return (await asyncio.to_thread(
+                self._create_many_sync, owner_id, species, 1, pattern_seed, asset_version, marking,
+            ))[0]
 
     async def create_series(
         self, owner_id: int, species: str, count: int, pattern_seed: int | None = None,
+        *, asset_version: int = 2, marking: str | None = None,
     ) -> list[TestPet]:
         """Seeded galleries vary only Pattern Seed; unseeded pets vary freely."""
         _positive_id(owner_id)
-        if species not in SPECIES or type(count) is not int or not 2 <= count <= 8:
+        _generation_options(species, asset_version, marking)
+        if species is None or type(count) is not int or not 2 <= count <= 8:
             raise ValueError("Series requires a known species and a count in 2..8")
         _pattern_seed(pattern_seed)
         async with self._lock:
-            return await asyncio.to_thread(self._create_many_sync, owner_id, species, count, pattern_seed)
+            return await asyncio.to_thread(
+                self._create_many_sync, owner_id, species, count, pattern_seed, asset_version, marking,
+            )
+
+    async def compare(
+        self, owner_id: int, species: str, pattern_seed: int | None = None,
+    ) -> list[TestPet]:
+        """Persist identical v2/v3 genes and their PNGs atomically as two IDs."""
+        _positive_id(owner_id)
+        _generation_options(species, 2, None)
+        if species is None:
+            raise ValueError("Comparison requires a known species")
+        _pattern_seed(pattern_seed)
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._create_many_sync, owner_id, species, 2, pattern_seed, 2, None, True,
+            )
 
     def _get_sync(self, ident: int, owner_id: int) -> TestPet | None:
         with closing(self._connect()) as conn:
@@ -379,6 +463,7 @@ def _caption(pet: TestPet) -> str:
     seed = str(appearance.pattern_seed) if appearance.pattern_seed is not None else "legacy (v1)"
     return (
         f"🐾 Тестовый питомец #{pet.id}\n"
+        f"Графика: v{escape(str(appearance.asset_version))}\n"
         f"Вид: {escape(appearance.species)}\n"
         f"Окрас: {escape(appearance.palette)} · {escape(appearance.pattern)}\n"
         f"Pattern Seed: {seed}\n"
@@ -462,23 +547,38 @@ def register_pettest_handlers(app: Any, *, admin_ids: frozenset[int], data_dir: 
                 return
             async with render_slots:
                 if request.operation == "series":
-                    pets = await store.create_series(owner_id, request.species, request.count, request.pattern_seed)
+                    pets = await store.create_series(
+                        owner_id, request.species, request.count, request.pattern_seed,
+                        asset_version=request.asset_version, marking=request.marking,
+                    )
+                elif request.operation == "compare":
+                    pets = await store.compare(owner_id, request.species, request.pattern_seed)
                 else:
                     pet = (
-                        await store.create(owner_id, request.species, request.pattern_seed)
+                        await store.create(
+                            owner_id, request.species, request.pattern_seed,
+                            asset_version=request.asset_version, marking=request.marking,
+                        )
                         if request.operation == "create" else await store.get(request.ident, owner_id)
                     )
                     pets = [pet] if pet else []
             if not pets:
                 await message.answer("Такого тестового питомца нет.")
                 return
-            if request.operation == "series":
+            if request.operation in ("series", "compare"):
                 await message.answer_media_group(media=[
                     InputMediaPhoto(
-                        media=BufferedInputFile(pet.png, filename=f"pettest_{pet.id}.png"),
+                        media=BufferedInputFile(pet.png, filename=f"pettest_{pet.id}_v{pet.appearance.asset_version}.png"),
                         caption=_caption(pet), parse_mode="HTML",
                     ) for pet in pets
                 ])
+                if request.operation == "compare":
+                    await message.answer(
+                        "🐾 Сравнение v2 / v3: " + ", ".join(f"#{pet.id}" for pet in pets)
+                        + ". Все гены совпадают, отличается только версия графики. "
+                        + "Полная DNA: /pettest ID dna; удалить: /pettest ID delete."
+                    )
+                    return
                 await message.answer(
                     "🐾 Серия: " + ", ".join(f"#{pet.id}" for pet in pets)
                     + (". Меняется только Pattern Seed" if request.pattern_seed is not None else ". Случайные внешности")
@@ -488,7 +588,7 @@ def register_pettest_handlers(app: Any, *, admin_ids: frozenset[int], data_dir: 
             pet = pets[0]
             if request.operation != "dna":
                 await message.answer_photo(
-                    BufferedInputFile(pet.png, filename=f"pettest_{pet.id}.png"),
+                    BufferedInputFile(pet.png, filename=f"pettest_{pet.id}_v{pet.appearance.asset_version}.png"),
                     caption=_caption(pet), parse_mode="HTML",
                 )
             await _answer_dna(message, pet)
