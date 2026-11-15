@@ -1,7 +1,8 @@
 """Private permanent-pet UI and conservative post-moderation counting.
 
-Only the successful legacy text collector can qualify a group message. Raw text
-is transient input to the store's HMAC filter and is never logged here.
+A group message qualifies only after its trusted terminal handler succeeds:
+the legacy collector, or the explicit isolated Lexicon guard. Raw text is
+transient input to the store's HMAC filter and is never logged here.
 """
 from __future__ import annotations
 
@@ -47,8 +48,12 @@ def _private_owner(message: Message, user: Any = None) -> int:
 class PetCountingMiddleware(BaseMiddleware):
     """Inner middleware: inspect the selected handler, then count after success."""
 
-    def __init__(self, app: Any, store: Any, chat_ids: frozenset[int]):
+    def __init__(self, app: Any, store: Any, chat_ids: frozenset[int], *,
+                 isolated_chat_ids: frozenset[int] = frozenset(), isolated_handler: Any = None):
+        if not isolated_chat_ids.issubset(chat_ids) or (isolated_chat_ids and not callable(isolated_handler)):
+            raise ValueError("Isolated counting needs a terminal handler and explicit chat scope")
         self.app, self.store, self.chat_ids = app, store, chat_ids
+        self.isolated_chat_ids, self.isolated_handler = isolated_chat_ids, isolated_handler
         self.trace = None
 
     async def __call__(self, handler, event: Message, data: dict[str, Any]):
@@ -56,11 +61,12 @@ class PetCountingMiddleware(BaseMiddleware):
         user = event.from_user
         pending = user is not None and user.id in getattr(self.app, "pending_users", {})
         candidate = None
+        isolated = event.chat.id in self.isolated_chat_ids
         if event.chat.type not in ("group", "supergroup") or event.chat.id not in self.chat_ids:
             reason = "outside_scope"
-        elif event.chat.id not in getattr(self.app, "ALLOWED_CHATS", ()):
+        elif not isolated and event.chat.id not in getattr(self.app, "ALLOWED_CHATS", ()):
             reason = "not_allowed"
-        elif event.chat.id in getattr(self.app, "LEXICON_ONLY_CHAT_IDS", ()):
+        elif not isolated and event.chat.id in getattr(self.app, "LEXICON_ONLY_CHAT_IDS", ()):
             reason = "lexicon_only"
         elif pending:
             reason = "pending_captcha"
@@ -70,8 +76,9 @@ class PetCountingMiddleware(BaseMiddleware):
             reason = "not_original"
         elif event.date > datetime.now(timezone.utc) + timedelta(minutes=1):
             reason = "future_timestamp"
-        elif (getattr(callback, "__name__", "") != "collect_text_messages"
-              or callback is not getattr(self.app, "collect_text_messages", callback)):
+        elif ((isolated and callback is not self.isolated_handler)
+              or (not isolated and (getattr(callback, "__name__", "") != "collect_text_messages"
+                  or callback is not getattr(self.app, "collect_text_messages", callback)))):
             reason = "different_handler"
         else:
             proposed = MessageEligibility(user.id, event.chat.id, event.message_id,
@@ -119,9 +126,11 @@ def _status(pet: Any) -> str:
 
 
 class PetTelegramService:
-    def __init__(self, app: Any, store: Any, chat_ids: frozenset[int]):
+    def __init__(self, app: Any, store: Any, chat_ids: frozenset[int], *,
+                 isolated_chat_ids: frozenset[int] = frozenset(), isolated_handler: Any = None):
         self.app, self.store = app, store
-        self.counting = PetCountingMiddleware(app, store, chat_ids)
+        self.counting = PetCountingMiddleware(app, store, chat_ids,
+            isolated_chat_ids=isolated_chat_ids, isolated_handler=isolated_handler)
         self._registered: list[tuple[Any, Any]] = []
 
     def promote_handlers(self) -> None:
@@ -263,8 +272,11 @@ class PetTelegramService:
             await callback.message.answer(UNAVAILABLE, parse_mode=None)
 
 
-def register_pet_handlers(app: Any, store: Any, *, chat_ids: frozenset[int]) -> PetTelegramService:
-    service = PetTelegramService(app, store, chat_ids)
+def register_pet_handlers(app: Any, store: Any, *, chat_ids: frozenset[int],
+    isolated_chat_ids: frozenset[int] = frozenset(), isolated_handler: Any = None,
+) -> PetTelegramService:
+    service = PetTelegramService(app, store, chat_ids,
+        isolated_chat_ids=isolated_chat_ids, isolated_handler=isolated_handler)
     # Bound-method access creates fresh objects: retain the registered identity.
     command, callback = service.command, service.callback
     app.dp.message.register(command, Command(*COMMANDS))
@@ -279,6 +291,7 @@ def register_pet_status_handlers(
     app: Any, store: Any, *, admin_ids: frozenset[int],
     requested_chat_ids: frozenset[int], chat_ids: frozenset[int], asset_version: int,
     trace: Any = None,
+    isolated_chat_ids: frozenset[int] = frozenset(),
 ) -> None:
     """Private operator scope diagnostics; no group/user message text is retained."""
     if not admin_ids:
@@ -292,6 +305,8 @@ def register_pet_status_handlers(
             progress = await store.progress(owner)
             connected = ", ".join(map(str, sorted(chat_ids))) or "нет"
             excluded = ", ".join(map(str, sorted(requested_chat_ids - chat_ids))) or "нет"
+            isolated_info = (f"Изолированный учет Pets: {len(isolated_chat_ids)} групп; остальные функции отключены.\n"
+                             if isolated_chat_ids else "")
             consent = "принято" if progress.opted_in else "не дано или учет приостановлен"
             trace_info = ""
             if trace is not None:
@@ -311,7 +326,8 @@ def register_pet_status_handlers(
             await message.answer(
                 f"🐾 Диагностика постоянных питомцев\nНовая графика: v{asset_version}\n"
                 f"Активные группы: {connected}\nНе подключены: {excluded}\n"
-                "Не подключенные ID исключены основным allowlist или режимом только Лексикон.\n"
+                "Не подключенные ID исключены allowlist или не имеют доступного изолированного обработчика.\n"
+                f"{isolated_info}"
                 f"Твое согласие: {consent}\nТвой прогресс: {progress.count}/{UNLOCK_MESSAGES}{clock_info}\n\n"
                 "Для зачета: новый текст после /pet_start в одной из активных групп, "
                 "не менее 8 символов и 2 слов, после успешной модерации. "

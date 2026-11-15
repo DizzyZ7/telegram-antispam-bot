@@ -377,7 +377,9 @@ async def main() -> None:
         # Guard is promoted ahead of legacy handlers first. Lexicon handlers are
         # registered afterward and promoted above the guard, so only the game
         # and this delete-only moderation can execute in LEXICON_ONLY_CHAT_IDS.
-        register_lexicon_only_guard(app, LEXICON_ONLY_CHAT_IDS)
+        # Pets can later observe this exact terminal registration only for IDs
+        # explicitly selected in its own scope; legacy access remains blocked.
+        lexicon_guard_scope = register_lexicon_only_guard(app, LEXICON_ONLY_CHAT_IDS)
         register_minigame_handlers(app, minigames)
         register_lexicon_learning_handlers(app, minigames)
 
@@ -395,7 +397,7 @@ async def main() -> None:
         pet_runtime = await start_pet_runtime(
             app,
             database_url=os.getenv("DATABASE_URL"),
-            excluded_chat_ids=LEXICON_ONLY_CHAT_IDS,
+            isolated_scope=lexicon_guard_scope,
             trace=pet_trace,
         )
 
@@ -410,7 +412,7 @@ async def main() -> None:
         print(
             "LEXICON_ONLY_SCOPE_READY "
             f"chat_ids={','.join(str(chat_id) for chat_id in sorted(LEXICON_ONLY_CHAT_IDS))} "
-            "topics=not_required other_features=off global_access=blocked "
+            "topics=not_required other_legacy_features=off global_access=blocked pets=explicit_isolated_scope "
             "profanity=delete_with_fairy_notice",
             flush=True,
         )

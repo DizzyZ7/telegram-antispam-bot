@@ -61,6 +61,7 @@ async def start_pet_runtime(
     excluded_chat_ids: frozenset[int] = frozenset(),
     environ: Mapping[str, str] | None = None,
     trace: Any = None,
+    isolated_scope: Any = None,
 ) -> PetRuntime | None:
     try:
         config = PetsConfig.from_env(environ)
@@ -72,7 +73,16 @@ async def start_pet_runtime(
     if not database_url or not database_url.strip():
         LOGGER.warning("FOSGEN_PETS_DISABLED reason=database_url_missing")
         return None
-    effective_ids = config.chat_ids.intersection(getattr(app, "ALLOWED_CHATS", ())).difference(excluded_chat_ids)
+    isolated_ids = frozenset()
+    normal_ids = config.chat_ids.intersection(getattr(app, "ALLOWED_CHATS", ())).difference(excluded_chat_ids)
+    if isolated_scope is not None:
+        from lexicon_game_scope import LexiconGuardScope
+        if not isinstance(isolated_scope, LexiconGuardScope) or not isolated_scope.registered_in(getattr(app, "dp", None)):
+            LOGGER.warning("FOSGEN_PETS_DISABLED reason=isolated_guard_not_registered")
+            return None
+        normal_ids = normal_ids.difference(isolated_scope.chat_ids)
+        isolated_ids = config.chat_ids.intersection(isolated_scope.chat_ids).difference(excluded_chat_ids)
+    effective_ids = normal_ids.union(isolated_ids)
     if not effective_ids:
         LOGGER.warning("FOSGEN_PETS_DISABLED reason=no_participating_allowed_chats")
         return None
@@ -81,7 +91,9 @@ async def start_pet_runtime(
         store = (PostgresPetStore(database_url) if config.new_asset_version == 2 else
                  PostgresPetStore(database_url, asset_version=config.new_asset_version))
         await store.initialize()
-        service = register_pet_handlers(app, store, chat_ids=frozenset(effective_ids))
+        isolated_options = ({"isolated_chat_ids": frozenset(isolated_ids),
+                             "isolated_handler": isolated_scope.handler} if isolated_ids else {})
+        service = register_pet_handlers(app, store, chat_ids=frozenset(effective_ids), **isolated_options)
         if trace is not None:
             service.counting.trace = trace
     except Exception as exc:
@@ -105,11 +117,12 @@ async def start_pet_runtime(
             register_pet_status_handlers(
                 app, store, admin_ids=admins, requested_chat_ids=config.chat_ids,
                 chat_ids=frozenset(effective_ids), asset_version=config.new_asset_version, trace=trace,
+                isolated_chat_ids=frozenset(isolated_ids),
             )
         except Exception as exc:
             LOGGER.warning("FOSGEN_PETS_STATUS_DISABLED reason=%s", type(exc).__name__)
-    LOGGER.info("FOSGEN_PETS_READY backend=postgres groups=%s chat_ids=%s asset_version=%s unlock_messages=100",
-                len(effective_ids), ",".join(map(str, sorted(effective_ids))), config.new_asset_version)
+    LOGGER.info("FOSGEN_PETS_READY backend=postgres groups=%s chat_ids=%s asset_version=%s isolated_groups=%s unlock_messages=100",
+                len(effective_ids), ",".join(map(str, sorted(effective_ids))), config.new_asset_version, len(isolated_ids))
     return PetRuntime(store, service)
 
 
