@@ -32,6 +32,8 @@ class Progress:
     count: int
     opted_in: bool
     counted: bool = False
+    reason: str = ""
+    opted_in_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -154,25 +156,27 @@ class PostgresPetStore:
     async def progress(self, owner_id: int) -> Progress:
         await self.initialize()
         async with self._pool.acquire(timeout=_TIMEOUT) as conn:
-            row = await conn.fetchrow("SELECT qualifying_count, revoked_at FROM fosgen_pet_opt_ins WHERE user_id=$1", owner_id)
-        return Progress(row["qualifying_count"], row["revoked_at"] is None) if row else Progress(0, False)
+            row = await conn.fetchrow("SELECT qualifying_count, revoked_at, opted_in_at FROM fosgen_pet_opt_ins WHERE user_id=$1", owner_id)
+        return (Progress(row["qualifying_count"], row["revoked_at"] is None, opted_in_at=row["opted_in_at"])
+                if row else Progress(0, False))
 
     async def record_message(self, message: MessageEligibility, *, now: datetime | None = None) -> Progress:
         # Consent in the database is authoritative, even for stale handler state.
         if not eligible_message(replace(message, opted_in=True)):
-            return await self.progress(message.user_id)
+            return replace(await self.progress(message.user_id), reason="text_ineligible")
         now = _now(now)
         await self.initialize()
         async with self._pool.acquire(timeout=_TIMEOUT) as conn:
             async with conn.transaction():
                 owner = await conn.fetchrow("SELECT * FROM fosgen_pet_opt_ins WHERE user_id=$1 FOR UPDATE", message.user_id)
                 if owner is None:
-                    return Progress(0, False)
+                    return Progress(0, False, reason="consent_missing")
                 count = owner["qualifying_count"]
                 if owner["revoked_at"] is not None or count >= UNLOCK_MESSAGES:
-                    return Progress(count, owner["revoked_at"] is None)
+                    return Progress(count, owner["revoked_at"] is None,
+                                    reason="consent_paused" if owner["revoked_at"] is not None else "already_unlocked")
                 if now < owner["opted_in_at"]:
-                    return Progress(count, True)
+                    return Progress(count, True, reason="before_consent")
                 key = owner["message_digest_key"] or secrets.token_bytes(32)
                 if owner["message_digest_key"] is None:
                     await conn.execute("UPDATE fosgen_pet_opt_ins SET message_digest_key=$2 WHERE user_id=$1", message.user_id, key)
@@ -197,10 +201,11 @@ class PostgresPetStore:
                                 WHERE user_id=$1 AND NOT counted
                                 ORDER BY counted_at DESC,chat_id DESC,message_id DESC OFFSET 256
                             )""", message.user_id)
-                    return Progress(count, True)
+                    return Progress(count, True, reason=("replayed_update" if inserted is None
+                                    else "repeated_text" if repeated else "cooldown"))
                 await conn.execute("""UPDATE fosgen_pet_opt_ins SET qualifying_count=qualifying_count+1,
                     last_counted_at=$2 WHERE user_id=$1""", message.user_id, now)
-                return Progress(count + 1, True, True)
+                return Progress(count + 1, True, True, reason="counted")
 
     async def adopt(self, owner_user_id: int, *, appearance_factory: Callable[[int], Appearance] | None = None) -> PermanentPet | None:
         await self.initialize()

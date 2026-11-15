@@ -165,6 +165,7 @@ print(
 import legacy_main as app
 from accurate_stats import AccurateStatsService, AccurateStatsStorage, register_accurate_stats_handlers
 from fosgen_pets.runtime import register_pettest_runtime, start_pet_runtime
+from fosgen_pets.diagnostics import PetDiagnosticIngress, PetMessageTrace
 from entertainment import (
     ENTERTAINMENT_CHAT_IDS,
     EntertainmentService,
@@ -210,6 +211,9 @@ from zero_trust.storage import PostgresZeroTrustStorage
 
 
 async def main() -> None:
+    # Observe only activated operators' metadata; preserve moderation outcomes.
+    pet_trace = PetMessageTrace()
+    app.dp.message.outer_middleware(PetDiagnosticIngress(pet_trace))
     # Remove only Lexicon-only chats from the global legacy allowlist. Existing
     # chats, including the writers chat with topics, remain untouched.
     enforce_lexicon_only_isolation(app, LEXICON_ONLY_CHAT_IDS)
@@ -392,6 +396,7 @@ async def main() -> None:
             app,
             database_url=os.getenv("DATABASE_URL"),
             excluded_chat_ids=LEXICON_ONLY_CHAT_IDS,
+            trace=pet_trace,
         )
 
         await report_scoped_spam_permission(app.bot)

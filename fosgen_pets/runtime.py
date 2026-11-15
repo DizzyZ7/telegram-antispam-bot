@@ -60,6 +60,7 @@ async def start_pet_runtime(
     app: Any, *, database_url: str | None,
     excluded_chat_ids: frozenset[int] = frozenset(),
     environ: Mapping[str, str] | None = None,
+    trace: Any = None,
 ) -> PetRuntime | None:
     try:
         config = PetsConfig.from_env(environ)
@@ -81,6 +82,8 @@ async def start_pet_runtime(
                  PostgresPetStore(database_url, asset_version=config.new_asset_version))
         await store.initialize()
         service = register_pet_handlers(app, store, chat_ids=frozenset(effective_ids))
+        if trace is not None:
+            service.counting.trace = trace
     except Exception as exc:
         # Asyncpg exceptions may contain connection details: log only the class.
         LOGGER.warning("FOSGEN_PETS_DISABLED reason=startup_failed error_type=%s", type(exc).__name__)
@@ -97,9 +100,11 @@ async def start_pet_runtime(
         try:
             from .pettest import parse_admin_ids
             admins = parse_admin_ids(env["FOSGEN_PETTEST_ADMIN_IDS"])
+            if trace is not None:
+                trace.configure(admins)
             register_pet_status_handlers(
                 app, store, admin_ids=admins, requested_chat_ids=config.chat_ids,
-                chat_ids=frozenset(effective_ids), asset_version=config.new_asset_version,
+                chat_ids=frozenset(effective_ids), asset_version=config.new_asset_version, trace=trace,
             )
         except Exception as exc:
             LOGGER.warning("FOSGEN_PETS_STATUS_DISABLED reason=%s", type(exc).__name__)
