@@ -1,7 +1,9 @@
 """Isolated chat scope for Lexicon, with delete-only language protection.
 
 Chats listed here are deliberately not added to legacy_main.ALLOWED_CHATS;
-only Lexicon and a narrowly scoped profanity-deletion middleware can handle them.
+only Lexicon and a narrowly scoped profanity-deletion middleware handle them.
+An explicitly configured Pets counter may observe the registered terminal guard
+after moderation, without granting access to any legacy handler.
 Summaries, legacy moderation, stats, captcha and unrelated commands stay disabled.
 """
 
@@ -9,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -192,7 +195,25 @@ class LexiconOnlyChatFilter(BaseFilter):
         return int(message.chat.id) in self.chat_ids
 
 
-def register_lexicon_only_guard(app: Any, chat_ids: Iterable[int]) -> None:
+@dataclass(frozen=True)
+class LexiconGuardScope:
+    """Exact terminal registration for explicitly enabled isolated consumers."""
+    chat_ids: frozenset[int]
+    handler: Any
+
+    def registered_in(self, dispatcher: Any) -> bool:
+        observer = getattr(dispatcher, "message", None)
+        return any(
+            item.callback is self.handler and any(
+                isinstance(check.callback, LexiconOnlyChatFilter)
+                and check.callback.chat_ids == self.chat_ids
+                for check in item.filters
+            )
+            for item in getattr(observer, "handlers", ())
+        )
+
+
+def register_lexicon_only_guard(app: Any, chat_ids: Iterable[int]) -> LexiconGuardScope | None:
     """Consume Lexicon-only messages before legacy handlers receive them.
 
     Register this guard before register_minigame_handlers(). The game command
@@ -220,12 +241,14 @@ def register_lexicon_only_guard(app: Any, chat_ids: Iterable[int]) -> None:
         "legacy_handlers=blocked",
         flush=True,
     )
+    return LexiconGuardScope(normalized_ids, lexicon_only_chat_guard)
 
 
 __all__ = [
     "LEXICON_ONLY_CHAT_IDS",
     "LexiconGameAppScope",
     "LexiconOnlyChatFilter",
+    "LexiconGuardScope",
     "SilentLexiconProfanityMiddleware",
     "LEXICON_FAIRY_NOTICE",
     "LEXICON_FAIRY_NOTICE_COOLDOWN_SECONDS",

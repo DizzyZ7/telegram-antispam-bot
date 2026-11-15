@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import os
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import uuid
 
@@ -102,3 +102,61 @@ class ForumCountingPostgresTests(unittest.IsolatedAsyncioTestCase):
         await self.store.revoke(OWNER)
         paused = await self.store.record_message(message(4), now=self.base + timedelta(seconds=61))
         self.assertEqual(paused.reason, "consent_paused")
+
+    async def isolated_runtime(self, *, selected=None):
+        from fosgen_pets.runtime import start_pet_runtime
+        from lexicon_game_scope import (enforce_lexicon_only_isolation,
+            register_lexicon_only_guard, register_lexicon_silent_profanity_filter)
+        from minigames import MiniGameGuessMiddleware
+        from tests.test_fosgen_pets_lexicon_scope import LexiconSession, ISOLATED
+        self.app = SimpleNamespace(dp=Dispatcher(), ALLOWED_CHATS=[GROUP, ISOLATED], pending_users={})
+        enforce_lexicon_only_isolation(self.app, {ISOLATED})
+        self.collected.clear()
+        async def collect_text_messages(message):
+            self.collected.append(message.message_id)
+        self.app.collect_text_messages = collect_text_messages
+        self.app.dp.message.register(collect_text_messages, F.text)
+        register_lexicon_silent_profanity_filter(self.app, {ISOLATED})
+        self.guessing = SimpleNamespace(handle_word_guess=AsyncMock())
+        self.app.dp.message.outer_middleware(MiniGameGuessMiddleware(self.guessing))
+        scope = register_lexicon_only_guard(self.app, {ISOLATED})
+        await self.bot.session.close()
+        self.bot = Bot("777:" + "a" * 35, session=LexiconSession())
+        with patch("fosgen_pets.runtime.PostgresPetStore", return_value=self.store):
+            runtime = await start_pet_runtime(self.app, database_url=self.store._database_url,
+                isolated_scope=scope, environ={"FOSGEN_PETS_ENABLED": "1",
+                    "FOSGEN_PETS_CHAT_IDS": selected or f"{GROUP},{ISOLATED}"})
+        self.assertIsNotNone(runtime)
+        await self.store.opt_in(OWNER, now=self.base - timedelta(seconds=1))
+        return runtime
+
+    async def test_explicit_lexicon_scope_and_normal_topics_share_one_pg_counter(self):
+        from tests.test_fosgen_pets_lexicon_scope import ISOLATED
+        await self.isolated_runtime()
+        await self.dispatch("Первое сообщение в изолированном чате", chat=ISOLATED, thread=None)
+        await self.dispatch("Второе сообщение в другой теме", chat=ISOLATED, thread=5678, seconds=31)
+        await self.dispatch("Третье сообщение в обычном чате", seconds=62)
+        self.assertEqual((await self.store.progress(OWNER)).count, 3)
+        self.assertEqual(self.collected, [3])
+        self.assertEqual(self.app.ALLOWED_CHATS, [GROUP])
+
+    async def test_unselected_lexicon_chat_cannot_earn_pg_progress(self):
+        from tests.test_fosgen_pets_lexicon_scope import ISOLATED
+        await self.isolated_runtime(selected=str(GROUP))
+        await self.dispatch("Не подключенное групповое сообщение", chat=ISOLATED)
+        self.assertEqual((await self.store.progress(OWNER)).count, 0)
+        await self.dispatch("Подключенное обычное групповое сообщение", seconds=31)
+        self.assertEqual((await self.store.progress(OWNER)).count, 1)
+
+    async def test_lexicon_profanity_creates_no_pg_pet_event(self):
+        from aiogram.methods import DeleteMessage
+        from tests.test_fosgen_pets_lexicon_scope import ISOLATED
+        await self.isolated_runtime()
+        await self.dispatch("Это блять проверка счетчика", chat=ISOLATED)
+        self.assertEqual((await self.store.progress(OWNER)).count, 0)
+        async with self.store._pool.acquire() as conn:
+            events = await conn.fetchval("SELECT COUNT(*) FROM fosgen_pet_message_events")
+        self.assertEqual(events, 0)
+        self.assertEqual(len([r for r in self.bot.session.requests if isinstance(r, DeleteMessage)]), 1)
+        self.assertEqual(self.guessing.handle_word_guess.await_count, 0)
+        self.assertEqual(self.collected, [])
