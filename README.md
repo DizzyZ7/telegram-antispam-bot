@@ -81,6 +81,17 @@ WRITERS_SUBMISSION_PORT=8080
 
 Команды, включение, гарантии и проверки: [Fosgen Pets](docs/fosgen-pets-design.md).
 
+Graphics v3: оригинальные плюшевые основы всех 12 видов, объемная шерсть,
+естественные процедурные окрасы и локальный CPU-рендер. Доступно для оценки
+через `/pettest v3`, `/pettest v3 fox`, `/pettest compare kitten 123456`.
+Постоянная выдача остается на v2 до художественного утверждения владельцем.
+
+![Плюшевая коллекция v3](docs/fosgen-pets-v3/hero-12.png)
+
+[Сравнение v2/v3](docs/fosgen-pets-v3/comparison-v2-v3.png) ·
+[Art Bible](docs/fosgen-pets-v3/art-bible.md) ·
+[Архитектура, команды и проверки](docs/fosgen-pets-v3/README.md).
+
 ## 🧠 Дневная сводка и статистика
 
 - `/summary` или `/today` — ручная сводка дня.

@@ -1,0 +1,23 @@
+{
+  "render_count": 24,
+  "workers": 2,
+  "rounds": 2,
+  "wall_seconds": 1.8156035299999758,
+  "cpu_seconds": 3.426952372,
+  "mean_render_seconds": 0.14600744412499958,
+  "p95_render_seconds": 0.1987385169999243,
+  "process_peak_rss_bytes": 133431296,
+  "process_peak_measurement": "Linux /proc/self/status VmHWM",
+  "resource_high_water_rss_bytes": 133431296,
+  "png_size_range_bytes": [
+    102524,
+    178903
+  ],
+  "distinct_pngs": 24,
+  "distinct_pixel_hashes": 24,
+  "python": "3.12.14",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "pillow": "12.3.0",
+  "numpy": "2.3.5",
+  "scope": "Local CPU smoke measurement; repeat on the target Bothost plan"
+}

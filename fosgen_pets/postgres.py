@@ -83,12 +83,15 @@ def _pet(row: asyncpg.Record | None) -> PermanentPet | None:
 
 
 class PostgresPetStore:
-    """One small bounded pool using the existing DATABASE_URL, without fallback."""
+    """Bounded PostgreSQL pool; asset_version affects only future adoptions."""
 
-    def __init__(self, database_url: str) -> None:
+    def __init__(self, database_url: str, *, asset_version: int = 2) -> None:
         if not database_url or not database_url.strip().startswith(("postgresql://", "postgres://")):
             raise ValueError("DATABASE_URL is required for permanent PostgreSQL pets")
+        if type(asset_version) is not int or asset_version not in (2, 3):
+            raise ValueError("New permanent pets require asset version 2 or 3")
         self._database_url = database_url.strip()
+        self._asset_version = asset_version
         self._pool: asyncpg.Pool | None = None
         self._initialize_lock = asyncio.Lock()
         self._ready = False
@@ -214,7 +217,8 @@ class PostgresPetStore:
                 from .stories import origin_story
                 for attempt in range(16):
                     appearance = (appearance_factory(attempt) if appearance_factory else
-                                  build_appearance(secrets.choice(sorted(SUPPORTED)), secrets.token_hex(32), attempt))
+                                  build_appearance(secrets.choice(sorted(SUPPORTED)), secrets.token_hex(32), attempt,
+                                                   asset_version=self._asset_version))
                     portrait = await asyncio.to_thread(render_portrait, appearance)
                     png = bytes(portrait.png)
                     row = await conn.fetchrow("""INSERT INTO fosgen_pets

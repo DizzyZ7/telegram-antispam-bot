@@ -1,0 +1,378 @@
+{
+  "images": 204,
+  "comparisons": 144,
+  "duplicate_visible_rgb": 0,
+  "coverage": {
+    "complete": true,
+    "species": [
+      "kitten",
+      "puppy",
+      "foal",
+      "calf",
+      "bunny",
+      "fox",
+      "badger",
+      "fawn",
+      "raccoon",
+      "capybara",
+      "alpaca",
+      "otter"
+    ],
+    "palettes_per_species": {
+      "kitten": [
+        "black",
+        "cream",
+        "ginger",
+        "silver"
+      ],
+      "puppy": [
+        "chocolate",
+        "cream",
+        "golden"
+      ],
+      "foal": [
+        "bay",
+        "black",
+        "chestnut",
+        "grey"
+      ],
+      "calf": [
+        "black",
+        "brown",
+        "cream"
+      ],
+      "bunny": [
+        "brown",
+        "cream",
+        "white"
+      ],
+      "fox": [
+        "arctic",
+        "red",
+        "silver"
+      ],
+      "badger": [
+        "brown",
+        "grey",
+        "silver"
+      ],
+      "fawn": [
+        "chestnut",
+        "cream",
+        "tan"
+      ],
+      "raccoon": [
+        "brown",
+        "grey",
+        "silver"
+      ],
+      "capybara": [
+        "brown",
+        "golden",
+        "tan"
+      ],
+      "alpaca": [
+        "brown",
+        "cream",
+        "white"
+      ],
+      "otter": [
+        "brown",
+        "chocolate",
+        "silver"
+      ]
+    },
+    "patterns_per_species": {
+      "kitten": [
+        "bicolor",
+        "calico",
+        "solid",
+        "tabby",
+        "tortoiseshell"
+      ],
+      "puppy": [
+        "bicolor",
+        "sable",
+        "solid",
+        "spotted"
+      ],
+      "foal": [
+        "dapple",
+        "pinto",
+        "roan",
+        "solid"
+      ],
+      "calf": [
+        "piebald",
+        "solid",
+        "spotted"
+      ],
+      "bunny": [
+        "broken",
+        "pointed",
+        "solid"
+      ],
+      "fox": [
+        "mask",
+        "socks",
+        "solid"
+      ],
+      "badger": [
+        "mask",
+        "stripe"
+      ],
+      "fawn": [
+        "solid",
+        "spotted"
+      ],
+      "raccoon": [
+        "mask",
+        "stripe"
+      ],
+      "capybara": [
+        "shaded",
+        "solid"
+      ],
+      "alpaca": [
+        "piebald",
+        "solid"
+      ],
+      "otter": [
+        "bib",
+        "solid"
+      ]
+    },
+    "seed_cases": [
+      {
+        "species": "kitten",
+        "palette": "ginger",
+        "pattern": "tabby",
+        "seeds": [
+          0,
+          1,
+          7319,
+          271828,
+          500000,
+          999999
+        ]
+      },
+      {
+        "species": "kitten",
+        "palette": "black",
+        "pattern": "tortoiseshell",
+        "seeds": [
+          0,
+          1,
+          7319,
+          271828,
+          500000,
+          999999
+        ]
+      },
+      {
+        "species": "puppy",
+        "palette": "cream",
+        "pattern": "spotted",
+        "seeds": [
+          0,
+          1,
+          7319,
+          271828,
+          500000,
+          999999
+        ]
+      },
+      {
+        "species": "fox",
+        "palette": "arctic",
+        "pattern": "solid",
+        "seeds": [
+          0,
+          1,
+          7319,
+          271828,
+          500000,
+          999999
+        ]
+      },
+      {
+        "species": "badger",
+        "palette": "grey",
+        "pattern": "mask",
+        "seeds": [
+          0,
+          1,
+          7319,
+          271828,
+          500000,
+          999999
+        ]
+      },
+      {
+        "species": "foal",
+        "palette": "grey",
+        "pattern": "dapple",
+        "seeds": [
+          0,
+          1,
+          7319,
+          271828,
+          500000,
+          999999
+        ]
+      }
+    ],
+    "rare_markings": [
+      "star",
+      "heart",
+      "blaze",
+      "freckle",
+      "sock_left",
+      "sock_right"
+    ],
+    "rare_species": [
+      "kitten",
+      "puppy",
+      "foal",
+      "calf",
+      "bunny",
+      "fox",
+      "alpaca"
+    ],
+    "omitted_in_quick_mode": []
+  },
+  "seed_metrics": [
+    {
+      "species": "kitten",
+      "palette": "ginger",
+      "pattern": "tabby",
+      "seeds": [
+        0,
+        1,
+        7319,
+        271828,
+        500000,
+        999999
+      ],
+      "pairs": 15,
+      "ssim_range": [
+        0.8763659164732616,
+        0.9267116248956164
+      ],
+      "changed_pixel_ratio_range": [
+        0.0998992919921875,
+        0.129608154296875
+      ]
+    },
+    {
+      "species": "kitten",
+      "palette": "black",
+      "pattern": "tortoiseshell",
+      "seeds": [
+        0,
+        1,
+        7319,
+        271828,
+        500000,
+        999999
+      ],
+      "pairs": 15,
+      "ssim_range": [
+        0.8533656092146966,
+        0.8961153443775998
+      ],
+      "changed_pixel_ratio_range": [
+        0.16872024536132812,
+        0.23406219482421875
+      ]
+    },
+    {
+      "species": "puppy",
+      "palette": "cream",
+      "pattern": "spotted",
+      "seeds": [
+        0,
+        1,
+        7319,
+        271828,
+        500000,
+        999999
+      ],
+      "pairs": 15,
+      "ssim_range": [
+        0.8569650338182242,
+        0.8977361682458282
+      ],
+      "changed_pixel_ratio_range": [
+        0.1278228759765625,
+        0.1814422607421875
+      ]
+    },
+    {
+      "species": "fox",
+      "palette": "arctic",
+      "pattern": "solid",
+      "seeds": [
+        0,
+        1,
+        7319,
+        271828,
+        500000,
+        999999
+      ],
+      "pairs": 15,
+      "ssim_range": [
+        0.934067447398873,
+        0.9946231692718035
+      ],
+      "changed_pixel_ratio_range": [
+        0.0064849853515625,
+        0.09187698364257812
+      ]
+    },
+    {
+      "species": "badger",
+      "palette": "grey",
+      "pattern": "mask",
+      "seeds": [
+        0,
+        1,
+        7319,
+        271828,
+        500000,
+        999999
+      ],
+      "pairs": 15,
+      "ssim_range": [
+        0.8511599886950212,
+        0.9474502348221585
+      ],
+      "changed_pixel_ratio_range": [
+        0.069366455078125,
+        0.17554092407226562
+      ]
+    },
+    {
+      "species": "foal",
+      "palette": "grey",
+      "pattern": "dapple",
+      "seeds": [
+        0,
+        1,
+        7319,
+        271828,
+        500000,
+        999999
+      ],
+      "pairs": 15,
+      "ssim_range": [
+        0.9285676629141448,
+        0.9783788029146759
+      ],
+      "changed_pixel_ratio_range": [
+        0.051280975341796875,
+        0.09948348999023438
+      ]
+    }
+  ]
+}

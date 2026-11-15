@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 import re
+from types import MappingProxyType
 import unicodedata
 from typing import Mapping
 
@@ -56,6 +57,51 @@ MARKING_VARIANT_COUNTS = {
     "none": 1, "star": 35, "heart": 35, "blaze": 35, "freckle": 4,
     "sock_left": 9, "sock_right": 9,
 }
+# V3 is a released DNA catalog, independent from later additions to the shared
+# legacy catalogs. Changing any selection order, rarity or range needs v4.
+V3_SPECIES = (
+    "kitten", "puppy", "foal", "calf", "bunny", "fox", "badger",
+    "fawn", "raccoon", "capybara", "alpaca", "otter",
+)
+V3_PALETTES: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "kitten": ("cream", "ginger", "silver", "black", "chocolate", "blue"),
+    "puppy": ("cream", "golden", "chocolate", "black", "silver"),
+    "foal": ("chestnut", "bay", "black", "palomino", "grey"),
+    "calf": ("cream", "brown", "black", "golden"),
+    "bunny": ("white", "cream", "brown", "grey"),
+    "fox": ("red", "silver", "arctic", "cream"),
+    "badger": ("grey", "silver", "brown"),
+    "fawn": ("tan", "chestnut", "cream"),
+    "raccoon": ("grey", "silver", "brown"),
+    "capybara": ("brown", "golden", "tan"),
+    "alpaca": ("white", "cream", "brown", "black"),
+    "otter": ("brown", "chocolate", "silver"),
+})
+V3_PATTERNS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "kitten": ("solid", "tabby", "bicolor", "calico", "tortoiseshell"),
+    "puppy": ("solid", "bicolor", "spotted", "sable"),
+    "foal": ("solid", "pinto", "roan", "dapple"),
+    "calf": ("solid", "piebald", "spotted"),
+    "bunny": ("solid", "broken", "pointed"),
+    "fox": ("solid", "socks", "mask"),
+    "badger": ("stripe", "mask"),
+    "fawn": ("solid", "spotted"),
+    "raccoon": ("mask", "stripe"),
+    "capybara": ("solid", "shaded"),
+    "alpaca": ("solid", "piebald"),
+    "otter": ("solid", "bib"),
+})
+V3_EYE_COLORS = ("brown", "amber", "hazel", "green", "blue")
+V3_MARKINGS = ("none", "star", "heart", "blaze", "freckle", "sock_left", "sock_right")
+V3_MARKING_VARIANT_COUNTS: Mapping[str, int] = MappingProxyType({
+    "none": 1, "star": 35, "heart": 35, "blaze": 35, "freckle": 4,
+    "sock_left": 9, "sock_right": 9,
+})
+V3_MARKING_RARITY = (
+    (6500, "none"), (7500, "freckle"), (8300, "sock_left"),
+    (9100, "sock_right"), (9700, "blaze"), (9950, "star"), (10000, "heart"),
+)
+V3_MAX_PATTERN_SEED = 999999
 
 
 @dataclass(frozen=True)
@@ -134,24 +180,31 @@ class PetProfile:
 
 def validate_appearance(appearance: Appearance) -> None:
     """Validate finite catalogs before any renderer, persistence or HTML boundary."""
-    if not isinstance(appearance.species, str) or appearance.species not in SPECIES:
+    species = V3_SPECIES if appearance.asset_version == 3 else SPECIES
+    palettes = V3_PALETTES if appearance.asset_version == 3 else PALETTES
+    patterns = V3_PATTERNS if appearance.asset_version == 3 else PATTERNS
+    eyes = V3_EYE_COLORS if appearance.asset_version == 3 else EYE_COLORS
+    markings = V3_MARKINGS if appearance.asset_version == 3 else MARKINGS
+    variant_counts = V3_MARKING_VARIANT_COUNTS if appearance.asset_version == 3 else MARKING_VARIANT_COUNTS
+    max_pattern_seed = V3_MAX_PATTERN_SEED if appearance.asset_version == 3 else MAX_PATTERN_SEED
+    if not isinstance(appearance.species, str) or appearance.species not in species:
         raise ValueError("Unknown pet species")
-    if appearance.palette not in PALETTES[appearance.species]:
+    if appearance.palette not in palettes[appearance.species]:
         raise ValueError("Invalid palette")
-    if appearance.pattern not in PATTERNS[appearance.species]:
+    if appearance.pattern not in patterns[appearance.species]:
         raise ValueError("Invalid pattern")
-    if appearance.eyes not in EYE_COLORS or appearance.marking not in MARKINGS:
+    if appearance.eyes not in eyes or appearance.marking not in markings:
         raise ValueError("Invalid feature")
     if type(appearance.marking_variant) is not int or not 0 <= appearance.marking_variant < 4096:
         raise ValueError("Invalid marking variant")
-    if type(appearance.asset_version) is not int or appearance.asset_version not in (1, 2):
+    if type(appearance.asset_version) is not int or appearance.asset_version not in (1, 2, 3):
         raise ValueError("Unsupported asset version")
     if appearance.asset_version == 1:
         if appearance.pattern_seed is not None:
             raise ValueError("Legacy appearances have no pattern seed")
-    elif type(appearance.pattern_seed) is not int or not 0 <= appearance.pattern_seed <= MAX_PATTERN_SEED:
+    elif type(appearance.pattern_seed) is not int or not 0 <= appearance.pattern_seed <= max_pattern_seed:
         raise ValueError("Pattern seed must be an integer in 0..999999")
-    elif appearance.marking_variant >= MARKING_VARIANT_COUNTS[appearance.marking]:
+    elif appearance.marking_variant >= variant_counts[appearance.marking]:
         raise ValueError("Noncanonical marking variant")
 
 
@@ -160,35 +213,44 @@ def build_appearance(
     pattern_seed: int | None = None, asset_version: int = CURRENT_ASSET_VERSION,
 ) -> Appearance:
     """Deterministic candidate. Caller MUST reserve DNA under a DB UNIQUE index."""
-    if species not in SPECIES:
+    species_catalog = V3_SPECIES if asset_version == 3 else SPECIES
+    if species not in species_catalog:
         raise ValueError("Unknown pet species")
     if not isinstance(seed, str) or not 1 <= len(seed) <= 1024 or type(attempt) is not int or attempt < 0:
         raise ValueError("Seed must be nonempty and attempt nonnegative")
-    if type(asset_version) is not int or asset_version not in (1, 2):
+    if type(asset_version) is not int or asset_version not in (1, 2, 3):
         raise ValueError("Unsupported asset version")
-    if pattern_seed is not None and (type(pattern_seed) is not int or not 0 <= pattern_seed <= MAX_PATTERN_SEED):
+    max_pattern_seed = V3_MAX_PATTERN_SEED if asset_version == 3 else MAX_PATTERN_SEED
+    if pattern_seed is not None and (type(pattern_seed) is not int or not 0 <= pattern_seed <= max_pattern_seed):
         raise ValueError("Pattern seed must be an integer in 0..999999")
     if asset_version == 1 and pattern_seed is not None:
         raise ValueError("Legacy appearances have no pattern seed")
     digest = sha256(f"fosgen-pets-v{asset_version}:{species}:{seed}:{attempt}".encode()).digest()
     def pick(options: tuple[str, ...], offset: int) -> str:
         return options[int.from_bytes(digest[offset:offset + 4], "big") % len(options)]
-    marking = pick(MARKINGS, 12)
+    marking = pick(V3_MARKINGS if asset_version == 3 else MARKINGS, 12)
     if asset_version == 2:
         roll = int.from_bytes(digest[12:16], "big") % 10000
         marking = next(name for ceiling, name in (
             (6500, "none"), (7500, "freckle"), (8300, "sock_left"),
             (9100, "sock_right"), (9700, "blaze"), (9950, "star"), (10000, "heart"),
         ) if roll < ceiling)
+    elif asset_version == 3:
+        roll = int.from_bytes(digest[12:16], "big") % 10000
+        marking = next(name for ceiling, name in V3_MARKING_RARITY if roll < ceiling)
+    palettes = V3_PALETTES if asset_version == 3 else PALETTES
+    patterns = V3_PATTERNS if asset_version == 3 else PATTERNS
+    eyes = V3_EYE_COLORS if asset_version == 3 else EYE_COLORS
+    variant_counts = V3_MARKING_VARIANT_COUNTS if asset_version == 3 else MARKING_VARIANT_COUNTS
     result = Appearance(
         species=species,
-        palette=pick(PALETTES[species], 0),
-        pattern=pick(PATTERNS[species], 4),
-        eyes=pick(EYE_COLORS, 8),
+        palette=pick(palettes[species], 0),
+        pattern=pick(patterns[species], 4),
+        eyes=pick(eyes, 8),
         marking=marking,
-        marking_variant=int.from_bytes(digest[16:20], "big") % (MARKING_VARIANT_COUNTS[marking] if asset_version == 2 else 4096),
+        marking_variant=int.from_bytes(digest[16:20], "big") % (variant_counts[marking] if asset_version in (2, 3) else 4096),
         asset_version=asset_version,
-        pattern_seed=(pattern_seed if pattern_seed is not None else int.from_bytes(digest[20:24], "big") % 1000000) if asset_version == 2 else None,
+        pattern_seed=(pattern_seed if pattern_seed is not None else int.from_bytes(digest[20:24], "big") % 1000000) if asset_version in (2, 3) else None,
     )
     validate_appearance(result)
     return result

@@ -13,5 +13,8 @@ def render_svg(appearance: Appearance) -> str:
     if appearance.asset_version == 1:
         from .render_v1 import render_svg as render_legacy
         return render_legacy(appearance)
+    if appearance.asset_version == 3:
+        from .graphics_v3 import render_v3
+        return render_v3(appearance)[0]
     from .graphics_v2 import render_v2
     return render_v2(appearance)

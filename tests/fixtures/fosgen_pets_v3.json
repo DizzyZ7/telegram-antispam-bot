@@ -1,0 +1,182 @@
+[
+  {
+    "dna": {
+      "species": "kitten",
+      "palette": "ginger",
+      "pattern": "tabby",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 824031
+    },
+    "dna_sha256": "de1c198fbd9f2dc5eb39789c8f832c3ee253d087adbecdf93b13e19fd83df42d",
+    "rgba_sha256": "6292cc4c37438fdfbb0ba5edb4e17cc2f586bb475a1dad18627b37f55856815a",
+    "png_sha256": "565e9aaef4be31aa877925012ce2bdde3b09fd5b1fabd5df2d4b9c29117a08ff"
+  },
+  {
+    "dna": {
+      "species": "puppy",
+      "palette": "golden",
+      "pattern": "spotted",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 456219
+    },
+    "dna_sha256": "d418ebbc362bb661c9c87d490554a31733f87d5f88f3efb050aa1bf22b109523",
+    "rgba_sha256": "737176774589abff34f6d3c5f8fec4b8c58bfba1b94c56742638ba25be1530f4",
+    "png_sha256": "019b08f4f9a6bf314e1c4e57d52c05331dd9e7f105dce915493b6352dd62c0ec"
+  },
+  {
+    "dna": {
+      "species": "foal",
+      "palette": "bay",
+      "pattern": "dapple",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 681022
+    },
+    "dna_sha256": "b5182968cd2d6849834e60bfc0118fdc8ac5dfeb0428dc19fc668bc1869e5fde",
+    "rgba_sha256": "172a2d2bb7512b348ccaa602365fb8260332ed66a83109e5e458fb4469696853",
+    "png_sha256": "742f955e0f0cc85a4709719caa1f24b465d64a579dfb3a7010618a76cc7ed219"
+  },
+  {
+    "dna": {
+      "species": "calf",
+      "palette": "black",
+      "pattern": "piebald",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 328512
+    },
+    "dna_sha256": "01f0f2492e09f591b366895e2e7f69b9db65e962565fa2622111dfd648b44602",
+    "rgba_sha256": "cfd9f1383aef0bd8c70c8044f84328905616248cfb87520ba510e8851ee0d886",
+    "png_sha256": "f5e0c16e4dadbc4b8ccf9707621a5e790da22d01e4337f33cf96c0dcfd593f75"
+  },
+  {
+    "dna": {
+      "species": "bunny",
+      "palette": "white",
+      "pattern": "broken",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 93418
+    },
+    "dna_sha256": "10cd082ff6b5d99d5a809d324b6d18c3f40101d1890d5060d532d86624845e67",
+    "rgba_sha256": "d7a5b5488b5b7143eb59b11101b9c689353647cf44b9966a8db16ddf90693392",
+    "png_sha256": "e04e8ca95fc9fbc35e163084a7e0b37ae79c7d66f3834452279fe3939a1b2f04"
+  },
+  {
+    "dna": {
+      "species": "fox",
+      "palette": "arctic",
+      "pattern": "solid",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 786421
+    },
+    "dna_sha256": "013fa7c2b6278075d7d85dc2c6dac6d1bb3420d94bc6a16395b9cfec4bb18b6c",
+    "rgba_sha256": "02888cf68a86237e2d894ae4b20031baea6a27b20df94e51f89d1832ce21f112",
+    "png_sha256": "b56bb202a3764a1b1783a611e7b93bcc9d608936db8040cd22917138b696917a"
+  },
+  {
+    "dna": {
+      "species": "badger",
+      "palette": "silver",
+      "pattern": "mask",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 517229
+    },
+    "dna_sha256": "4bf4f9fb88854e05cf7f9066d381821be5e85c2760df0731dbfdfa2d8174935c",
+    "rgba_sha256": "fff758fd45aca68142c6e3dc15a9e4a2df951ad95e200377a3e1ed25a3a75904",
+    "png_sha256": "309b22b054c9ab077a838e09a21828a3cd56cb391b473ab49ff7d3f1d18ac478"
+  },
+  {
+    "dna": {
+      "species": "fawn",
+      "palette": "tan",
+      "pattern": "spotted",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 210597
+    },
+    "dna_sha256": "6de4ece6fcc1e420f1cf40ff9ac6e4f5d0adb94eb561666fcd9d4a3cbbd7937f",
+    "rgba_sha256": "340814f3d93eee807184ff33695af4e8a8b87a4883ea51ea276badf8a471d3cb",
+    "png_sha256": "50a7731caab6426febc8a3e86de55dac840ebac124a84b11a14f32b064b92b17"
+  },
+  {
+    "dna": {
+      "species": "raccoon",
+      "palette": "brown",
+      "pattern": "mask",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 76304
+    },
+    "dna_sha256": "a110751c0405b18c6bf72d81c602de8f150aee73e36f1ef9936fb9dd083aaa93",
+    "rgba_sha256": "19054df21ba8330d47a1e6f9797936e6906c97e34059437491d1d07d92f1061c",
+    "png_sha256": "ad86b38b2a16124bfdd3b726d0e9b7fc618e643e3f44a6029103bf8e3a34656d"
+  },
+  {
+    "dna": {
+      "species": "capybara",
+      "palette": "golden",
+      "pattern": "solid",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 903117
+    },
+    "dna_sha256": "1746e3a1e52887d330e3c24d15d5c03f6449a5fdeaf378cff7b900f606298856",
+    "rgba_sha256": "cfda553422342c8754aa48432f5d8196f796cda1ae14fa2984e616e9f6536846",
+    "png_sha256": "37043955343bc9afba2b661d89e2056817c6ffdf9ed963bd3047709ed1234a47"
+  },
+  {
+    "dna": {
+      "species": "alpaca",
+      "palette": "cream",
+      "pattern": "piebald",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 415670
+    },
+    "dna_sha256": "41fa419b2c3be8ebda8702a92965bf4b52f39cc5452f36ae42a511bea1937c32",
+    "rgba_sha256": "a88514db13f594cbf98c2dc9fb9abd3c7125bec6491078b09fd06e8889db84d4",
+    "png_sha256": "43925668c290974f13095c20fef62ad87fd7df8d04ed142e5171977e6bb77775"
+  },
+  {
+    "dna": {
+      "species": "otter",
+      "palette": "chocolate",
+      "pattern": "bib",
+      "eyes": "amber",
+      "marking": "none",
+      "marking_variant": 0,
+      "asset_version": 3,
+      "pattern_seed": 672193
+    },
+    "dna_sha256": "cdcf66f19f96058f1b91ebefb5f0b60937b154b0870e29d67d5a4ee8ba0c6598",
+    "rgba_sha256": "aba0abf7fce0fcc202216afaad6aa5eff61d00117fedeb001a2512ac973810cd",
+    "png_sha256": "27461ebbe42a578c6ce6966d0a2d46ad2a974380276ce4ba445d50f838d59655"
+  }
+]
