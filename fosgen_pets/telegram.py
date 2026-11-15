@@ -20,6 +20,7 @@ from aiogram.types import (
 )
 
 from .core import MessageEligibility, UNLOCK_MESSAGES, eligible_message
+from .diagnostics import trace_call
 
 logger = logging.getLogger(__name__)
 COMMANDS = ("pet", "pet_start", "pet_progress", "pet_pause", "pet_privacy", "pet_passport", "pet_history", "pet_story")
@@ -48,33 +49,54 @@ class PetCountingMiddleware(BaseMiddleware):
 
     def __init__(self, app: Any, store: Any, chat_ids: frozenset[int]):
         self.app, self.store, self.chat_ids = app, store, chat_ids
+        self.trace = None
 
     async def __call__(self, handler, event: Message, data: dict[str, Any]):
         callback = getattr(data.get("handler"), "callback", None)
         user = event.from_user
         pending = user is not None and user.id in getattr(self.app, "pending_users", {})
         candidate = None
-        if (getattr(callback, "__name__", "") == "collect_text_messages"
-                and callback is getattr(self.app, "collect_text_messages", callback)
-                and not pending and event.chat.type in ("group", "supergroup")
-                and event.chat.id in self.chat_ids
-                and event.chat.id in getattr(self.app, "ALLOWED_CHATS", ())
-                and event.chat.id not in getattr(self.app, "LEXICON_ONLY_CHAT_IDS", ())
-                and user is not None and not user.is_bot and event.sender_chat is None
-                and event.edit_date is None and event.forward_origin is None and event.via_bot is None
-                and event.date <= datetime.now(timezone.utc) + timedelta(minutes=1)):
+        if event.chat.type not in ("group", "supergroup") or event.chat.id not in self.chat_ids:
+            reason = "outside_scope"
+        elif event.chat.id not in getattr(self.app, "ALLOWED_CHATS", ()):
+            reason = "not_allowed"
+        elif event.chat.id in getattr(self.app, "LEXICON_ONLY_CHAT_IDS", ()):
+            reason = "lexicon_only"
+        elif pending:
+            reason = "pending_captcha"
+        elif user is None or user.is_bot or event.sender_chat is not None:
+            reason = "sender_not_personal"
+        elif event.edit_date is not None or event.forward_origin is not None or event.via_bot is not None:
+            reason = "not_original"
+        elif event.date > datetime.now(timezone.utc) + timedelta(minutes=1):
+            reason = "future_timestamp"
+        elif (getattr(callback, "__name__", "") != "collect_text_messages"
+              or callback is not getattr(self.app, "collect_text_messages", callback)):
+            reason = "different_handler"
+        else:
             proposed = MessageEligibility(user.id, event.chat.id, event.message_id,
                                           event.text, opted_in=True)
+            reason = "text_ineligible"
             if eligible_message(proposed):
                 candidate = proposed
+                reason = "candidate"
+        handler_name = getattr(callback, "__name__", "unknown")
+        if self.trace is not None:
+            trace_call(self.trace, "mark", event, reason, handler=handler_name)
         # Exceptions and SkipHandler from the moderation/legacy path propagate.
         result = await handler(event, data)
         if candidate is not None:
             try:
-                await self.store.record_message(candidate, now=event.date)
+                progress = await self.store.record_message(candidate, now=event.date)
+                if self.trace is not None:
+                    reason = getattr(progress, "reason", "") or (
+                        "counted" if getattr(progress, "counted", False) else "not_counted")
+                    trace_call(self.trace, "mark", event, reason, handler=handler_name)
             except Exception as exc:
                 # Exception messages can contain text, credentials or SQL arguments.
                 logger.warning("FOSGEN_PETS_COUNT_FAILED reason=%s", type(exc).__name__)
+                if self.trace is not None:
+                    trace_call(self.trace, "mark", event, "storage_error", handler=handler_name, error_type=type(exc).__name__)
         return result
 
 
@@ -168,7 +190,10 @@ class PetTelegramService:
             if command.command == "pet_privacy":
                 await message.answer(PRIVACY, parse_mode=None)
             elif command.command == "pet_start":
-                await self.store.opt_in(owner)
+                # Both consent and qualifying messages use Telegram's clock.
+                # Mixing the bot's microseconds/clock drift with Telegram's
+                # second-resolution dates rejects legitimate new messages.
+                await self.store.opt_in(owner, now=message.date)
                 await message.answer(
                     "🐾 Согласие принято. После согласия нужно 100 подходящих сообщений в подключенных чатах. "
                     "Команды, пересылки, повторы и сообщения ботов не считаются.\n"
@@ -177,6 +202,8 @@ class PetTelegramService:
                     "/pet_pause — остановить учет с сохранением прогресса и питомца; /pet_privacy — данные.",
                     parse_mode=None)
             elif command.command == "pet_pause":
+                if self.counting.trace is not None:
+                    trace_call(self.counting.trace, "disable", owner)
                 await self.store.revoke(owner)
                 await message.answer("Учет остановлен. Прогресс и питомец сохранены. Возобновить: /pet_start.", parse_mode=None)
             elif command.command == "pet_progress":
@@ -251,6 +278,7 @@ def register_pet_handlers(app: Any, store: Any, *, chat_ids: frozenset[int]) -> 
 def register_pet_status_handlers(
     app: Any, store: Any, *, admin_ids: frozenset[int],
     requested_chat_ids: frozenset[int], chat_ids: frozenset[int], asset_version: int,
+    trace: Any = None,
 ) -> None:
     """Private operator scope diagnostics; no group/user message text is retained."""
     if not admin_ids:
@@ -265,17 +293,32 @@ def register_pet_status_handlers(
             connected = ", ".join(map(str, sorted(chat_ids))) or "нет"
             excluded = ", ".join(map(str, sorted(requested_chat_ids - chat_ids))) or "нет"
             consent = "принято" if progress.opted_in else "не дано или учет приостановлен"
+            trace_info = ""
+            if trace is not None:
+                from .diagnostics import format_observation
+                if progress.opted_in:
+                    trace.enable(owner)
+                    trace_info = "\n\n" + format_observation(trace.get(owner))
+                else:
+                    trace.disable(owner)
+                    trace_info = "\n\nДиагностика сообщений остановлена до /pet_start."
+            cutoff = getattr(progress, "opted_in_at", None)
+            clock_info = ""
+            if isinstance(cutoff, datetime):
+                zone = ZoneInfo("Europe/Moscow")
+                clock_info = (f"\nВремя согласия: {cutoff.astimezone(zone):%d.%m.%Y %H:%M:%S} МСК"
+                              f"\nЧасы бота: {datetime.now(zone):%d.%m.%Y %H:%M:%S} МСК")
             await message.answer(
                 f"🐾 Диагностика постоянных питомцев\nНовая графика: v{asset_version}\n"
                 f"Активные группы: {connected}\nНе подключены: {excluded}\n"
                 "Не подключенные ID исключены основным allowlist или режимом только Лексикон.\n"
-                f"Твое согласие: {consent}\nТвой прогресс: {progress.count}/{UNLOCK_MESSAGES}\n\n"
+                f"Твое согласие: {consent}\nТвой прогресс: {progress.count}/{UNLOCK_MESSAGES}{clock_info}\n\n"
                 "Для зачета: новый текст после /pet_start в одной из активных групп, "
                 "не менее 8 символов и 2 слов, после успешной модерации. "
                 "Не чаще одного сообщения в 30 секунд. Команды, повторы, пересылки, "
                 "сообщения ботов и анонимных отправителей не учитываются.\n"
                 "Контрольная фраза в группе: Сегодня проверяю счетчик сообщений питомца. "
-                "После нее проверь /pet_progress в личке; повторять ту же фразу не нужно.",
+                "После нее проверь /pet_progress в личке; повторять ту же фразу не нужно." + trace_info,
                 parse_mode=None,
             )
         except Exception as exc:
