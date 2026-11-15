@@ -26,6 +26,15 @@ jobs:
       - run: node --test tests/test_writers_sketch_collection_client.cjs
       - run: python -m compileall -q .
       - run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Render the complete plush review gallery
+        run: python -m fosgen_pets.gallery_v3 --output /tmp/fosgen-v3-gallery
+      - name: Preserve PNGs, DNA and visual metrics for art review
+        uses: actions/upload-artifact@v4
+        with:
+          name: fosgen-pets-v3-gallery
+          path: /tmp/fosgen-v3-gallery
+          retention-days: 14
+          if-no-files-found: error
 
   entertainment-postgres:
     runs-on: ubuntu-latest
