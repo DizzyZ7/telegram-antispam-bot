@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .postgres import PostgresPetStore
-from .telegram import register_pet_handlers
+from .telegram import register_pet_handlers, register_pet_status_handlers
 
 LOGGER = logging.getLogger(__name__)
 
@@ -90,7 +90,21 @@ async def start_pet_runtime(
         except Exception as close_exc:
             LOGGER.warning("FOSGEN_PETS_CLOSE_FAILED error_type=%s", type(close_exc).__name__)
         return None
-    LOGGER.info("FOSGEN_PETS_READY backend=postgres groups=%s unlock_messages=100", len(effective_ids))
+    # Reuse the explicit operator allowlist; never expose group scope to regular
+    # users. A broken diagnostic setting must not disable the actual pet service.
+    env = os.environ if environ is None else environ
+    if env.get("FOSGEN_PETTEST_ADMIN_IDS", "").strip():
+        try:
+            from .pettest import parse_admin_ids
+            admins = parse_admin_ids(env["FOSGEN_PETTEST_ADMIN_IDS"])
+            register_pet_status_handlers(
+                app, store, admin_ids=admins, requested_chat_ids=config.chat_ids,
+                chat_ids=frozenset(effective_ids), asset_version=config.new_asset_version,
+            )
+        except Exception as exc:
+            LOGGER.warning("FOSGEN_PETS_STATUS_DISABLED reason=%s", type(exc).__name__)
+    LOGGER.info("FOSGEN_PETS_READY backend=postgres groups=%s chat_ids=%s asset_version=%s unlock_messages=100",
+                len(effective_ids), ",".join(map(str, sorted(effective_ids))), config.new_asset_version)
     return PetRuntime(store, service)
 
 
