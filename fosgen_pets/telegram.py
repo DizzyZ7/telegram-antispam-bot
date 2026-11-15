@@ -246,3 +246,45 @@ def register_pet_handlers(app: Any, store: Any, *, chat_ids: frozenset[int]) -> 
     app.dp.message.middleware(service.counting)
     service.promote_handlers()
     return service
+
+
+def register_pet_status_handlers(
+    app: Any, store: Any, *, admin_ids: frozenset[int],
+    requested_chat_ids: frozenset[int], chat_ids: frozenset[int], asset_version: int,
+) -> None:
+    """Private operator scope diagnostics; no group/user message text is retained."""
+    if not admin_ids:
+        return
+
+    async def pet_status(message: Message) -> None:
+        owner = _private_owner(message)
+        if owner not in admin_ids:
+            raise SkipHandler()
+        try:
+            progress = await store.progress(owner)
+            connected = ", ".join(map(str, sorted(chat_ids))) or "нет"
+            excluded = ", ".join(map(str, sorted(requested_chat_ids - chat_ids))) or "нет"
+            consent = "принято" if progress.opted_in else "не дано или учет приостановлен"
+            await message.answer(
+                f"🐾 Диагностика постоянных питомцев\nНовая графика: v{asset_version}\n"
+                f"Активные группы: {connected}\nНе подключены: {excluded}\n"
+                "Не подключенные ID исключены основным allowlist или режимом только Лексикон.\n"
+                f"Твое согласие: {consent}\nТвой прогресс: {progress.count}/{UNLOCK_MESSAGES}\n\n"
+                "Для зачета: новый текст после /pet_start в одной из активных групп, "
+                "не менее 8 символов и 2 слов, после успешной модерации. "
+                "Не чаще одного сообщения в 30 секунд. Команды, повторы, пересылки, "
+                "сообщения ботов и анонимных отправителей не учитываются.\n"
+                "Контрольная фраза в группе: Сегодня проверяю счетчик сообщений питомца. "
+                "После нее проверь /pet_progress в личке; повторять ту же фразу не нужно.",
+                parse_mode=None,
+            )
+        except Exception as exc:
+            logger.warning("FOSGEN_PETS_STATUS_FAILED reason=%s", type(exc).__name__)
+            await message.answer(UNAVAILABLE, parse_mode=None)
+
+    app.dp.message.register(pet_status, Command("pet_status"))
+    # The legacy F.text collector also matches private commands.
+    handlers = app.dp.message.handlers
+    selected = next(item for item in reversed(handlers) if item.callback is pet_status)
+    handlers.remove(selected)
+    handlers.insert(0, selected)
