@@ -1,5 +1,6 @@
 """Stable, private origin stories derived exclusively from immutable pet DNA."""
 from .core import Appearance, validate_appearance
+from .biography import pet_sex
 
 SPECIES_NAMES = {
     "kitten": "котенок", "puppy": "щенок", "foal": "жеребенок", "calf": "теленок",
@@ -13,7 +14,7 @@ _PLACES = (
     "на лесной поляне с мягким мхом", "у берега, где шуршали камыши",
 )
 _MOMENTS = (
-    "Сначала он осторожно протянул лапу, а потом решил остаться рядом.",
+    "Он осторожно сделал первый шаг, а потом решил остаться рядом.",
     "Он принес маленькое перышко и положил его рядом, словно подарок.",
     "Он долго разглядывал облака, пока не понял, что вместе смотреть интереснее.",
     "Он спрятал нос от прохладного ветра и нашел самое уютное место рядом.",
@@ -21,6 +22,16 @@ _MOMENTS = (
     "Он нес с собой смешной листочек и очень хотел поделиться находкой.",
     "Он сел поближе и тихо ждал, пока начнется их первое маленькое приключение.",
     "Он сделал круг вокруг своего нового друга и наконец доверчиво устроился рядом.",
+)
+_FEMALE_MOMENTS = (
+    "Она осторожно сделала первый шаг, а потом решила остаться рядом.",
+    "Она принесла маленькое перышко и положила его рядом, словно подарок.",
+    "Она долго разглядывала облака, пока не поняла, что вместе смотреть интереснее.",
+    "Она спрятала нос от прохладного ветра и нашла самое уютное место рядом.",
+    "Она услышала знакомые шаги и радостно выбежала навстречу своему человеку.",
+    "Она несла с собой смешной листочек и очень хотела поделиться находкой.",
+    "Она устроилась поближе и тихо ждала, пока начнется их первое маленькое приключение.",
+    "Она сделала круг вокруг своего нового друга и наконец доверчиво устроилась рядом.",
 )
 _ENDINGS = (
     "С этого дня у него есть свой дом, куда всегда можно вернуться.",
@@ -33,9 +44,15 @@ _ENDINGS = (
 
 
 def origin_story(appearance: Appearance) -> str:
+    # Only called for a newly issued pet. Existing origin_story is always read
+    # verbatim from PostgreSQL and must never be passed through new templates.
     validate_appearance(appearance)
     digest = bytes.fromhex(appearance.fingerprint())
-    return (
-        f"Однажды {_PLACES[digest[0] % len(_PLACES)]} появился новый друг: {SPECIES_NAMES[appearance.species]}. "
-        f"{_MOMENTS[digest[1] % len(_MOMENTS)]} {_ENDINGS[digest[2] % len(_ENDINGS)]}"
-    )
+    female = pet_sex(appearance) == "female"
+    arrival = "появилась новая подруга" if female else "появился новый друг"
+    moments = _FEMALE_MOMENTS if female else _MOMENTS
+    ending = _ENDINGS[digest[2] % len(_ENDINGS)]
+    if female:
+        ending = ending.replace("у него", "у нее").replace("Он еще не знает", "Она еще не знает").replace("уже нашел", "уже нашла")
+    return (f"Однажды {_PLACES[digest[0] % len(_PLACES)]} {arrival}: {SPECIES_NAMES[appearance.species]}. "
+            f"{moments[digest[1] % len(moments)]} {ending}")

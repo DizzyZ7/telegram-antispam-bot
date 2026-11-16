@@ -72,3 +72,22 @@ experiments. Work remains in feat/fosgen-pets-foundation / PR #127.
 - User authorization covers committing/pushing this existing branch; main merge remains
   pending the user's later confirmation, independently of CI success.
 
+
+## Social increment (2026-11-16)
+
+Separate optional group service: `biography.py` freezes logical sex without DNA
+changes; `walks.py` owns pure rules; `walks_postgres.py` reuses the bounded pool;
+`walks_telegram.py` owns explicit, moderated group commands and reply limits.
+Timed completion is derived from durable rows (20 XP per unique completed walk),
+not from background workers. Daily journal is current-chat-only and paginated.
+`FOSGEN_PETS_SOCIAL_ENABLED=1` is an explicit production toggle, default off.
+Stored identity/art/origin and one-owner uniqueness remain unchanged.
+See [operator/user guide](fosgen-pets-social.md) and the dated design/plan for
+scope and the separate proposed collection migration.
+
+Local verification for the social increment: 1336 Python tests passed with no skips
+on disposable PostgreSQL 16.2 (78.055 seconds). Independent review's midnight replay
+reproduction was verified RED, then GREEN with persistent owner/chat watermarks.
+Legacy art/golden tests run unchanged in the same suite. No production database,
+Telegram credential or live bot messaging was used. GitHub CI separately exercises
+PostgreSQL 17 and the actual deployment Docker image.
