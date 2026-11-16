@@ -96,6 +96,44 @@ CREATE TABLE IF NOT EXISTS fosgen_pet_care_requests (
 CREATE INDEX IF NOT EXISTS fosgen_pet_care_cooldown_idx
     ON fosgen_pet_care_requests (pet_id, action, created_at DESC) WHERE applied;
 
+-- Explicit, public group outings. One persistent attempt per owner/Moscow day;
+-- completion/XP derive from ends_at and do not need in-memory timers or claims.
+CREATE UNIQUE INDEX IF NOT EXISTS fosgen_pets_id_owner_idx ON fosgen_pets (pet_id, owner_user_id);
+CREATE TABLE IF NOT EXISTS fosgen_pet_walks (
+    walk_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    pet_id BIGINT NOT NULL REFERENCES fosgen_pets(pet_id),
+    owner_user_id BIGINT NOT NULL REFERENCES fosgen_pet_opt_ins(user_id),
+    chat_id BIGINT NOT NULL CHECK (chat_id < 0),
+    message_id BIGINT NOT NULL CHECK (message_id > 0),
+    thread_id BIGINT CHECK (thread_id > 0),
+    walk_day DATE NOT NULL,
+    route TEXT NOT NULL CHECK (route IN ('meadow', 'forest', 'river')),
+    activity TEXT NOT NULL CHECK (LENGTH(activity) BETWEEN 1 AND 250),
+    started_at TIMESTAMPTZ NOT NULL,
+    ends_at TIMESTAMPTZ NOT NULL CHECK (ends_at > started_at),
+    FOREIGN KEY (pet_id, owner_user_id) REFERENCES fosgen_pets(pet_id, owner_user_id),
+    UNIQUE (owner_user_id, walk_day),
+    UNIQUE (chat_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS fosgen_pet_walks_diary_idx
+    ON fosgen_pet_walks (chat_id, walk_day, walk_id);
+CREATE INDEX IF NOT EXISTS fosgen_pet_walks_owner_end_idx
+    ON fosgen_pet_walks (owner_user_id, ends_at DESC);
+
+-- Remember rejected requests too: a duplicate near midnight must not turn a
+-- refusal into a fresh next-day action. Telegram IDs increase across a chat's
+-- topics; a watermark uses one row per owner/chat, not an unbounded reject log.
+CREATE TABLE IF NOT EXISTS fosgen_pet_walk_request_watermarks (
+    owner_user_id BIGINT NOT NULL REFERENCES fosgen_pet_opt_ins(user_id),
+    chat_id BIGINT NOT NULL CHECK (chat_id < 0),
+    last_message_id BIGINT NOT NULL CHECK (last_message_id > 0),
+    PRIMARY KEY (owner_user_id, chat_id)
+);
+INSERT INTO fosgen_pet_walk_request_watermarks (owner_user_id,chat_id,last_message_id)
+    SELECT owner_user_id,chat_id,MAX(message_id) FROM fosgen_pet_walks GROUP BY owner_user_id,chat_id
+    ON CONFLICT (owner_user_id,chat_id) DO UPDATE
+        SET last_message_id=GREATEST(fosgen_pet_walk_request_watermarks.last_message_id,EXCLUDED.last_message_id);
+
 CREATE TABLE IF NOT EXISTS fosgen_pet_publication_permissions (
     owner_user_id BIGINT PRIMARY KEY REFERENCES fosgen_pet_opt_ins(user_id),
     public_profile BOOLEAN NOT NULL DEFAULT FALSE,

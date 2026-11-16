@@ -22,6 +22,8 @@ from aiogram.types import (
 
 from .core import MessageEligibility, UNLOCK_MESSAGES, eligible_message
 from .diagnostics import trace_call
+from .biography import sex_label
+from .stories import SPECIES_NAMES
 
 logger = logging.getLogger(__name__)
 COMMANDS = ("pet", "pet_start", "pet_progress", "pet_pause", "pet_privacy", "pet_passport", "pet_history", "pet_story")
@@ -33,7 +35,11 @@ PRIVACY = (
     "только после согласия и прохождения модерации в подключенных чатах. "
     "Команды, пересылки и сообщения ботов не учитываются.\n"
     "/pet_pause останавливает учет. Уже накопленный прогресс и питомец сохраняются. "
-    "Питомец один навсегда; его внешний вид не заменяется."
+    "Питомец один навсегда; его внешний вид не заменяется.\n"
+    "Если включены прогулки, /pet_walk в группе явно публикует участие питомца "
+    "в дневнике этого чата. Для прогулок хранятся ID питомца/владельца, чата, "
+    "сообщения и темы, дата, время и созданный ботом текст приключения. "
+    "Имена, переписка и фотографии людей в дневник не сохраняются."
 )
 
 
@@ -117,12 +123,15 @@ def _keyboard(pet_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-def _status(pet: Any) -> str:
+def _status(pet: Any, growth: Any = None) -> str:
     mood = {"calm": "спокойное", "content": "довольное", "playful": "игривое", "rested": "отдохнувшее"}.get(pet.mood, "спокойное")
     name = (pet.name or "Твой питомец").replace("ё", "е").replace("Ё", "Е")
+    growth_text = (f"Уровень дружбы: {growth.level} · Опыт: {growth.xp}\n"
+                   f"Завершенных прогулок: {growth.completed_walks}\n") if growth is not None else ""
     return (f"🐾 {name} · #{pet.id}\n"
+            f"Вид: {SPECIES_NAMES.get(pet.appearance.species, 'питомец')}\nПол: {sex_label(pet.appearance)}\n"
             f"Настроение: {mood}\nЭнергия: {pet.energy}/100\nСытость: {pet.satiety}/100\n"
-            "Один навсегда. Не умирает и не теряется без ухода.")
+            + growth_text + "Один навсегда. Не умирает и не теряется без ухода.")
 
 
 class PetTelegramService:
@@ -132,6 +141,7 @@ class PetTelegramService:
         self.counting = PetCountingMiddleware(app, store, chat_ids,
             isolated_chat_ids=isolated_chat_ids, isolated_handler=isolated_handler)
         self._registered: list[tuple[Any, Any]] = []
+        self.walks = None
 
     def promote_handlers(self) -> None:
         """Move only this service's exact callbacks before legacy catch-alls."""
@@ -160,19 +170,30 @@ class PetTelegramService:
                 pet = await self.store.adopt(owner)
         if pet is None:
             await self._progress(message, owner)
-        elif pet.png:
-            await message.answer_photo(BufferedInputFile(bytes(pet.png), filename=f"pet_{pet.id}.png"),
-                                       caption=_status(pet), reply_markup=_keyboard(pet.id), parse_mode=None)
         else:
-            await message.answer(_status(pet) + "\nИсходное изображение пока недоступно. "
-                                 "Питомец сохранен: новое изображение не создается.",
-                                 reply_markup=_keyboard(pet.id), parse_mode=None)
+            growth = None
+            if self.walks is not None:
+                try:
+                    growth = await self.walks.growth(owner)
+                except Exception as exc:
+                    logger.warning("FOSGEN_PETS_GROWTH_FAILED reason=%s", type(exc).__name__)
+            caption = _status(pet, growth)
+            if self.walks is not None:
+                caption += "\n🌿 /pet_walk в подключенном чате — выйти на прогулку."
+            if pet.png:
+                await message.answer_photo(BufferedInputFile(bytes(pet.png), filename=f"pet_{pet.id}.png"),
+                                           caption=caption, reply_markup=_keyboard(pet.id), parse_mode=None)
+            else:
+                await message.answer(caption + "\nИсходное изображение пока недоступно. "
+                                     "Питомец сохранен: новое изображение не создается.",
+                                     reply_markup=_keyboard(pet.id), parse_mode=None)
 
     async def _passport(self, message: Message, pet: Any) -> None:
         appearance = pet.appearance
         seed = appearance.pattern_seed if appearance.pattern_seed is not None else "нет (v1)"
         await message.answer(
-            f"🧬 Паспорт питомца #{pet.id}\nВерсия внешности: {appearance.asset_version}\n"
+            f"🧬 Паспорт питомца #{pet.id}\nВид: {SPECIES_NAMES.get(appearance.species, 'питомец')}\n"
+            f"Пол: {sex_label(appearance)}\nВерсия внешности: {appearance.asset_version}\n"
             f"Seed: {seed}\nDNA SHA256: {escape(appearance.fingerprint())}\n"
             f"PNG pixel SHA256: {escape(pet.pixel_hash or 'нет')}\n"
             f"Каноническая DNA:\n<code>{escape(appearance.canonical_dna())}</code>\n"

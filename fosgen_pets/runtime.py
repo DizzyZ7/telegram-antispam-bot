@@ -19,6 +19,7 @@ class PetsConfig:
     chat_ids: frozenset[int] = frozenset()
     new_asset_version: int = 2
     v3_art_approved: bool = False
+    social_enabled: bool = False
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> PetsConfig:
@@ -41,7 +42,10 @@ class PetsConfig:
             raise ValueError("Invalid pet art issuance configuration")
         if version == "3" and approval != "1":
             raise ValueError("Version 3 production art requires explicit approval")
-        return cls(True, ids, int(version), approval == "1")
+        social = env.get("FOSGEN_PETS_SOCIAL_ENABLED", "0")
+        if social not in ("0", "1"):
+            raise ValueError("Invalid pet social configuration")
+        return cls(True, ids, int(version), approval == "1", social == "1")
 
 
 @dataclass
@@ -105,6 +109,18 @@ async def start_pet_runtime(
         except Exception as close_exc:
             LOGGER.warning("FOSGEN_PETS_CLOSE_FAILED error_type=%s", type(close_exc).__name__)
         return None
+    if config.social_enabled:
+        try:
+            from .walks_postgres import PetWalkStore
+            from .walks_telegram import register_walk_handlers
+            walks = PetWalkStore(store)
+            social = register_walk_handlers(app, walks, chat_ids=frozenset(effective_ids),
+                                           isolated_chat_ids=frozenset(isolated_ids))
+            service.walks = walks
+            service._registered.extend(social.registrations)
+            service.promote_handlers()
+        except Exception as exc:
+            LOGGER.warning("FOSGEN_PETS_SOCIAL_DISABLED reason=%s", type(exc).__name__)
     # Reuse the explicit operator allowlist; never expose group scope to regular
     # users. A broken diagnostic setting must not disable the actual pet service.
     env = os.environ if environ is None else environ

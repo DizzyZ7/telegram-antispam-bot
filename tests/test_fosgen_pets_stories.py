@@ -23,3 +23,18 @@ class OriginStoryTests(unittest.TestCase):
             story = origin_story(build_appearance(species, "private-test-value-never-show-this"))
             self.assertNotIn("private-test-value", story)
             self.assertNotIn(species, story)
+
+    def test_new_stories_match_logical_sex_and_do_not_give_hooves_a_paw(self):
+        from fosgen_pets.biography import pet_sex
+        from fosgen_pets.stories import origin_story
+        for species in ("calf", "foal", "fox", "alpaca"):
+            for seed in range(30):
+                appearance = build_appearance(species, str(seed), asset_version=3)
+                text = origin_story(appearance)
+                if pet_sex(appearance) == "female":
+                    self.assertIn("Она ", text)
+                    self.assertNotIn("Он ", text)
+                else:
+                    self.assertIn("Он ", text)
+                if species in {"calf", "foal", "alpaca"}:
+                    self.assertNotIn("лапу", text)
