@@ -186,11 +186,11 @@ class MaskedProfanityMessageHandlerTests(unittest.IsolatedAsyncioTestCase):
                 await handler(message)
                 message.delete.assert_awaited_once()
 
-    async def test_same_masked_word_is_exempt_only_in_original_three_topics(self):
+    async def test_same_masked_word_is_exempt_only_in_four_approved_topics(self):
         language_filter = ProhibitedLanguageFilter()
         self.assertEqual(
             WRITERS_PROFANITY_EXEMPT_TOPIC_IDS,
-            frozenset({14637, 42817, 292358}),
+            frozenset({14637, 42817, 292358, 582867}),
         )
         for topic_id in sorted(WRITERS_PROFANITY_EXEMPT_TOPIC_IDS):
             for caption in (False, True):
