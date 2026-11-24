@@ -58,6 +58,13 @@ class PostgresEntertainmentStorage:
                     )"""
                 )
                 await connection.execute(
+                    """CREATE TABLE IF NOT EXISTS entertainment_birthday_recovery_delivery (
+                        chat_id BIGINT NOT NULL, event_id TEXT NOT NULL, local_date TEXT NOT NULL,
+                        status TEXT NOT NULL, updated_at BIGINT NOT NULL,
+                        telegram_message_id BIGINT, PRIMARY KEY (chat_id, event_id)
+                    )"""
+                )
+                await connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS entertainment_daily_meme (
                         chat_id BIGINT NOT NULL,
@@ -414,6 +421,60 @@ class PostgresEntertainmentStorage:
     async def release_birthday_delivery(self, chat_id: int, event_id: str) -> None:
         await self._require_pool().execute(
             "DELETE FROM entertainment_birthday_delivery WHERE chat_id=$1 AND event_id=$2 AND status='CLAIMED'",
+            int(chat_id), event_id,
+        )
+
+    async def claim_birthday_recovery_delivery(self, chat_id: int, event_id: str, now: int) -> bool:
+        local_date = datetime.fromtimestamp(now, ZoneInfo("Europe/Moscow")).date().isoformat()
+        generic_event = f"chat-birthday-{local_date}"
+        async with self._require_pool().acquire() as connection:
+            async with connection.transaction():
+                # Serialized with standard claims and all competing workers.
+                await connection.execute("SELECT pg_advisory_xact_lock($1)", int(chat_id))
+                original = await connection.fetchval(
+                    "SELECT telegram_message_id FROM entertainment_birthday_delivery "
+                    "WHERE chat_id=$1 AND local_date=$2 AND event_id=$3 AND status='SENT'",
+                    int(chat_id), local_date, generic_event,
+                )
+                if original is None:
+                    return False
+                pending = await connection.fetchval(
+                    "SELECT 1 FROM entertainment_birthday_delivery "
+                    "WHERE chat_id=$1 AND status IN ('CLAIMED','UNCERTAIN') LIMIT 1",
+                    int(chat_id),
+                )
+                if pending:
+                    return False
+                recovery_pending = await connection.fetchval(
+                    "SELECT 1 FROM entertainment_birthday_recovery_delivery "
+                    "WHERE chat_id=$1 AND status IN ('CLAIMED','UNCERTAIN') LIMIT 1",
+                    int(chat_id),
+                )
+                if recovery_pending:
+                    return False
+                inserted = await connection.fetchval(
+                    "INSERT INTO entertainment_birthday_recovery_delivery"
+                    "(chat_id,event_id,local_date,status,updated_at) "
+                    "VALUES ($1,$2,$3,'CLAIMED',$4) ON CONFLICT DO NOTHING RETURNING 1",
+                    int(chat_id), event_id, local_date, int(now),
+                )
+                return inserted == 1
+
+    async def finish_birthday_recovery_delivery(self, chat_id: int, event_id: str, now: int,
+                                                 status: str, message_id: int | None) -> None:
+        if status not in {"SENT", "UNCERTAIN"}:
+            raise ValueError("Invalid birthday recovery status")
+        await self._require_pool().execute(
+            "UPDATE entertainment_birthday_recovery_delivery "
+            "SET status=$1,updated_at=$2,telegram_message_id=$3 "
+            "WHERE chat_id=$4 AND event_id=$5 AND status='CLAIMED'",
+            status, int(now), message_id, int(chat_id), event_id,
+        )
+
+    async def release_birthday_recovery_delivery(self, chat_id: int, event_id: str) -> None:
+        await self._require_pool().execute(
+            "DELETE FROM entertainment_birthday_recovery_delivery "
+            "WHERE chat_id=$1 AND event_id=$2 AND status='CLAIMED'",
             int(chat_id), event_id,
         )
 
