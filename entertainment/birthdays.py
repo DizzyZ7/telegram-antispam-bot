@@ -94,6 +94,14 @@ class BirthdayCoordinator:
         allowed = frozenset(int(chat) for chat in chat_ids)
         self.chat_ids = allowed
         self.plans = tuple(p for p in plans if p.chat_id in allowed)
+        self._logged_due: set[str] = set()
+        self._logged_recovery_skip: set[str] = set()
+        for plan in self.plans:
+            LOGGER.info(
+                "BIRTHDAY_PLAN_LOADED event=%s chat_id=%s date=%s send_time=%s recovery=%s",
+                plan.event_id, plan.chat_id, plan.local_date, plan.send_time,
+                int(plan.catch_up_after_generic),
+            )
 
     async def _send(self, plan: BirthdayPlan, now: int, topic_id: int = 0) -> None:
         await self._deliver(plan.chat_id, plan.event_id, plan.text, now, topic_id,
@@ -109,8 +117,16 @@ class BirthdayCoordinator:
                 return True
             claim_recovery = getattr(self.storage, "claim_birthday_recovery_delivery", None)
             if not callable(claim_recovery) or not await claim_recovery(chat_id, event_id, now):
+                if event_id not in self._logged_recovery_skip:
+                    LOGGER.warning(
+                        "BIRTHDAY_RECOVERY_NOT_CLAIMED event=%s chat_id=%s "
+                        "check=entertainment_birthday_delivery_and_recovery",
+                        event_id, chat_id,
+                    )
+                    self._logged_recovery_skip.add(event_id)
                 return True
             recovered = True
+            self._logged_recovery_skip.discard(event_id)
         finish = (self.storage.finish_birthday_recovery_delivery if recovered
                   else self.storage.finish_birthday_delivery)
         release = (self.storage.release_birthday_recovery_delivery if recovered
@@ -152,6 +168,12 @@ class BirthdayCoordinator:
     async def tick(self, now: int) -> None:
         for plan in self.plans:
             if plan.due(now):
+                if plan.event_id not in self._logged_due:
+                    LOGGER.warning(
+                        "BIRTHDAY_PLAN_DUE event=%s chat_id=%s date=%s time=%s",
+                        plan.event_id, plan.chat_id, plan.local_date, plan.send_time,
+                    )
+                    self._logged_due.add(plan.event_id)
                 try:
                     await self._send(plan, now)
                 except Exception:
