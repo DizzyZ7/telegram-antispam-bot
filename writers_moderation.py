@@ -29,8 +29,8 @@ WRITERS_RULES_URL = os.getenv(
 WARNING_COOLDOWN_SECONDS = max(10, int(os.getenv("WRITERS_WARNING_COOLDOWN_SECONDS", "60")))
 RULES_LINK_PREVIEW_OPTIONS = LinkPreviewOptions(is_disabled=True)
 # Explicit owner-approved exemptions. Only profanity deletion is skipped in
-# these three Writers forum topics; all other chats/topics stay moderated.
-WRITERS_PROFANITY_EXEMPT_TOPIC_IDS = frozenset({14637, 42817, 292358})
+# these four Writers forum topics; all other chats/topics stay moderated.
+WRITERS_PROFANITY_EXEMPT_TOPIC_IDS = frozenset({14637, 42817, 292358, 582867})
 LEXICON_PATH = Path(__file__).resolve().parent / "data" / "moderation_lexicon.json"
 MessageDeletedHook = Callable[[int, int], Awaitable[object]]
 

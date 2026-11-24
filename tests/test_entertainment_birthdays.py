@@ -154,7 +154,8 @@ class BirthdayTests(_BirthdayStorageCase):
     async def test_production_topic_denylist_still_applies(self):
         service = EntertainmentService(SimpleNamespace(bot=self.bot), self.storage, {CHAT},
                                        now_fn=lambda: timestamp(hour=9), birthday_plans=[plan()])
-        await service.observe_message(message(message_thread_id=292358))
+        for topic_id in (292358, 582867):
+            await service.observe_message(message(message_thread_id=topic_id))
         self.assertEqual(self.bot.send_message.await_count, 0)
 
     async def test_service_supervisor_sends_even_without_active_topic(self):

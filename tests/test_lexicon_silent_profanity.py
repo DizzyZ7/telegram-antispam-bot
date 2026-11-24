@@ -164,7 +164,7 @@ class LexiconFairyNoticeTests(unittest.IsolatedAsyncioTestCase):
                 msg.delete.assert_not_awaited()
                 self.next_handler.assert_awaited_once()
 
-    async def test_other_chats_and_original_writers_exemptions_are_untouched(self):
+    async def test_other_chats_and_all_writers_exemptions_are_untouched(self):
         for chat in (WRITERS_CHAT, -1001111111111):
             msg = message("бл*ть", chat_id=chat)
             self.next_handler.reset_mock()
@@ -173,7 +173,7 @@ class LexiconFairyNoticeTests(unittest.IsolatedAsyncioTestCase):
             msg.delete.assert_not_awaited()
         self.assertEqual(
             WRITERS_PROFANITY_EXEMPT_TOPIC_IDS,
-            frozenset({14637, 42817, 292358}),
+            frozenset({14637, 42817, 292358, 582867}),
         )
         # Writers topic exemptions are not global exemptions in unrelated chats.
         msg = message("бл*ть", topic_id=14637)

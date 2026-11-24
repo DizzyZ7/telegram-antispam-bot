@@ -11,7 +11,7 @@ from entertainment.config import ENTERTAINMENT_BLOCKED_TOPIC_SCOPES
 from entertainment.storage.retention import SQLiteEntertainmentStorage
 
 WRITERS_CHAT_ID = -1002619489118
-BLOCKED_TOPICS = {292358, 14637, 42817}
+BLOCKED_TOPICS = {292358, 14637, 42817, 582867}
 
 
 class FakeMessage:
@@ -77,6 +77,13 @@ class TopicDenylistTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await self.storage.message_count(WRITERS_CHAT_ID, topic_id), 0)
             self.assertNotIn((WRITERS_CHAT_ID, topic_id), self.service._active_topics)
 
+    async def test_link_message_number_is_not_used_as_topic_id(self) -> None:
+        # Exclusion is by Telegram message_thread_id, never message_id.
+        message = FakeMessage(topic_id=97531, message_id=582867)
+        await self.service.observe_message(message)
+        self.assertEqual((await self.storage.memory_counts(WRITERS_CHAT_ID, 97531)).total, 1)
+        self.assertEqual(await self.storage.message_count(WRITERS_CHAT_ID, 97531), 1)
+
     async def test_blocked_short_greeting_is_not_learned_or_answered(self) -> None:
         message = FakeMessage(topic_id=292358, text="споки")
 
@@ -96,6 +103,23 @@ class TopicDenylistTests(unittest.IsolatedAsyncioTestCase):
         message = FakeMessage(chat_id=other_chat, topic_id=292358)
         await service.observe_message(message)
         self.assertEqual((await self.storage.memory_counts(other_chat, 292358)).total, 1)
+
+    async def test_topic_582867_is_silent_even_when_command_or_greeting(self) -> None:
+        for text in ("С днем рождения!", "Привет Фосген, как дела?", "Пока", "/fun_generate"):
+            with self.subTest(text=text):
+                message = FakeMessage(topic_id=582867, text=text)
+                await self.service.observe_message(message)
+                self.assertEqual(message.replies, [])
+        self.assertEqual((await self.storage.memory_counts(WRITERS_CHAT_ID, 582867)).total, 0)
+        self.assertNotIn((WRITERS_CHAT_ID, 582867), self.service._active_topics)
+
+    async def test_topic_582867_stale_supervisor_memory_is_removed(self) -> None:
+        message = FakeMessage(topic_id=582867)
+        self.service._active_topics[(WRITERS_CHAT_ID, 582867)] = message
+        with patch.object(self.service, "evaluate_topic", new_callable=AsyncMock) as evaluate:
+            await self.service.run_supervisor_tick()
+        self.assertNotIn((WRITERS_CHAT_ID, 582867), self.service._active_topics)
+        evaluate.assert_not_awaited()
 
     async def test_blocked_topic_evaluation_returns_before_storage_reads(self) -> None:
         storage = SimpleNamespace(
