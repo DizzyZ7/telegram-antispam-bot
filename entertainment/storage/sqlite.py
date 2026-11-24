@@ -431,24 +431,37 @@ class SQLiteEntertainmentStorage:
         await connection.commit()
 
     async def claim_birthday_recovery_delivery(self, chat_id: int, event_id: str, now: int) -> bool:
+        """Atomic, tightly scoped one-off recovery independent of old generic metadata."""
         local_date = datetime.fromtimestamp(now, ZoneInfo("Europe/Moscow")).date().isoformat()
+        if (
+            int(chat_id) != -1002619489118
+            or event_id != "ikf-2026-11-24-pupsan99-birthday"
+            or local_date != "2026-11-24"
+        ):
+            return False
+
         generic_event = f"chat-birthday-{local_date}"
         connection = self._require_connection()
         cursor = await connection.execute(
             "INSERT OR IGNORE INTO entertainment_birthday_recovery_delivery"
             "(chat_id,event_id,local_date,status,updated_at) "
-            "SELECT ?,?,?,'CLAIMED',? WHERE EXISTS "
-            "(SELECT 1 FROM entertainment_birthday_delivery WHERE chat_id=? AND local_date=? "
-            "AND event_id=? AND status='SENT' AND telegram_message_id IS NOT NULL) "
+            "SELECT ?,?,?,'CLAIMED',? WHERE NOT EXISTS "
+            "(SELECT 1 FROM entertainment_birthday_delivery "
+            "WHERE chat_id=? AND local_date=? AND event_id=?) "
             "AND NOT EXISTS (SELECT 1 FROM entertainment_birthday_delivery "
-            "WHERE chat_id=? AND status IN ('CLAIMED','UNCERTAIN')) "
+            "WHERE chat_id=? AND status IN ('CLAIMED','UNCERTAIN') "
+            "AND NOT (local_date=? AND event_id=?)) "
             "AND NOT EXISTS (SELECT 1 FROM entertainment_birthday_recovery_delivery "
             "WHERE chat_id=? AND status IN ('CLAIMED','UNCERTAIN'))",
             (int(chat_id), event_id, local_date, int(now),
-             int(chat_id), local_date, generic_event, int(chat_id), int(chat_id)),
+             int(chat_id), local_date, event_id,
+             int(chat_id), local_date, generic_event, int(chat_id)),
         )
         await connection.commit()
-        return cursor.rowcount == 1
+        claimed = cursor.rowcount == 1
+        if claimed:
+            LOGGER.info("BIRTHDAY_RECOVERY_CLAIMED event=%s chat_id=%s", event_id, chat_id)
+        return claimed
 
     async def finish_birthday_recovery_delivery(self, chat_id: int, event_id: str, now: int,
                                                  status: str, message_id: int | None) -> None:
