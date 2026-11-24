@@ -170,6 +170,57 @@ class BirthdayTests(_BirthdayStorageCase):
         await service.observe_message(message())
         self.assertEqual(self.bot.send_message.await_count, 1)
 
+    async def test_pupsan99_scheduled_exactly_1320_without_early_message(self):
+        plans = [p for p in load_birthday_plans() if p.username == "pupsan99" and p.local_date == "2026-11-24"]
+        self.assertEqual(len(plans), 1)
+        plan = plans[0]
+        self.assertEqual(plan.chat_id, CHAT)
+        self.assertEqual(plan.send_time, "13:20")
+        self.assertFalse(plan.allow_early)
+        self.assertIn("ИКФ", plan.text)
+        self.assertIn("писател", plan.text.casefold())
+        self.assertIn("ты создала", plan.text.casefold())
+        self.assertIn("благодаря тебе", plan.text.casefold())
+        self.assertNotIn("ты создал ", plan.text.casefold())
+        self.assertIn("Еноту пора!", plan.text)
+        self.assertIn("@pupsan99", plan.text)
+        self.clock_now = timestamp(day=24, hour=10)
+        self.coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [plan],
+                                               now_fn=lambda: self.clock_now)
+        early_message = message(
+            "@pupsan99, с днем рождения!",
+            date=datetime.fromtimestamp(self.clock_now, timezone.utc),
+        )
+        self.assertTrue(await self.coordinator.observe(early_message, self.clock_now))
+        # Special plan reserves the chat's daily slot; even direct congratulations
+        # to the recipient must not send before the explicit scheduled time.
+        self.assertEqual(self.bot.send_message.await_count, 0)
+        self.clock_now = timestamp(day=24, hour=13, minute=19)
+        await self.coordinator.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 0)
+        self.clock_now = timestamp(day=24, hour=13, minute=20)
+        await self.coordinator.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 1)
+        self.assertEqual(self.bot.send_message.call_args.kwargs["chat_id"], CHAT)
+        self.assertIn("@pupsan99", self.bot.send_message.call_args.kwargs["text"])
+        self.assertIn("Еноту пора!", self.bot.send_message.call_args.kwargs["text"])
+        await self.coordinator.tick(timestamp(day=24, hour=14))
+        await self.coordinator.observe(
+            message("@pupsan99, с днем рождения!", date=datetime.fromtimestamp(self.clock_now, timezone.utc)),
+            self.clock_now,
+        )
+        self.assertEqual(self.bot.send_message.await_count, 1)
+        await self.storage.close()
+        self.storage = SQLiteEntertainmentStorage(self.path)
+        await self.storage.initialize()
+        restarted = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [plan],
+                                        now_fn=lambda: self.clock_now)
+        await restarted.tick(timestamp(day=24, hour=19))
+        self.assertEqual(self.bot.send_message.await_count, 1)
+        self.clock_now = timestamp(day=25, hour=13, minute=20)
+        await restarted.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 1)
+
     def test_user_plan_is_one_off_and_contains_warm_storyteller_text(self):
         plans = load_birthday_plans()
         matching = [p for p in plans if p.username == "Buketsireni" and p.local_date == "2026-11-03"]
