@@ -36,6 +36,7 @@ class BirthdayPlan:
     send_time: str
     text: str
     allow_early: bool = True
+    catch_up_after_generic: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.event_id, str) or not re.fullmatch(r"[a-z0-9_-]{1,80}", self.event_id):
@@ -48,6 +49,8 @@ class BirthdayPlan:
         time.fromisoformat(self.send_time)
         if type(self.allow_early) is not bool:
             raise ValueError("Birthday plan allow_early must be a boolean")
+        if type(self.catch_up_after_generic) is not bool:
+            raise ValueError("Birthday plan catch_up_after_generic must be a boolean")
         if (not isinstance(self.text, str) or not 1 <= len(self.text) <= 3500
                 or len(self.text.encode("utf-16-le")) // 2 > 4000):
             raise ValueError("Invalid birthday greeting")
@@ -93,16 +96,30 @@ class BirthdayCoordinator:
         self.plans = tuple(p for p in plans if p.chat_id in allowed)
 
     async def _send(self, plan: BirthdayPlan, now: int, topic_id: int = 0) -> None:
-        await self._deliver(plan.chat_id, plan.event_id, plan.text, now, topic_id)
+        await self._deliver(plan.chat_id, plan.event_id, plan.text, now, topic_id,
+                            catch_up_after_generic=plan.catch_up_after_generic)
 
-    async def _deliver(self, chat_id: int, event_id: str, text: str, now: int, topic_id: int = 0) -> bool:
+    async def _deliver(self, chat_id: int, event_id: str, text: str, now: int, topic_id: int = 0, *,
+                       catch_up_after_generic: bool = False) -> bool:
+        # Admin-approved one-off catch-up after a generic greeting sent by
+        # the old build. Never delete or rewrite the original daily receipt.
+        recovered = False
         if not await self.storage.claim_birthday_delivery(chat_id, event_id, now):
-            return True
+            if not catch_up_after_generic:
+                return True
+            claim_recovery = getattr(self.storage, "claim_birthday_recovery_delivery", None)
+            if not callable(claim_recovery) or not await claim_recovery(chat_id, event_id, now):
+                return True
+            recovered = True
+        finish = (self.storage.finish_birthday_recovery_delivery if recovered
+                  else self.storage.finish_birthday_delivery)
+        release = (self.storage.release_birthday_recovery_delivery if recovered
+                   else self.storage.release_birthday_delivery)
         current = int(self._now_fn())
         if datetime.fromtimestamp(current, MOSCOW).date() != datetime.fromtimestamp(now, MOSCOW).date():
             # A claim may have waited on another DB transaction across midnight.
             # Do not deliver an expired plan or spend the previous day's row now.
-            await self.storage.release_birthday_delivery(chat_id, event_id)
+            await release(chat_id, event_id)
             return False
         kwargs: dict[str, Any] = {"chat_id": chat_id, "text": html.escape(text)}
         if topic_id:
@@ -110,25 +127,26 @@ class BirthdayCoordinator:
         try:
             sent = await self.bot.send_message(**kwargs)
         except TelegramNetworkError:
-            await self.storage.finish_birthday_delivery(chat_id, event_id, int(self._now_fn()), "UNCERTAIN", None)
+            await finish(chat_id, event_id, int(self._now_fn()), "UNCERTAIN", None)
             LOGGER.error("BIRTHDAY_DELIVERY_UNCERTAIN event=%s", event_id)
             return True
         except (TelegramBadRequest, TelegramForbiddenError, TelegramNotFound,
                 TelegramRetryAfter, TelegramUnauthorizedError):
             # An explicit Bot API rejection confirms there was no delivery.
-            await self.storage.release_birthday_delivery(chat_id, event_id)
+            await release(chat_id, event_id)
             LOGGER.warning("BIRTHDAY_DELIVERY_REJECTED event=%s", event_id)
             return False
         except Exception:
             # A lost response may follow a successful send. Keep the claim and
             # require inspection, rather than posting a second congratulations.
-            await self.storage.finish_birthday_delivery(chat_id, event_id, int(self._now_fn()), "UNCERTAIN", None)
+            await finish(chat_id, event_id, int(self._now_fn()), "UNCERTAIN", None)
             LOGGER.exception("BIRTHDAY_DELIVERY_UNCERTAIN event=%s", event_id)
             return True
         sent_at = getattr(sent, "date", None)
         delivered_at = int(sent_at.timestamp()) if isinstance(sent_at, datetime) and sent_at.tzinfo else int(self._now_fn())
-        await self.storage.finish_birthday_delivery(chat_id, event_id, delivered_at, "SENT", sent.message_id)
-        LOGGER.info("BIRTHDAY_DELIVERY_SENT event=%s message_id=%s", event_id, sent.message_id)
+        await finish(chat_id, event_id, delivered_at, "SENT", sent.message_id)
+        LOGGER.info("BIRTHDAY_DELIVERY_SENT event=%s message_id=%s recovery=%s",
+                    event_id, sent.message_id, int(recovered))
         return True
 
     async def tick(self, now: int) -> None:
