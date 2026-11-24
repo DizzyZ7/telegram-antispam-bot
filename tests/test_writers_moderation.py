@@ -120,7 +120,8 @@ class ProhibitedLanguageTests(unittest.TestCase):
     def test_rules_link_preview_is_disabled(self):
         self.assertTrue(RULES_LINK_PREVIEW_OPTIONS.is_disabled)
 
-    async def test_exempt_forum_topic_582867_skips_profanity_but_other_topics_do_not(self):
+    def test_exempt_forum_topic_582867_skips_profanity_but_other_topics_do_not(self):
+        import asyncio
         from writers_moderation import ProhibitedLanguageFilter, WRITERS_PROFANITY_EXEMPT_TOPIC_IDS
         self.assertIn(582867, WRITERS_PROFANITY_EXEMPT_TOPIC_IDS)
         check = ProhibitedLanguageFilter()
@@ -132,10 +133,10 @@ class ProhibitedLanguageTests(unittest.TestCase):
                 text="Это блять нарушение", caption=None,
                 from_user=SimpleNamespace(is_bot=False), sender_chat=None,
             )
-        self.assertFalse(await check(message(582867)))
-        self.assertTrue(await check(message(582868)))
+        self.assertFalse(asyncio.run(check(message(582867))))
+        self.assertTrue(asyncio.run(check(message(582868))))
         # A matching message ID in another thread is not itself an exemption.
-        self.assertTrue(await check(message(582868, message_id=582867)))
+        self.assertTrue(asyncio.run(check(message(582868, message_id=582867))))
 
     def test_writers_module_owns_only_moderation_not_captcha_handlers(self):
         app = SimpleNamespace(
