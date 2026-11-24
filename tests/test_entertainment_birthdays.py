@@ -222,6 +222,122 @@ class BirthdayTests(_BirthdayStorageCase):
         await restarted.tick(self.clock_now)
         self.assertEqual(self.bot.send_message.await_count, 1)
 
+
+    async def test_pupsan_catches_up_once_after_old_generic_at_1111(self):
+        """Old build sent generic at 11:11; new build posts one personal greeting."""
+        from entertainment.birthdays import load_birthday_plans
+        personal = next(p for p in load_birthday_plans() if p.username == "pupsan99")
+        self.assertTrue(personal.catch_up_after_generic)
+        self.assertFalse(personal.allow_early)
+        self.bot.send_message.side_effect = [
+            SimpleNamespace(message_id=586679), SimpleNamespace(message_id=586800),
+        ]
+        self.clock_now = timestamp(day=24, hour=11, minute=11)
+        generic = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [], now_fn=lambda: self.clock_now)
+        mention = message("@pupsan99 с днем рождения получается",
+                          date=datetime.fromtimestamp(self.clock_now, timezone.utc))
+        await generic.observe(mention, self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 1)
+
+        self.clock_now = timestamp(day=24, hour=13, minute=19)
+        personal_coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [personal],
+                                                    now_fn=lambda: self.clock_now)
+        await personal_coordinator.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 1)
+
+        self.clock_now = timestamp(day=24, hour=13, minute=52)
+        await asyncio.gather(personal_coordinator.tick(self.clock_now),
+                             personal_coordinator.tick(self.clock_now))
+        self.assertEqual(self.bot.send_message.await_count, 2)
+        self.assertIn("Ты создала", self.bot.send_message.call_args.kwargs["text"])
+        self.assertIn("Еноту пора!", self.bot.send_message.call_args.kwargs["text"])
+        async with self.storage._require_connection().execute(
+            "SELECT event_id,status,telegram_message_id FROM entertainment_birthday_delivery "
+            "WHERE chat_id=?", (CHAT,),
+        ) as cursor:
+            regular = await cursor.fetchone()
+        self.assertEqual(regular, ("chat-birthday-2026-11-24", "SENT", 586679))
+        async with self.storage._require_connection().execute(
+            "SELECT event_id,status,telegram_message_id "
+            "FROM entertainment_birthday_recovery_delivery WHERE chat_id=?", (CHAT,),
+        ) as cursor:
+            recovered = await cursor.fetchone()
+        self.assertEqual(recovered, (personal.event_id, "SENT", 586800))
+        await personal_coordinator.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 2)
+
+        await self.storage.close()
+        self.storage = SQLiteEntertainmentStorage(self.path)
+        await self.storage.initialize()
+        restarted = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [personal],
+                                        now_fn=lambda: self.clock_now)
+        await restarted.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 2)
+        self.clock_now = timestamp(day=25, hour=12)
+        await restarted.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 2)
+
+    async def test_recovery_requires_confirmed_generic_and_never_bypasses_other_greetings(self):
+        personal = next(p for p in load_birthday_plans() if p.username == "pupsan99")
+        self.clock_now = timestamp(day=24, hour=13, minute=52)
+        unrelated = "some-other-birthday"
+        self.assertTrue(await self.storage.claim_birthday_delivery(CHAT, unrelated, self.clock_now))
+        await self.storage.finish_birthday_delivery(CHAT, unrelated, self.clock_now, "SENT", 8877)
+        coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [personal],
+                                          now_fn=lambda: self.clock_now)
+        await coordinator.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 0)
+        await self.storage._require_connection().execute(
+            "DELETE FROM entertainment_birthday_delivery WHERE chat_id=?", (CHAT,),
+        )
+        await self.storage._require_connection().commit()
+        self.assertTrue(await self.storage.claim_birthday_delivery(
+            CHAT, "chat-birthday-2026-11-24", self.clock_now))
+        await self.storage.finish_birthday_delivery(
+            CHAT, "chat-birthday-2026-11-24", self.clock_now, "UNCERTAIN", None)
+        await coordinator.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 0)
+
+    async def test_recovery_network_unknown_is_not_repeated(self):
+        self.clock_now = timestamp(day=24, hour=13, minute=52)
+        generic_event = "chat-birthday-2026-11-24"
+        self.assertTrue(await self.storage.claim_birthday_delivery(
+            CHAT, generic_event, self.clock_now))
+        await self.storage.finish_birthday_delivery(CHAT, generic_event, self.clock_now, "SENT", 586679)
+        self.bot.send_message.side_effect = TimeoutError("Telegram reply lost")
+        personal = next(p for p in load_birthday_plans() if p.username == "pupsan99")
+        coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [personal],
+                                          now_fn=lambda: self.clock_now)
+        await coordinator.tick(self.clock_now)
+        await coordinator.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 1)
+        async with self.storage._require_connection().execute(
+            "SELECT status FROM entertainment_birthday_recovery_delivery WHERE chat_id=?", (CHAT,),
+        ) as cursor:
+            status = await cursor.fetchone()
+        self.assertEqual(status, ("UNCERTAIN",))
+        self.bot.send_message.side_effect = None
+        await coordinator.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 1)
+
+    async def test_recovery_definite_rejection_releases_for_one_retry(self):
+        self.clock_now = timestamp(day=24, hour=13, minute=52)
+        generic_event = "chat-birthday-2026-11-24"
+        self.assertTrue(await self.storage.claim_birthday_delivery(
+            CHAT, generic_event, self.clock_now))
+        await self.storage.finish_birthday_delivery(CHAT, generic_event, self.clock_now, "SENT", 586679)
+        self.bot.send_message.side_effect = [
+            TelegramBadRequest(method=SendMessage(chat_id=CHAT, text="test"), message="rejected"),
+            SimpleNamespace(message_id=586800),
+        ]
+        personal = next(p for p in load_birthday_plans() if p.username == "pupsan99")
+        coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [personal],
+                                          now_fn=lambda: self.clock_now)
+        await coordinator.tick(self.clock_now)
+        await coordinator.tick(self.clock_now)
+        await coordinator.tick(self.clock_now)
+        self.assertEqual(self.bot.send_message.await_count, 2)
+
     def test_user_plan_is_one_off_and_contains_warm_storyteller_text(self):
         plans = load_birthday_plans()
         matching = [p for p in plans if p.username == "Buketsireni" and p.local_date == "2026-11-03"]
@@ -408,6 +524,50 @@ class BirthdayPostgresTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await storage.claim_birthday_delivery(CHAT, prefix + "-later", timestamp(day=5)))
         finally:
             await storage._require_pool().execute("DELETE FROM entertainment_birthday_delivery WHERE chat_id=$1 AND event_id LIKE $2", CHAT, prefix + "%")
+            await storage.close()
+
+
+    async def test_pupsan_recovery_is_atomic_on_postgres_and_durable_after_restart(self):
+        """One special greeting after an already-SENT generic, even with 2 workers."""
+        storage = PostgresEntertainmentStorage(os.environ["TEST_DATABASE_URL"])
+        await storage.initialize()
+        chat_id = -1009876543210
+        now = timestamp(day=24, hour=13, minute=52)
+        event_id = "ikf-2026-11-24-pupsan99-birthday"
+        pool = storage._require_pool()
+        async def clean():
+            await pool.execute(
+                "DELETE FROM entertainment_birthday_recovery_delivery WHERE chat_id=$1", chat_id,
+            )
+            await pool.execute("DELETE FROM entertainment_birthday_delivery WHERE chat_id=$1", chat_id)
+        try:
+            await clean()
+            generic = "chat-birthday-2026-11-24"
+            self.assertTrue(await storage.claim_birthday_delivery(chat_id, generic, now))
+            await storage.finish_birthday_delivery(chat_id, generic, now, "SENT", 586679)
+            ok = await asyncio.gather(*(
+                storage.claim_birthday_recovery_delivery(chat_id, event_id, now)
+                for _ in range(8)
+            ))
+            self.assertEqual(ok.count(True), 1)
+            await storage.finish_birthday_recovery_delivery(chat_id, event_id, now, "SENT", 586800)
+            row = await pool.fetchrow(
+                "SELECT status,telegram_message_id FROM entertainment_birthday_recovery_delivery "
+                "WHERE chat_id=$1 AND event_id=$2", chat_id, event_id,
+            )
+            self.assertEqual((row["status"], row["telegram_message_id"]), ("SENT", 586800))
+            self.assertFalse(await storage.claim_birthday_recovery_delivery(chat_id, event_id, now))
+            await storage.close()
+            await storage.initialize()
+            pool = storage._require_pool()
+            self.assertFalse(await storage.claim_birthday_recovery_delivery(chat_id, event_id, now))
+            original = await pool.fetchrow(
+                "SELECT status,telegram_message_id FROM entertainment_birthday_delivery "
+                "WHERE chat_id=$1", chat_id,
+            )
+            self.assertEqual((original["status"], original["telegram_message_id"]), ("SENT", 586679))
+        finally:
+            await clean()
             await storage.close()
 
     async def test_competing_claims_and_restart_are_durable(self):
