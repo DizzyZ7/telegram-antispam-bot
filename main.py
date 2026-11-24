@@ -173,6 +173,8 @@ from entertainment import (
 )
 from entertainment.runtime import open_entertainment_runtime_storage
 from entertainment.scheduler import EntertainmentSupervisor
+from entertainment.birthdays import load_birthday_plans
+from pupsan_oneshot import send_pupsan_once
 from lexicon_game_scope import (
     LEXICON_ONLY_CHAT_IDS,
     LexiconGameAppScope,
@@ -287,8 +289,27 @@ async def main() -> None:
             flush=True,
         )
 
+        # One-day direct sender: this executes during startup BEFORE polling,
+        # regardless of whether Entertainment's supervisor ever runs.
+        # A dedicated PostgreSQL receipt prevents repeats after redeploy.
+        try:
+            await send_pupsan_once(app.bot, os.getenv("DATABASE_URL"))
+        except Exception as exc:
+            print(f"PUPSAN_ONESHOT_UNHANDLED type={type(exc).__name__}", flush=True)
+            logging.exception("Pupsan direct birthday sender failed")
+
         accurate_stats = AccurateStatsService(app, accurate_storage, app.SUMMARY_TIMEZONE)
-        entertainment = EntertainmentService(app, entertainment_storage, ENTERTAINMENT_CHAT_IDS)
+        # The personal plan is now exclusively owned by the independent
+        # startup one-shot, never by the old timer/catch-up supervisor.
+        personal_birthday_id = "ikf-2026-11-24-pupsan99-birthday"
+        regular_plans = tuple(
+            plan for plan in load_birthday_plans()
+            if plan.event_id != personal_birthday_id
+        )
+        entertainment = EntertainmentService(
+            app, entertainment_storage, ENTERTAINMENT_CHAT_IDS,
+            birthday_plans=regular_plans,
+        )
         entertainment_supervisor = EntertainmentSupervisor(entertainment)
 
         # The proxy extends chat access only inside the Lexicon service. The base app
