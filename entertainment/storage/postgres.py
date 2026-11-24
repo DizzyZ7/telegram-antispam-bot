@@ -425,26 +425,48 @@ class PostgresEntertainmentStorage:
         )
 
     async def claim_birthday_recovery_delivery(self, chat_id: int, event_id: str, now: int) -> bool:
+        """Claim the one-off Pupsan catch-up even if the old delivery metadata is incomplete.
+
+        The already-sent generic message is confirmed by the owner in Telegram.
+        A previous version may have stored it as SENT without a message ID or
+        UNCERTAIN; those states must not suppress the distinct approved greeting.
+        The dedicated receipt, not the old daily record, prevents duplicates.
+        """
         local_date = datetime.fromtimestamp(now, ZoneInfo("Europe/Moscow")).date().isoformat()
+        if (
+            int(chat_id) != -1002619489118
+            or event_id != "ikf-2026-11-24-pupsan99-birthday"
+            or local_date != "2026-11-24"
+        ):
+            return False
+
         generic_event = f"chat-birthday-{local_date}"
         async with self._require_pool().acquire() as connection:
             async with connection.transaction():
-                # Serialized with standard claims and all competing workers.
                 await connection.execute("SELECT pg_advisory_xact_lock($1)", int(chat_id))
-                original = await connection.fetchval(
-                    "SELECT telegram_message_id FROM entertainment_birthday_delivery "
-                    "WHERE chat_id=$1 AND local_date=$2 AND event_id=$3 AND status='SENT'",
+                # Never send a second personal message if the ordinary slot
+                # already belongs to this exact plan, even when its response
+                # was lost or a different worker is still processing it.
+                personal_claim = await connection.fetchval(
+                    "SELECT 1 FROM entertainment_birthday_delivery "
+                    "WHERE chat_id=$1 AND local_date=$2 AND event_id=$3 LIMIT 1",
+                    int(chat_id), local_date, event_id,
+                )
+                if personal_claim:
+                    return False
+
+                # Only the older generic celebration is exempt from the
+                # unresolved-delivery guard; unknown personal/other attempts
+                # in this or another day must continue to block new sends.
+                unknown_other = await connection.fetchval(
+                    "SELECT 1 FROM entertainment_birthday_delivery "
+                    "WHERE chat_id=$1 AND status IN ('CLAIMED','UNCERTAIN') "
+                    "AND NOT (local_date=$2 AND event_id=$3) LIMIT 1",
                     int(chat_id), local_date, generic_event,
                 )
-                if original is None:
+                if unknown_other:
                     return False
-                pending = await connection.fetchval(
-                    "SELECT 1 FROM entertainment_birthday_delivery "
-                    "WHERE chat_id=$1 AND status IN ('CLAIMED','UNCERTAIN') LIMIT 1",
-                    int(chat_id),
-                )
-                if pending:
-                    return False
+
                 recovery_pending = await connection.fetchval(
                     "SELECT 1 FROM entertainment_birthday_recovery_delivery "
                     "WHERE chat_id=$1 AND status IN ('CLAIMED','UNCERTAIN') LIMIT 1",
@@ -458,7 +480,10 @@ class PostgresEntertainmentStorage:
                     "VALUES ($1,$2,$3,'CLAIMED',$4) ON CONFLICT DO NOTHING RETURNING 1",
                     int(chat_id), event_id, local_date, int(now),
                 )
-                return inserted == 1
+                if inserted == 1:
+                    LOGGER.info("BIRTHDAY_RECOVERY_CLAIMED event=%s chat_id=%s", event_id, chat_id)
+                    return True
+                return False
 
     async def finish_birthday_recovery_delivery(self, chat_id: int, event_id: str, now: int,
                                                  status: str, message_id: int | None) -> None:

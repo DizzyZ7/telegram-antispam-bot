@@ -277,26 +277,79 @@ class BirthdayTests(_BirthdayStorageCase):
         await restarted.tick(self.clock_now)
         self.assertEqual(self.bot.send_message.await_count, 2)
 
-    async def test_recovery_requires_confirmed_generic_and_never_bypasses_other_greetings(self):
+    async def test_recovery_accepts_imperfect_old_generic_receipt_without_duplicates(self):
+        """The production 11:11 reply exists even if old DB metadata is incomplete."""
         personal = next(p for p in load_birthday_plans() if p.username == "pupsan99")
         self.clock_now = timestamp(day=24, hour=13, minute=52)
-        unrelated = "some-other-birthday"
-        self.assertTrue(await self.storage.claim_birthday_delivery(CHAT, unrelated, self.clock_now))
-        await self.storage.finish_birthday_delivery(CHAT, unrelated, self.clock_now, "SENT", 8877)
+        variants = (
+            ("generic_sent_without_message_id", "chat-birthday-2026-11-24", "SENT", None),
+            ("generic_uncertain", "chat-birthday-2026-11-24", "UNCERTAIN", None),
+            ("generic_claimed", "chat-birthday-2026-11-24", None, None),
+            ("legacy_unexpected_event_id", "old-2026-birthday", "SENT", 586679),
+        )
+        for variant, event_id, status, msg_id in variants:
+            with self.subTest(variant=variant):
+                self.assertTrue(await self.storage.claim_birthday_delivery(
+                    CHAT, event_id, self.clock_now))
+                if status:
+                    await self.storage.finish_birthday_delivery(
+                        CHAT, event_id, self.clock_now, status, msg_id)
+                coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [personal],
+                                                  now_fn=lambda: self.clock_now)
+                before = self.bot.send_message.await_count
+                await coordinator.tick(self.clock_now)
+                await coordinator.tick(self.clock_now)
+                self.assertEqual(self.bot.send_message.await_count, before + 1)
+                self.assertIn("Ты создала", self.bot.send_message.call_args.kwargs["text"])
+                async with self.storage._require_connection().execute(
+                    "SELECT status FROM entertainment_birthday_recovery_delivery "
+                    "WHERE chat_id=?", (CHAT,),
+                ) as cursor:
+                    receipt = await cursor.fetchone()
+                self.assertEqual(receipt, ("SENT",))
+                # Test-only reset between independent scenarios; production
+                # never wipes the old birthday or the recovery receipt.
+                connection = self.storage._require_connection()
+                await connection.execute(
+                    "DELETE FROM entertainment_birthday_recovery_delivery WHERE chat_id=?", (CHAT,))
+                await connection.execute(
+                    "DELETE FROM entertainment_birthday_delivery WHERE chat_id=?", (CHAT,))
+                await connection.commit()
+
+    async def test_recovery_never_duplicates_personal_or_unrelated_uncertain_event(self):
+        personal = next(p for p in load_birthday_plans() if p.username == "pupsan99")
+        self.clock_now = timestamp(day=24, hour=13, minute=52)
+        for status in ("SENT", "UNCERTAIN", None):
+            with self.subTest(status=status):
+                self.assertTrue(await self.storage.claim_birthday_delivery(
+                    CHAT, personal.event_id, self.clock_now))
+                if status:
+                    await self.storage.finish_birthday_delivery(
+                        CHAT, personal.event_id, self.clock_now, status, 586800 if status == "SENT" else None)
+                coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [personal],
+                                                  now_fn=lambda: self.clock_now)
+                await coordinator.tick(self.clock_now)
+                self.assertEqual(self.bot.send_message.await_count, 0)
+                await self.storage._require_connection().execute(
+                    "DELETE FROM entertainment_birthday_delivery WHERE chat_id=?", (CHAT,))
+                await self.storage._require_connection().commit()
+
+        self.assertTrue(await self.storage.claim_birthday_delivery(
+            CHAT, "unrelated-uncertain", self.clock_now))
+        await self.storage.finish_birthday_delivery(
+            CHAT, "unrelated-uncertain", self.clock_now, "UNCERTAIN", None)
         coordinator = BirthdayCoordinator(self.bot, self.storage, {CHAT}, [personal],
                                           now_fn=lambda: self.clock_now)
         await coordinator.tick(self.clock_now)
         self.assertEqual(self.bot.send_message.await_count, 0)
-        await self.storage._require_connection().execute(
-            "DELETE FROM entertainment_birthday_delivery WHERE chat_id=?", (CHAT,),
-        )
-        await self.storage._require_connection().commit()
-        self.assertTrue(await self.storage.claim_birthday_delivery(
-            CHAT, "chat-birthday-2026-11-24", self.clock_now))
-        await self.storage.finish_birthday_delivery(
-            CHAT, "chat-birthday-2026-11-24", self.clock_now, "UNCERTAIN", None)
-        await coordinator.tick(self.clock_now)
-        self.assertEqual(self.bot.send_message.await_count, 0)
+
+    async def test_recovery_is_restricted_to_pupsan_event_chat_and_date(self):
+        self.clock_now = timestamp(day=24, hour=13, minute=52)
+        claim = self.storage.claim_birthday_recovery_delivery
+        event = "ikf-2026-11-24-pupsan99-birthday"
+        self.assertFalse(await claim(CHAT + 1, event, self.clock_now))
+        self.assertFalse(await claim(CHAT, "another-birthday", self.clock_now))
+        self.assertFalse(await claim(CHAT, event, timestamp(day=25, hour=13, minute=52)))
 
     async def test_recovery_network_unknown_is_not_repeated(self):
         self.clock_now = timestamp(day=24, hour=13, minute=52)
@@ -531,7 +584,7 @@ class BirthdayPostgresTests(unittest.IsolatedAsyncioTestCase):
         """One special greeting after an already-SENT generic, even with 2 workers."""
         storage = PostgresEntertainmentStorage(os.environ["TEST_DATABASE_URL"])
         await storage.initialize()
-        chat_id = -1009876543210
+        chat_id = CHAT
         now = timestamp(day=24, hour=13, minute=52)
         event_id = "ikf-2026-11-24-pupsan99-birthday"
         pool = storage._require_pool()
