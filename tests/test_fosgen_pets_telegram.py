@@ -36,7 +36,11 @@ class RecordingSession(BaseSession):
     async def make_request(self, bot, method, timeout=None):
         self.requests.append(method)
         if isinstance(method, GetMe):
-            return User(id=777, is_bot=True, first_name="Фосген", username="FosgenBot")
+            # aiogram's Bot.usernames() reads active_usernames from GetMe.
+            # Explicitly include it in the test-session response.
+            return User(id=777, is_bot=True, first_name="Фосген", username="FosgenBot").model_copy(
+                update={"active_usernames": ()}
+            )
         if isinstance(method, AnswerCallbackQuery):
             return True
         if isinstance(method, (SendMessage, SendPhoto)):
