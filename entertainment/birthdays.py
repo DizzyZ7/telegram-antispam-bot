@@ -35,6 +35,7 @@ class BirthdayPlan:
     local_date: str
     send_time: str
     text: str
+    allow_early: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.event_id, str) or not re.fullmatch(r"[a-z0-9_-]{1,80}", self.event_id):
@@ -45,6 +46,8 @@ class BirthdayPlan:
             raise ValueError("Invalid birthday recipient username")
         date.fromisoformat(self.local_date)
         time.fromisoformat(self.send_time)
+        if type(self.allow_early) is not bool:
+            raise ValueError("Birthday plan allow_early must be a boolean")
         if (not isinstance(self.text, str) or not 1 <= len(self.text) <= 3500
                 or len(self.text.encode("utf-16-le")) // 2 > 4000):
             raise ValueError("Invalid birthday greeting")
@@ -209,7 +212,7 @@ class BirthdayCoordinator:
             return False
         active_plans = [p for p in self.plans if p.chat_id == chat.id and p.same_day(now)]
         for plan in active_plans:
-            if not self._addresses(message, plan):
+            if not plan.allow_early or not self._addresses(message, plan):
                 continue
             try:
                 await self._send(plan, now, int(getattr(message, "message_thread_id", None) or 0))
