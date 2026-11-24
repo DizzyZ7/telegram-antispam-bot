@@ -21,7 +21,7 @@ from writers_moderation import (
 
 WRITERS_CHAT_ID = -1002619489118
 # Intentionally exempted by ICФ owner.
-EXEMPT_TOPIC_IDS = (14637, 42817, 292358)
+EXEMPT_TOPIC_IDS = (14637, 42817, 292358, 582867)
 
 
 def make_app():
@@ -62,7 +62,7 @@ class WritersProfanityRegressionTests(unittest.IsolatedAsyncioTestCase):
                 await handler(message)
                 message.delete.assert_awaited_once()
 
-    async def test_exactly_three_topics_remain_exempt_from_profanity_deletion(self):
+    async def test_exactly_four_topics_remain_exempt_from_profanity_deletion(self):
         self.assertEqual(
             WRITERS_PROFANITY_EXEMPT_TOPIC_IDS,
             frozenset(EXEMPT_TOPIC_IDS),
